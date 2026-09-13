@@ -225,6 +225,32 @@ class TestCreateProfile:
         assert not (dest / "bot-desktop").exists()
         assert cookies.read_bytes() == b"LIVE-SESSION"
 
+    def test_clone_all_ignore_drops_bot_desktop_when_root_resolve_fails(self, tmp_path):
+        """A broken source root must not fail-open into copying the cookie jar.
+
+        ``_clone_all_copytree_ignore`` used to treat ``Path.resolve()``
+        failure as ``at_root=False`` so ``bot-desktop`` (only in the
+        at-root set) was copied. The name is always excluded now.
+        """
+        from hermes_cli.profiles import _clone_all_copytree_ignore
+
+        source = tmp_path / "broken-root"
+        source.mkdir()
+        ignore = _clone_all_copytree_ignore(source)
+
+        def _boom(self, *args, **kwargs):
+            raise OSError("resolve failed")
+
+        with patch.object(Path, "resolve", _boom):
+            ignored = ignore(
+                str(source),
+                ["bot-desktop", "config.yaml", "notes.md"],
+            )
+
+        assert "bot-desktop" in ignored
+        assert "config.yaml" not in ignored
+        assert "notes.md" not in ignored
+
 
 
 
@@ -952,6 +978,34 @@ class TestExportImport:
             names = tf.getnames()
         assert f"{name}/config.yaml" in names
         assert not [n for n in names if "bot-desktop" in n], names
+
+    def test_export_profile_extra_files_cannot_reinject_bot_desktop(self, profile_env, tmp_path):
+        """Desktop/API ``extra_files`` is written after the copytree ignore.
+
+        A client must still be able to ship ``desktop.json`` (profile-share)
+        without re-injecting the cookie jar, a human lease, or ``.env`` /
+        ``auth.json``.
+        """
+        profile_dir = create_profile("alice", no_alias=True)
+        (profile_dir / "config.yaml").write_text("model: test\n")
+        dest = tmp_path / "alice.tar.gz"
+        extra = {
+            "desktop.json": '{"kind":"desktop-share"}',
+            "bot-desktop/lease.json": '{"holder":"human"}',
+            "bot-desktop/browser-profile/Default/Cookies": "stolen-cookies",
+            ".env": "ANTHROPIC_API_KEY=sk-injected",
+            "auth.json": '{"token":"injected"}',
+        }
+
+        path = export_profile("alice", dest, extra_files=extra)
+        with tarfile.open(path, "r:gz") as tf:
+            names = set(tf.getnames())
+
+        assert "alice/desktop.json" in names
+        assert "alice/config.yaml" in names
+        assert not [n for n in names if "bot-desktop" in n], names
+        assert "alice/.env" not in names
+        assert "alice/auth.json" not in names
 
     def test_import_drops_bot_desktop_from_a_crafted_archive(self, profile_env, tmp_path):
         """Export already excludes bot-desktop. Import of a crafted or

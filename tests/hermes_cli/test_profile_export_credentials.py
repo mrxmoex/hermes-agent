@@ -53,6 +53,42 @@ class TestCredentialExclusion:
         assert not any("auth.json" in n for n in names), "auth.json must NOT be in export"
         assert not any(".env" in n for n in names), ".env must NOT be in export"
 
+    def test_extra_files_cannot_reinject_credentials_or_bot_desktop(
+        self, tmp_path, monkeypatch
+    ):
+        """``extra_files`` is written after copytree ignore. A desktop/API
+        client must not be able to stuff ``.env``, ``auth.json``, or a
+        ``holder=human`` lease back into an archive export otherwise
+        refuses to copy. ``desktop.json`` (profile-share) still ships.
+        """
+        profiles_root = tmp_path / "profiles"
+        profile_dir = profiles_root / "shareme"
+        profile_dir.mkdir(parents=True)
+        (profile_dir / "config.yaml").write_text("model: gpt-4\n")
+        (profile_dir / "SOUL.md").write_text("I am helpful.\n")
+        _patch_named_profile(monkeypatch, profiles_root, profile_dir)
+
+        result = export_profile(
+            "shareme",
+            str(tmp_path / "shareme.tar.gz"),
+            extra_files={
+                "desktop.json": '{"kind":"desktop-share"}',
+                "bot-desktop/lease.json": '{"holder":"human"}',
+                "bot-desktop/browser-profile/Default/Cookies": "stolen-cookies",
+                ".env": "OPENROUTER_API_KEY=sk-injected",
+                "auth.json": '{"token":"injected"}',
+            },
+        )
+
+        with tarfile.open(result, "r:gz") as tf:
+            names = tf.getnames()
+
+        assert any(n.endswith("desktop.json") for n in names)
+        assert any("config.yaml" in n for n in names)
+        assert not any("bot-desktop" in n for n in names), names
+        assert not any(n.endswith(".env") for n in names)
+        assert not any(n.endswith("auth.json") for n in names)
+
 
 class TestExportSecretScrub:
 

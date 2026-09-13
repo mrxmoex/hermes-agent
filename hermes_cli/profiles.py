@@ -90,11 +90,15 @@ def _clone_all_copytree_ignore(source_dir: Path):
             at_root = Path(directory).resolve() == source_resolved
         except (OSError, ValueError):
             # resolve() can fail on odd FS layouts (broken symlinks, missing parents).
-            # Fail open — better to over-copy than silently drop user data.
+            # Fail open for ordinary user data — better to over-copy than drop it.
+            # bot-desktop is the opposite: over-copy forks the cookie jar / a
+            # holder=human lease. Drop it by name at any depth, even when we
+            # cannot tell whether this directory is the profile root.
             at_root = False
         return [
             entry for entry in names
             if entry == "__pycache__"
+            or entry == "bot-desktop"
             or entry.endswith((".pyc", ".pyo", ".sock", ".tmp"))
             or (at_root and entry in root_exclude)
         ]
@@ -1518,6 +1522,16 @@ def _default_export_ignore(root_dir: Path):
 # its persistent Chromium profile (Cookies, Login Data — the bot's live web sessions), Xauthority, sockets.
 _EXPORT_CREDENTIAL_FILES = frozenset({"auth.json", ".env", "bot-desktop"})
 
+
+def _is_export_credential_rel(parts) -> bool:
+    """True when an archive-relative path is a credential file or ``bot-desktop/``.
+
+    ``extra_files`` is written after the copytree ignore filter. Without this
+    gate a client can inject ``bot-desktop/lease.json`` (or ``.env`` /
+    ``auth.json``) into an archive that export otherwise refuses to copy.
+    """
+    return bool(parts) and any(part in _EXPORT_CREDENTIAL_FILES for part in parts)
+
 # Text/config suffixes secret-scrubbed on export; binary DBs, images etc. are left alone.
 _EXPORT_REDACT_SUFFIXES = frozenset({
     ".md", ".txt", ".yaml", ".yml", ".json", ".jsonl", ".toml", ".ini", ".cfg", ".conf", ".py", ".sh",
@@ -1581,7 +1595,10 @@ def export_profile(name: str, output_path: str, extra_files: Optional[Dict[str, 
         staged = Path(tmpdir) / canon
         shutil.copytree(profile_dir, staged, symlinks=True, ignore=ignore)
         for rel, content in (extra_files or {}).items():
-            target = staged.joinpath(*normalize_archive_parts(rel))
+            parts = normalize_archive_parts(rel)
+            if _is_export_credential_rel(parts):
+                continue
+            target = staged.joinpath(*parts)
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content, encoding="utf-8")
         _scrub_export_secrets(staged)
