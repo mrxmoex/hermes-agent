@@ -953,6 +953,42 @@ class TestExportImport:
         assert f"{name}/config.yaml" in names
         assert not [n for n in names if "bot-desktop" in n], names
 
+    def test_import_drops_bot_desktop_from_a_crafted_archive(self, profile_env, tmp_path):
+        """Export already excludes bot-desktop. Import of a crafted or
+        pre-exclude archive must not restore the cookie jar or a human
+        lease that would fence computer_use on a profile with no screen.
+        """
+        staging = tmp_path / "pack" / "crafted"
+        cookies = staging / "bot-desktop" / "browser-profile" / "Default" / "Cookies"
+        cookies.parent.mkdir(parents=True)
+        cookies.write_bytes(b"STOLEN-SESSION")
+        (staging / "bot-desktop" / "lease.json").write_text(
+            '{"holder":"human","epoch":9}', encoding="utf-8",
+        )
+        (staging / "config.yaml").write_text("model: imported\n")
+        archive = tmp_path / "crafted.tar.gz"
+        with tarfile.open(str(archive), "w:gz") as tf:
+            tf.add(staging, arcname="crafted")
+
+        dest = import_profile(str(archive), name="imported")
+        assert dest.is_dir()
+        assert (dest / "config.yaml").read_text() == "model: imported\n"
+        assert not (dest / "bot-desktop").exists()
+
+    def test_drop_imported_bot_desktop_unlinks_a_symlink_without_following_it(self, tmp_path):
+        """safe_extract_targz refuses symlink members; if one still lands
+        on the staged tree, rmtree would delete the target jar. Unlink.
+        """
+        stranger = tmp_path / "other-home" / "bot-desktop"
+        stranger.mkdir(parents=True)
+        (stranger / "Cookies").write_bytes(b"LEAVE-ME")
+        extracted = tmp_path / "staged"
+        extracted.mkdir()
+        (extracted / "bot-desktop").symlink_to(stranger)
+        profiles._drop_imported_bot_desktop(extracted)
+        assert not (extracted / "bot-desktop").exists()
+        assert (stranger / "Cookies").read_bytes() == b"LEAVE-ME"
+
 
 
 

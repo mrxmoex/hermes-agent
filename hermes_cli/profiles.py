@@ -1627,8 +1627,27 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
         if archive_root != canon:
             final_source = staging_root / canon
             extracted.rename(final_source)
+        # Export and --clone-all already refuse to copy this directory. Import
+        # is the other door: a crafted or pre-exclude archive can still carry
+        # the cookie jar plus a lease.json that fences computer_use with
+        # holder=human on a profile that has no screen. Drop it on the staged
+        # tree so it never lands in the new home. Unlink a symlink rather than
+        # rmtree — rmtree would follow it into another profile's jar.
+        _drop_imported_bot_desktop(final_source)
         shutil.move(str(final_source), str(profile_dir))
     return profile_dir
+
+
+def _drop_imported_bot_desktop(extracted: Path) -> None:
+    """Remove ``bot-desktop/`` from a staged import tree. Never follows a symlink."""
+    desktop = extracted / "bot-desktop"
+    try:
+        if desktop.is_symlink() or desktop.is_file():
+            desktop.unlink()
+        elif desktop.is_dir():
+            shutil.rmtree(desktop)
+    except OSError:
+        pass
 
 
 # Rename
