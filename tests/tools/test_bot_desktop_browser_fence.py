@@ -988,6 +988,137 @@ def test_vision_preroute_adopt_is_fenced_when_cached_session_is_cloud(monkeypatc
     assert not shot.exists(), "reminted adopt left the prerouted PNG on disk"
 
 
+def test_vision_preroute_adopts_onto_dest_and_unlinks_fallback_original(monkeypatch):
+    """Chrome fallback used to pick its own PNG; preroute copied it and left
+    the original. Adopt onto the tool dest and drop the sibling."""
+    from hermes_constants import get_hermes_home
+    from tools import browser_tool_vision as vision
+
+    shots = get_hermes_home() / "cache" / "screenshots"
+    shots.mkdir(parents=True, exist_ok=True)
+    dest = shots / "browser_screenshot_dest.png"
+    leftover = shots / "browser_screenshot_fallback_orig.png"
+    leftover.write_bytes(b"HUMAN_PRIVATE_FRAME")
+    monkeypatch.setattr(vision._cloud, "_get_browser_engine", lambda: "lightpanda")
+    monkeypatch.setattr(vision._cloud, "_should_inject_engine", lambda *a, **k: True)
+
+    def fallback(_task, args, _timeout):
+        assert str(dest) in args, f"fallback must write the tool dest, got {args}"
+        return {"success": True, "data": {"path": str(leftover)}}
+
+    monkeypatch.setattr(
+        "tools.browser_tool_lightpanda_fallback._chrome_fallback_screenshot",
+        fallback,
+    )
+    prerouted, _warning, path, remint = vision._lightpanda_vision_preroute(
+        "review", False, dest,
+    )
+    assert prerouted is True
+    assert remint is None
+    assert path == dest
+    assert dest.exists() and dest.read_bytes() == b"HUMAN_PRIVATE_FRAME"
+    assert not leftover.exists(), "fallback original left beside the dest copy"
+
+
+def test_vision_preroute_leaves_fallback_original_outside_profile_home(monkeypatch, tmp_path):
+    """Unlink is scoped to this profile home — a caller path elsewhere stays."""
+    from hermes_constants import get_hermes_home
+    from tools import browser_tool_vision as vision
+
+    shots = get_hermes_home() / "cache" / "screenshots"
+    shots.mkdir(parents=True, exist_ok=True)
+    dest = shots / "browser_screenshot_dest.png"
+    outside = tmp_path / "user-capture.png"
+    outside.write_bytes(b"keep-me")
+    monkeypatch.setattr(vision._cloud, "_get_browser_engine", lambda: "lightpanda")
+    monkeypatch.setattr(vision._cloud, "_should_inject_engine", lambda *a, **k: True)
+    monkeypatch.setattr(
+        "tools.browser_tool_lightpanda_fallback._chrome_fallback_screenshot",
+        lambda *_a, **_k: {"success": True, "data": {"path": str(outside)}},
+    )
+    prerouted, _warning, path, remint = vision._lightpanda_vision_preroute(
+        "review", False, dest,
+    )
+    assert prerouted is True and remint is None and path == dest
+    assert dest.exists() and dest.read_bytes() == b"keep-me"
+    assert outside.exists() and outside.read_bytes() == b"keep-me"
+
+
+def test_chrome_fallback_remint_unlinks_screenshot_arg_without_data_path(monkeypatch):
+    """Fallback screenshot writes the argv path; a remint must unlink it even
+    when the JSON has no data.path (timeout / partial collect)."""
+    from hermes_constants import get_hermes_home
+    from tools import browser_tool_lightpanda_fallback as lp
+
+    shots = get_hermes_home() / "cache" / "screenshots"
+    shots.mkdir(parents=True, exist_ok=True)
+    path = shots / "browser_screenshot_fallback.png"
+
+    def run(*_a, **_k):
+        path.write_bytes(b"HUMAN_PRIVATE_FRAME")
+        lease.acquire("human-viewer")
+        lease.release("human-viewer")
+        return {"success": True}
+
+    monkeypatch.setattr(lp, "_run_chrome_fallback_command_unfenced", run)
+    result = lp._run_chrome_fallback_command(
+        "review", "screenshot", ["--full", str(path)], 30,
+    )
+    assert result.get("code") == "human_has_control"
+    assert "HUMAN_PRIVATE_FRAME" not in json.dumps(result)
+    assert not path.exists(), "fallback argv PNG left on disk after remint"
+
+
+def test_reminted_vision_after_preroute_unlinks_fallback_sibling(monkeypatch):
+    """A completed preroute used to keep the fallback original; adopt remint
+    must drop both the dest and that sibling."""
+    from hermes_constants import get_hermes_home
+    from tools import browser_tool as browser
+    from tools import browser_tool_vision as vision
+
+    shots = get_hermes_home() / "cache" / "screenshots"
+    shots.mkdir(parents=True, exist_ok=True)
+    leftover = shots / "browser_screenshot_fallback_orig.png"
+    leftover.write_bytes(b"HUMAN_PRIVATE_FRAME")
+    written: list[str] = []
+    monkeypatch.setattr(browser, "_is_camofox_mode", lambda: False)
+    monkeypatch.setattr(browser, "_blocked_private_page_content", lambda *_a, **_k: None)
+    monkeypatch.setattr(vision._cloud, "_get_browser_engine", lambda: "lightpanda")
+    monkeypatch.setattr(vision._cloud, "_should_inject_engine", lambda *a, **k: True)
+    monkeypatch.setattr(vision, "_analyze_screenshot_with_aux_llm", lambda *_a, **_k: "analysis")
+    monkeypatch.setattr(
+        "tools.vision_tools._should_use_native_vision_fast_path",
+        lambda: False,
+    )
+
+    def fallback(_task, args, _timeout):
+        dest = next(a for a in args if str(a).endswith(".png"))
+        Path(dest).write_bytes(b"HUMAN_PRIVATE_FRAME")
+        written.append(dest)
+        return {"success": True, "data": {"path": str(leftover)}}
+
+    monkeypatch.setattr(
+        "tools.browser_tool_lightpanda_fallback._chrome_fallback_screenshot",
+        fallback,
+    )
+
+    def adopt_then_takeover(info, run, **_kw):
+        result = run()
+        lease.acquire("human-viewer")
+        lease.release("human-viewer")
+        return result
+
+    monkeypatch.setattr(browser._session, "_bracket_bot_desktop_browser", adopt_then_takeover)
+    raw = browser.browser_vision("what is on the page?", task_id="review")
+    text = raw if isinstance(raw, str) else json.dumps(raw)
+    parsed = json.loads(text)
+    assert parsed.get("code") == "human_has_control"
+    assert "HUMAN_PRIVATE_FRAME" not in text
+    assert written, "fallback never wrote the tool dest"
+    assert not Path(written[0]).exists(), "preroute dest left on disk after remint"
+    assert not leftover.exists(), "fallback sibling left on disk after remint"
+
+
 class _EvalSupervisor:
     def __init__(self, ran, result="WHAT-THE-HUMAN-TYPED"):
         self.ran = ran

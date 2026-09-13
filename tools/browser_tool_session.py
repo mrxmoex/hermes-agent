@@ -807,6 +807,35 @@ def _unlink_shared_capture(raw: str) -> None:
         return
 
 
+def _adopt_shared_browser_capture(src: str, dest: str) -> None:
+    """Place a fallback/temp capture at ``dest`` and drop the source sibling.
+
+    Lightpanda vision preroute used to ``copy2`` onto a new uuid name and leave
+    the Chrome-fallback original under this profile home. A later remint
+    unlinked only the copy, so ``read_file`` / ``MEDIA:`` could still recover
+    the human's frame. One destination, one file: copy only when dest is
+    missing, then unlink a source that lives in this HERMES_HOME.
+    """
+    if not src or not dest:
+        return
+    src_path = Path(src).expanduser()
+    dest_path = Path(dest).expanduser()
+    try:
+        if src_path.resolve() == dest_path.resolve():
+            return
+    except Exception:
+        if os.path.normpath(str(src_path)) == os.path.normpath(str(dest_path)):
+            return
+    if src_path.exists() and not dest_path.exists():
+        try:
+            dest_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src_path, dest_path)
+        except Exception:
+            return
+    if dest_path.exists():
+        _unlink_shared_capture(str(src_path))
+
+
 def _discard_shared_browser_captures(
     *,
     command: Optional[str] = None,
@@ -839,12 +868,22 @@ def _discard_shared_browser_captures(
         _unlink_shared_capture(raw)
 
 
-def _bracket_bot_desktop_browser(session_info: Dict[str, Any], run):
+def _bracket_bot_desktop_browser(
+    session_info: Dict[str, Any],
+    run,
+    *,
+    command: Optional[str] = None,
+    args: Optional[List[str]] = None,
+):
     """Refuse or discard a shared-browser result the same way ``computer_use`` does.
 
     Used by callers that already have session info (Lightpanda Chrome fallback,
     vault eval). ``_run_browser_command`` admits first, then creates the session,
     so a human hold cannot launch or recycle the shared Chromium.
+
+    ``command`` / ``args`` are the same capture-unlink keys ``_run_browser_command``
+    already passes: a reminted fallback screenshot may have written the PNG
+    to an argv path without putting it on ``result.data.path``.
     """
     admitted, refuse = _admit_bot_desktop_browser(session_info)
     if refuse:
@@ -852,8 +891,11 @@ def _bracket_bot_desktop_browser(session_info: Dict[str, Any], run):
     result = run()
     stole = _discard_if_lease_moved(admitted)
     if stole:
-        if isinstance(result, dict):
-            _discard_shared_browser_captures(result=result)
+        _discard_shared_browser_captures(
+            command=command,
+            args=args,
+            result=result if isinstance(result, dict) else None,
+        )
         return stole
     return result
 

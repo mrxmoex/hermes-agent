@@ -136,6 +136,8 @@ def _run_chrome_fallback_command(task_id: str, command: str, args: List[str], ti
     return _session._bracket_bot_desktop_browser(
         {"features": {"local": True}},
         lambda: _run_chrome_fallback_command_unfenced(task_id, command, args, timeout),
+        command=command,
+        args=args,
     )
 
 
