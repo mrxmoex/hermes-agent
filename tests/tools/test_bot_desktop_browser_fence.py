@@ -76,3 +76,105 @@ def test_real_profile_local_browser_is_fenced_by_provenance_even_without_a_live_
     result = json.loads(browser.browser_click("e1", task_id="review"))
     assert commands == [], f"human holds the lease, yet a real-profile browser command was dispatched: {commands}"
     assert result.get("code") == "human_has_control"
+
+
+def _session_state():
+    from tools import browser_tool as bt
+    return bt, {
+        name: getattr(bt, name).copy()
+        for name in (
+            "_active_sessions", "_session_last_activity",
+            "_session_owner_homes", "_cleanup_failures", "_suspect_browser_sessions",
+        )
+    }
+
+
+def _restore_session_state(bt, saved):
+    for name, snapshot in saved.items():
+        live = getattr(bt, name)
+        live.clear()
+        live.update(snapshot)
+
+
+def test_inactivity_janitor_does_not_kill_shared_browser_while_human_holds(monkeypatch):
+    """Default inactivity is 120s. wait_for_human + a 2FA login routinely exceed that.
+    close is already fenced; the janitor still tree-killed the daemon afterwards."""
+    from tools import browser_tool_lifecycle as life
+
+    bt, saved = _session_state()
+    orig_timeout = bt.BROWSER_SESSION_INACTIVITY_TIMEOUT
+    bt.BROWSER_SESSION_INACTIVITY_TIMEOUT = 0
+    released: list = []
+    closed: list = []
+    monkeypatch.setattr(life, "_release_session_resources", lambda *a, **k: released.append(a))
+    monkeypatch.setattr(
+        "tools.browser_tool_session._run_browser_command",
+        lambda *a, **k: closed.append(a) or {"success": True},
+    )
+    try:
+        for name in saved:
+            getattr(bt, name).clear()
+        existing = {"session_name": "h_review", "bb_session_id": None, "features": {"local": True}}
+        bt._active_sessions["review"] = existing
+        bt._session_last_activity["review"] = 0.0
+        lease.acquire("human-viewer")
+        life._cleanup_inactive_browser_sessions()
+        assert released == []
+        assert closed == []
+        assert bt._active_sessions["review"] is existing
+        assert "review" in bt._session_last_activity
+
+        lease.release("human-viewer")
+        life._cleanup_inactive_browser_sessions()
+        assert released == [("review", existing)]
+    finally:
+        bt.BROWSER_SESSION_INACTIVITY_TIMEOUT = orig_timeout
+        _restore_session_state(bt, saved)
+
+
+def test_get_session_info_does_not_recycle_shared_browser_while_human_holds(monkeypatch):
+    """browser_navigate calls _get_session_info before the command fence. An expired
+    or suspect session used to teardown Chromium first, then refuse the click."""
+    from tools import browser_tool_session as session
+
+    bt, saved = _session_state()
+    cleaned: list = []
+    monkeypatch.setattr(
+        session._lifecycle, "_cleanup_single_browser_session",
+        lambda task_id, **k: cleaned.append(task_id),
+    )
+    monkeypatch.setattr(session._lifecycle, "_session_has_expired", lambda _s: True)
+    monkeypatch.setattr(
+        session, "_create_session_for_key",
+        lambda *a, **k: {"session_name": "fresh", "features": {"local": True}},
+    )
+    try:
+        for name in saved:
+            getattr(bt, name).clear()
+        existing = {"session_name": "h_review", "features": {"local": True}, "session_key": "review"}
+        bt._active_sessions["review"] = existing
+        bt._suspect_browser_sessions["review"] = "timeout"
+        lease.acquire("human-viewer")
+        got = session._get_session_info("review")
+        assert got is existing
+        assert cleaned == []
+        assert bt._suspect_browser_sessions.get("review") == "timeout"
+
+        lease.release("human-viewer")
+        session._get_session_info("review")
+        assert cleaned == ["review"]
+    finally:
+        _restore_session_state(bt, saved)
+
+
+def test_cloud_browser_session_is_not_reserved_by_a_human_lease():
+    """A remote cloud session is another browser; the janitor must still reap it."""
+    from tools import browser_tool_session as session
+
+    lease.acquire("human-viewer")
+    assert session._local_browser_reserved_by_human(
+        {"session_name": "bb", "bb_session_id": "x", "features": {"local": False}}
+    ) is False
+    assert session._local_browser_reserved_by_human(
+        {"session_name": "h_review", "features": {"local": True}}
+    ) is True

@@ -278,6 +278,10 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, Any]:
         return replacement if replacement is not None and replacement is not existing_session else None
 
     if existing_session is not None:
+        # A human mid-login owns this Chromium. Recycle (suspect or expired)
+        # would kill the daemon after a fenced close — do not even start it.
+        if _local_browser_reserved_by_human(existing_session):
+            return existing_session
         # Suspect recycle: a command timeout marked this session; the expensive recycle
         # lives here at next use, not on the timeout path (mark must stay cheap).
         if not _bt._browser_session_backend(task_id).ensure_healthy():
@@ -602,6 +606,21 @@ def _shares_bot_desktop_browser(session_info: Dict[str, Any]) -> bool:
         return False
     from tools.bot_desktop import lease as _bd_lease, runtime as _bd_runtime
     return bool(_bd_runtime.published_env().get("DISPLAY")) or _bd_lease.human_holds()
+
+
+def _local_browser_reserved_by_human(session_info: Dict[str, Any]) -> bool:
+    """Teardown of this session would kill the Chromium a human is typing into.
+
+    The command fence refuses ``close`` while the human holds, but the inactivity
+    janitor and suspect/expiry recycle still ran ``_release_session_resources``
+    afterwards and tree-killed the agent-browser daemon — and the Chromium it
+    spawned, which is the same jar the dock Browser uses. Cloud / user-CDP
+    sessions are another browser and are not reserved.
+    """
+    if not (session_info.get("features") or {}).get("local"):
+        return False
+    from tools.bot_desktop import lease as _bd_lease
+    return _bd_lease.human_holds()
 
 
 def _bot_desktop_attach_port(session_info: Dict[str, Any]) -> Optional[int]:

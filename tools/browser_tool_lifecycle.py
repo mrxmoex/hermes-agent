@@ -159,6 +159,16 @@ def _cleanup_inactive_browser_sessions():
         _bt.logger.info("Cleaning up inactive session for task: %s (inactive for %ss)", task_id, elapsed)
         try:
             with _session_owner_scope(task_id):
+                # Owner scope so human_holds() reads THIS profile's lease — the
+                # janitor thread is process-global and otherwise sees the launch home.
+                with _bt._cleanup_lock:
+                    session_info = _bt._active_sessions.get(task_id)
+                if session_info and _session._local_browser_reserved_by_human(session_info):
+                    _bt.logger.info(
+                        "Deferring inactivity cleanup for %s: a human holds the Bot Desktop lease",
+                        task_id,
+                    )
+                    continue
                 cleanup_browser(task_id)
             _forget_session_tracking(task_id)
         except Exception as e:
@@ -552,9 +562,13 @@ def _drop_last_active_binding(task_id: str) -> None:
         _bt._last_active_session_key.pop(bare_task_id, None)
 
 
-def cleanup_browser(task_id: Optional[str] = None) -> None:
+def cleanup_browser(task_id: Optional[str] = None, *, force: bool = False) -> None:
     """Clean up browser session(s) for a task: a bare task id reaps BOTH the primary
-    session and any hybrid local sidecar; a ``::local`` key reaps only that one."""
+    session and any hybrid local sidecar; a ``::local`` key reaps only that one.
+
+    ``force`` is process-exit only: a human lease otherwise keeps the shared
+    Chromium (the dock Browser's cookie jar) alive.
+    """
     if task_id is None:
         task_id = "default"
 
@@ -564,7 +578,7 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
         if not _bt._is_local_sidecar_key(task_id) and sidecar_key in _bt._active_sessions:
             session_keys.append(sidecar_key)
     for session_key in session_keys:
-        _cleanup_single_browser_session(session_key)
+        _cleanup_single_browser_session(session_key, force=force)
     _drop_last_active_binding(task_id)
 
 
@@ -621,6 +635,13 @@ def _force_reap_browser_session(task_id: str) -> None:
 
     Janitor last resort after repeated cleanup failures (#100738).
     """
+    with _bt._cleanup_lock:
+        session_info = _bt._active_sessions.get(task_id)
+    if session_info and _session._local_browser_reserved_by_human(session_info):
+        _bt.logger.info(
+            "Deferring force-reap for %s: a human holds the Bot Desktop lease", task_id,
+        )
+        return
     _cdp._stop_cdp_supervisor(task_id)
     with _bt._cleanup_lock:
         session_info = _bt._active_sessions.get(task_id)
@@ -631,8 +652,22 @@ def _force_reap_browser_session(task_id: str) -> None:
     _drop_last_active_binding(task_id)
 
 
-def _cleanup_single_browser_session(task_id: str) -> None:
-    """Reap a single browser session by its exact session key."""
+def _cleanup_single_browser_session(task_id: str, *, force: bool = False) -> None:
+    """Reap a single browser session by its exact session key.
+
+    ``force`` is process-exit: otherwise a human lease keeps the shared
+    Chromium. The polite ``close`` is already fenced; without this guard the
+    unconditional ``_release_session_resources`` tail still tree-killed it.
+    """
+    with _bt._cleanup_lock:
+        reserved = _bt._active_sessions.get(task_id)
+    if not force and reserved and _session._local_browser_reserved_by_human(reserved):
+        _bt.logger.info(
+            "Deferring browser teardown for %s: a human holds the Bot Desktop lease",
+            task_id,
+        )
+        return
+
     _cdp._stop_cdp_supervisor(task_id)  # close our WebSocket BEFORE the backend tears down the endpoint
 
     # Camofox: managed persistence keeps the profile (cookies) across tasks; skip the full
@@ -684,7 +719,7 @@ def cleanup_all_browsers() -> None:
     with _bt._cleanup_lock:
         task_ids = list(_bt._active_sessions.keys())
     for task_id in task_ids:
-        cleanup_browser(task_id)
+        cleanup_browser(task_id, force=True)
 
     try:  # tear down CDP supervisors so background threads exit
         from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
