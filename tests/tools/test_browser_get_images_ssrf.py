@@ -74,6 +74,29 @@ def test_skips_guard_when_private_urls_allowed(monkeypatch):
     assert result["count"] == 1
 
 
+def test_get_images_probe_remint_does_not_return_images(monkeypatch):
+    """Post-eval href remint must not ship the already-assembled image list."""
+    remint = {
+        "success": False,
+        "error": "Human has control of the screen",
+        "code": "human_has_control",
+    }
+    monkeypatch.setattr(bt_eval_policy, "_eval_ssrf_guard_active", lambda tid: True)
+    monkeypatch.setattr(bt_session, "_shared_browser_fence", lambda tid: (None, None))
+
+    def _run(_task_id, command, args=None, **_kwargs):
+        if args == ["window.location.href"]:
+            return remint
+        return {"success": True, "data": {"result": IMAGES_JS_RESULT}}
+
+    monkeypatch.setattr(bt_session, "_run_browser_command", _run)
+
+    result = json.loads(browser_tool.browser_get_images(task_id="test"))
+    assert result.get("code") == "human_has_control"
+    assert "Internal Logo" not in json.dumps(result)
+    assert "images" not in result
+
+
 def test_guard_does_not_block_on_failed_eval(monkeypatch):
     """If the eval itself fails, browser_get_images returns its own error — no guard needed."""
     def _run(task_id, command, args=None, **kwargs):

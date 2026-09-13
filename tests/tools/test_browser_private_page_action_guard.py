@@ -43,6 +43,60 @@ def test_private_page_blocks_state_changing_actions(monkeypatch, tool_call, args
     assert "do-not-send-this" not in json.dumps(out)
 
 
+@pytest.mark.parametrize(
+    ("tool_call", "args", "follow_up"),
+    [
+        (browser_tool.browser_click, ("@e1",), "click"),
+        (browser_tool.browser_type, ("@e1", "do-not-send-this"), "fill"),
+        (browser_tool.browser_press, ("Enter",), "press"),
+    ],
+)
+def test_private_page_probe_remint_does_not_fall_through(monkeypatch, tool_call, args, follow_up):
+    """Independently-fenced href probe remint is not a miss.
+
+    Click / type / press used to treat ``human_has_control`` as ``None``
+    (page is not private) and run the next hop after a completed hand-back.
+    """
+    calls = []
+    remint = {
+        "success": False,
+        "error": "Human has control of the screen",
+        "code": "human_has_control",
+    }
+
+    monkeypatch.setattr(bt_eval_policy, "_eval_ssrf_guard_active", lambda task_id: True)
+
+    def fake_run(_task_id, command, _args=None, **_kwargs):
+        calls.append(command)
+        if command == "eval":
+            return remint
+        return {"success": True, "data": {"secret": "WHAT-THE-HUMAN-TYPED"}}
+
+    monkeypatch.setattr(bt_session, "_run_browser_command", fake_run)
+
+    out = json.loads(tool_call(*args, task_id="task-1"))
+
+    assert out.get("code") == "human_has_control"
+    assert calls == ["eval"]
+    assert follow_up not in calls
+    assert "WHAT-THE-HUMAN-TYPED" not in json.dumps(out)
+    assert "do-not-send-this" not in json.dumps(out)
+
+
+def test_current_page_private_probe_preserves_handoff(monkeypatch):
+    remint = {
+        "success": False,
+        "error": "Human has control of the screen",
+        "code": "human_has_control",
+    }
+    monkeypatch.setattr(
+        bt_session, "_run_browser_command",
+        lambda *_a, **_k: remint,
+    )
+    assert bt_eval_policy._current_page_private_url("task-1") == remint
+    assert bt_eval_policy._current_page_private_probe("task-1") == (None, remint)
+
+
 def test_click_still_runs_when_current_page_is_public(monkeypatch):
     calls = []
 

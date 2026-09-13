@@ -3303,6 +3303,50 @@ def test_live_supervisor_for_session_skips_leftover_on_another_browser(monkeypat
             browser._active_sessions["review"] = prior
 
 
+def test_cached_cloud_click_does_not_fall_through_after_href_probe_remint(monkeypatch):
+    """Leftover dock overlay remints the SSRF href probe; click must not run after."""
+    from tools import browser_tool as browser
+    from tools import browser_tool_eval_policy as policy
+
+    monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", _is_dock_cdp)
+    monkeypatch.setattr(browser, "_is_camofox_mode", lambda: False)
+    monkeypatch.setattr(policy, "_eval_ssrf_guard_active", lambda *_a, **_k: True)
+    calls: list = []
+    remint = {
+        "success": False,
+        "error": "Human has control of the screen",
+        "code": "human_has_control",
+    }
+
+    def run(_tid, command, _args=None, **_k):
+        calls.append(command)
+        if command == "eval":
+            return remint
+        return {"success": True, "data": {"secret": "WHAT-THE-HUMAN-TYPED"}}
+
+    monkeypatch.setattr(session_mod, "_run_browser_command", run)
+    prior = browser._active_sessions.get("review")
+    browser._active_sessions["review"] = {
+        "session_name": "cloud", "cdp_url": "wss://browserbase.example/s",
+        "features": {"cloud": True},
+    }
+    leftover = type("S", (), {"cdp_url": _DOCK_CDP})()
+    monkeypatch.setattr(
+        "tools.browser_supervisor.SUPERVISOR_REGISTRY",
+        type("R", (), {"get": staticmethod(lambda _tid: leftover)})(),
+    )
+    try:
+        result = json.loads(browser.browser_click("e1", task_id="review"))
+    finally:
+        if prior is None:
+            browser._active_sessions.pop("review", None)
+        else:
+            browser._active_sessions["review"] = prior
+    assert calls == ["eval"], f"click ran after a reminted href probe: {calls}"
+    assert result.get("code") == "human_has_control"
+    assert "WHAT-THE-HUMAN-TYPED" not in json.dumps(result)
+
+
 def test_browser_click_cached_cloud_does_not_probe_leftover_override(monkeypatch):
     """Cloud click must run; leftover ``/browser connect`` must not be discovered."""
     from tools import browser_tool as browser

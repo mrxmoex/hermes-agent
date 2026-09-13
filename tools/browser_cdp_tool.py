@@ -16,6 +16,7 @@ from typing import Any, Dict, Optional
 from tools.registry import registry, tool_error
 from tools.browser_extension_router import routed_browser_handler
 from tools.browser_tool_session import (
+    _HUMAN_TOOK_OVER,
     _admit_bot_desktop_browser,
     _lease_moved_after_payload,
     _live_supervisor_for_session,
@@ -173,7 +174,13 @@ def _browser_cdp_private_guard(*, task_id: str, method: str, params: Dict[str, A
             if literal:
                 return _blocked(template.format(literal), method)
         if method not in _CDP_PRIVATE_PAGE_ALLOWED_METHODS:
-            blocked_url = policy._current_page_private_url(task_id)
+            blocked_url, remint = policy._current_page_private_probe(task_id)
+            if remint:
+                return json.dumps({
+                    "success": False,
+                    "error": remint.get("error") or _HUMAN_TOOK_OVER,
+                    "code": remint.get("code") or "human_has_control",
+                })
             if blocked_url:
                 return _blocked(f"Blocked: page URL targets a private or internal address ({blocked_url}). "
                                 f"Raw CDP method {method!r} could expose private page content or state.", method)

@@ -1016,10 +1016,15 @@ def _blocked_private_page_json(blocked_url: str, why: str) -> str:
 
 def _blocked_private_page(effective_task_id: str, why: str) -> Optional[str]:
     """Blocked payload when the SSRF guard is active and the current page is private, else
-    None. Fail-open on probe failure (see ``_current_page_private_url``)."""
+    None. Fail-open on probe failure (see ``_current_page_private_url``). A reminted
+    href probe is not a miss — click / type / press / console used to fall through
+    and run the next independently-fenced hop after a completed take-over."""
     if not _eval_policy._eval_ssrf_guard_active(effective_task_id):
         return None
-    blocked_url = _eval_policy._current_page_private_url(effective_task_id)
+    blocked_url, remint = _eval_policy._current_page_private_probe(effective_task_id)
+    if remint:
+        extra = {"code": remint["code"]} if remint.get("code") else {}
+        return _dumps(_err(remint.get("error", _session._HUMAN_TOOK_OVER), **extra))
     return _blocked_private_page_json(blocked_url, why) if blocked_url else None
 
 

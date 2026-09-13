@@ -5,7 +5,7 @@ Facade-owned state is read through ``_bt`` (``tools.browser_tool``, resolved per
 """
 
 import re
-from typing import Optional
+from typing import Any, Dict, Optional, Tuple
 from utils import is_truthy_value
 from tools.browser_tool_origin import origin_module as _origin
 from tools import browser_tool_cloud as _cloud
@@ -41,12 +41,21 @@ def _expression_targets_private_url(expression: str) -> Optional[str]:
     return next((c for c in (m.rstrip(".,;") for m in literals) if _url_blocked(_bt, c)), None)
 
 
-def _current_page_private_url(effective_task_id: str) -> Optional[str]:
-    """Return the current page URL when it targets a private/internal address (e.g. after a prior
-    ``location.href = '...'`` eval). Fail-open on probe failure, matching the snapshot/vision guards."""
+def _current_page_private_url(effective_task_id: str) -> Optional[Any]:
+    """Private page URL, a remint dict, or None (fail-open on probe failure).
+
+    ``_run_browser_command`` is independently fenced. A take-over / hand-back
+    must stay ``code: human_has_control`` — callers used to treat remint as
+    ``None`` (not private) and run the next hop after the human's turn.
+    """
     _bt = _origin()
     try:
-        url_result = _session._run_browser_command(effective_task_id, "eval", ["window.location.href"], timeout=5, _engine_override="auto")
+        url_result = _session._run_browser_command(
+            effective_task_id, "eval", ["window.location.href"], timeout=5,
+            _engine_override="auto",
+        )
+        if url_result.get("code") == "human_has_control":
+            return url_result
         if url_result.get("success"):
             current_url = url_result.get("data", {}).get("result", "").strip().strip('"').strip("'")
             if current_url and _url_blocked(_bt, current_url):
@@ -54,6 +63,18 @@ def _current_page_private_url(effective_task_id: str) -> Optional[str]:
     except Exception as exc:
         _bt.logger.debug("_current_page_private_url: probe failed (%s)", exc)
     return None
+
+
+def _current_page_private_probe(
+    effective_task_id: str,
+) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
+    """``(private_url, remint)``. Mocks of ``_current_page_private_url`` still apply."""
+    probed = _current_page_private_url(effective_task_id)
+    if isinstance(probed, dict) and probed.get("code") == "human_has_control":
+        return None, probed
+    if isinstance(probed, str) and probed:
+        return probed, None
+    return None, None
 
 
 _RISKY_BROWSER_EVAL_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (

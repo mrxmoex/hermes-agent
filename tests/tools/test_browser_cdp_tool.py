@@ -22,6 +22,7 @@ import requests
 from tools import browser_tool_eval_policy as bt_eval_policy
 from tools import browser_tool_install as bt_install
 from tools import browser_tool_cdp as bt_cdp
+from tools import browser_tool_session as bt_session
 
 
 # ---------------------------------------------------------------------------
@@ -568,6 +569,39 @@ def test_frame_id_route_allowed_when_page_is_not_private(monkeypatch):
 
     assert result.get("success") is True
     assert len(supervisor_calls) == 1
+
+
+def test_frame_id_route_remint_on_private_probe_does_not_fall_through(monkeypatch):
+    """Independently-fenced href probe remint must not become a CDP miss."""
+    supervisor_calls = []
+    remint = {
+        "success": False,
+        "error": "Human has control of the screen",
+        "code": "human_has_control",
+    }
+    monkeypatch.setattr(bt_eval_policy, "_eval_ssrf_guard_active", lambda task_id: True)
+    monkeypatch.setattr(bt_session, "_run_browser_command", lambda *_a, **_k: remint)
+
+    def fake_supervisor_route(**kwargs):
+        supervisor_calls.append(kwargs)
+        return json.dumps({"success": True, "result": {"value": "WHAT-THE-HUMAN-TYPED"}})
+
+    monkeypatch.setattr(
+        browser_cdp_tool, "_browser_cdp_via_supervisor", fake_supervisor_route
+    )
+
+    result = json.loads(
+        browser_cdp_tool.browser_cdp(
+            method="Runtime.evaluate",
+            params={"expression": "document.body.innerText"},
+            frame_id="frame-1",
+            task_id="task-1",
+        )
+    )
+
+    assert result.get("code") == "human_has_control"
+    assert supervisor_calls == []
+    assert "WHAT-THE-HUMAN-TYPED" not in json.dumps(result)
 
 
 def test_page_navigate_to_private_url_blocked_before_cdp(monkeypatch):
