@@ -11,6 +11,38 @@ import pytest
 from hermes_cli.dashboard_auth import ws_tickets
 
 
+def test_install_sudo_ignores_a_client_supplied_session_id(tmp_path, monkeypatch):
+    """write_json routes a nonempty session_id to that session's transport. A client that
+    names another chat's id would put the administrator-password card on the wrong window."""
+    from tools.bot_desktop import install, runtime
+    import tui_gateway.server as server
+
+    monkeypatch.setattr(runtime, "is_supported_host", lambda: True)
+    monkeypatch.setattr(runtime, "install_command", lambda: "sudo apt-get install -y x")
+    seen = []
+    done = threading.Event()
+
+    def fake_block(event, sid, payload, timeout=300):
+        seen.append((event, sid))
+        return ""
+
+    def fake_install(*, ask_password, on_line, timeout_seconds=900.0, claimed=False):
+        ask_password()
+        done.set()
+        return 0
+
+    monkeypatch.setattr(install, "install_packages", fake_install)
+    monkeypatch.setattr(server, "_block", fake_block)
+    monkeypatch.setattr(server, "_broadcast_global_event", lambda *a, **k: None)
+    resp = server.handle_request({
+        "jsonrpc": "2.0", "id": 1, "method": "display.install",
+        "params": {"session_id": "other-chat"},
+    })
+    assert resp["result"]["started"], resp
+    assert done.wait(5)
+    assert seen == [("display.install.sudo.request", "")], seen
+
+
 def test_install_worker_keeps_the_requested_profile_scope(tmp_path, monkeypatch):
     from hermes_constants import get_hermes_home
     from tools.bot_desktop import install, runtime

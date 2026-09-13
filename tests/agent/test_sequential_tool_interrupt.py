@@ -20,6 +20,7 @@ import agent.tool_executor as tool_executor
 from agent.tool_executor import (
     _ManagedToolResult,
     _ToolCancelledResult,
+    _ToolTimeoutResult,
     _run_sequential_tool_execution_middleware,
 )
 
@@ -193,3 +194,51 @@ def test_never_parallel_tools_stay_inline(monkeypatch, fake_agent):
 
     assert managed.result == "ok"
     assert seen_thread and seen_thread[0] == threading.current_thread().ident
+
+
+def test_wait_for_human_outlives_the_generic_sequential_deadline(monkeypatch, fake_agent, _fast_polls):
+    """Default wait_for_human is 600 s; the generic sequential deadline is 420 s. Without an
+    action-scoped exemption the agent turn dies ~180 s early while the worker stays blocked."""
+    monkeypatch.setattr(tool_executor, "_SEQUENTIAL_INTERRUPT_POLL_SECONDS", 0.05)
+    monkeypatch.setattr(tool_executor, "_resolve_sequential_tool_timeout", lambda: 0.15)
+
+    def _fake_middleware(agent_arg, **kwargs):
+        time.sleep(0.4)
+        return _ManagedToolResult(
+            result="handoff-done", args=kwargs.get("function_args") or {},
+            middleware_trace=[], blocked=False, dispatched=True,
+        )
+
+    monkeypatch.setattr(tool_executor, "_run_agent_tool_execution_middleware", _fake_middleware)
+    managed = _run_sequential_tool_execution_middleware(
+        fake_agent,
+        function_name="computer_use",
+        function_args={"action": "wait_for_human", "seconds": 600},
+        effective_task_id="t",
+        tool_call_id="call_handoff",
+        execute=lambda a: "unused",
+    )
+    assert managed.result == "handoff-done"
+    assert not isinstance(managed.result, _ToolTimeoutResult)
+
+
+def test_computer_use_click_still_hits_the_sequential_deadline(monkeypatch, fake_agent, _fast_polls):
+    monkeypatch.setattr(tool_executor, "_SEQUENTIAL_INTERRUPT_POLL_SECONDS", 0.05)
+    monkeypatch.setattr(tool_executor, "_resolve_sequential_tool_timeout", lambda: 0.15)
+
+    def _fake_middleware(agent_arg, **kwargs):
+        time.sleep(0.5)
+        return _ManagedToolResult(
+            result="clicked", args={}, middleware_trace=[], blocked=False, dispatched=True,
+        )
+
+    monkeypatch.setattr(tool_executor, "_run_agent_tool_execution_middleware", _fake_middleware)
+    managed = _run_sequential_tool_execution_middleware(
+        fake_agent,
+        function_name="computer_use",
+        function_args={"action": "click", "element": 1},
+        effective_task_id="t",
+        tool_call_id="call_click",
+        execute=lambda a: "unused",
+    )
+    assert isinstance(managed.result, _ToolTimeoutResult)

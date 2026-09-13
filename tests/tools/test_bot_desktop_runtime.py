@@ -46,6 +46,26 @@ def test_recycled_pid_is_not_our_launcher(tmp_path, monkeypatch):
     assert runtime._launcher_pid() == os.getpid()
 
 
+def test_alloc_lock_is_not_a_fixed_name_in_world_writable_tmp(tmp_path, monkeypatch):
+    """A predictable ``/tmp/.hermes-bot-desktop-alloc.lock`` can be chmod-000 by a
+    co-tenant and wedge every profile's start(). Prefer XDG_RUNTIME_DIR, else a
+    uid-suffixed file under the process temp dir."""
+    monkeypatch.setattr(runtime, "_ALLOC_LOCK", None)
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    fallback = runtime._alloc_lock_path()
+    assert fallback != Path("/tmp/.hermes-bot-desktop-alloc.lock")
+    assert fallback.name.startswith("hermes-bot-desktop-alloc-")
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(run_dir))
+    assert runtime._alloc_lock_path() == run_dir / "hermes-bot-desktop-alloc.lock"
+
+    override = tmp_path / "tests.lock"
+    monkeypatch.setattr(runtime, "_ALLOC_LOCK", override)
+    assert runtime._alloc_lock_path() == override
+
+
 def test_recorded_display_held_by_a_live_server_is_not_reused(tmp_path, monkeypatch):
     """After profile A stops, B may take A's number; A restarting must pick another rather than
     unlink B's socket and lock."""

@@ -381,6 +381,21 @@ def _rewrite_browser_exec(td: Dict[str, Any], available: set) -> Optional[Dict[s
     return td if "terminal" in available else None
 
 
+def _rewrite_computer_use(td: Dict[str, Any], _available: set) -> Optional[Dict[str, Any]]:
+    """Drop Bot Screen handoff actions on hosts that cannot run a per-profile desktop.
+
+    ``computer_use`` itself stays (cua-driver on the real seat). Naming ``request_handoff``
+    / ``wait_for_human`` on macOS, Windows, or a headed Linux seat tells the model to
+    take over a screen that does not exist. Host identity is process-stable.
+    """
+    # Inline: model_tools import-time discovery must not pull the Bot Desktop stack.
+    from tools.bot_desktop.runtime import is_supported_host
+    from tools.computer_use.schema import schema_for_host
+    if is_supported_host():
+        return td
+    return _fn_def(schema_for_host(bot_desktop_supported=False))
+
+
 def _rewrite_delegate_task(td: Dict[str, Any], available: set) -> Optional[Dict[str, Any]]:
     """Trim the child-restrictions line to sibling tools actually present, or drop
     the line when none apply, so the model never learns ghost vocabulary. Two
@@ -461,6 +476,7 @@ _DYNAMIC_SCHEMA_REWRITERS = {
     "browser_vault_list": _rewrite_browser_vault,
     "browser_vault_fill": _rewrite_browser_vault,
     "delegate_task": _rewrite_delegate_task,
+    "computer_use": _rewrite_computer_use,
 }
 
 

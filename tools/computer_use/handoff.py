@@ -14,6 +14,7 @@ import json
 from typing import Any, Dict
 
 from tools.bot_desktop import lease as _lease
+from tools.bot_desktop.runtime import is_supported_host
 
 HANDOFF_ACTIONS = frozenset({"request_handoff", "wait_for_human"})
 _DEFAULT_WAIT_SECONDS = 600.0
@@ -22,6 +23,13 @@ _DEFAULT_GRACE_SECONDS = 60.0
 
 
 def handle_handoff(action: str, args: Dict[str, Any]) -> str:
+    if not is_supported_host():
+        return json.dumps({
+            "ok": False, "action": action, "code": "unsupported_host",
+            "error": "Bot Screen handoff is only available on a Linux gateway host. "
+                     "On this machine computer_use drives the local seat; there is no "
+                     "per-profile screen to take over or wait on.",
+        })
     if action == "request_handoff":
         reason = str(args.get("reason") or "The agent needs you to complete a step on its screen.").strip()
         _lease.request_handoff(reason)

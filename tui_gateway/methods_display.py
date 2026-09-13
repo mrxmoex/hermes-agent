@@ -161,10 +161,12 @@ def _(rid, params: dict) -> dict:
     if _bd_runtime.install_command() is None:
         return _err(rid, _DISPLAY_ERR, "no supported package manager (apt-get, dnf, pacman) on this host")
     profile_key = hermes_home_key()
-    sid = str(params.get("session_id") or "")
+    # Never honor a client-supplied session_id: write_json would deliver the sudo card
+    # to that session's transport (another chat / another window). Empty sid keeps the
+    # card on the RPC caller's current_transport — the client that clicked Install.
 
     def _ask_password() -> str:
-        return _block("display.install.sudo.request", sid, {"profile_key": profile_key}, timeout=300)
+        return _block("display.install.sudo.request", "", {"profile_key": profile_key}, timeout=300)
 
     def _line(text: str) -> None:
         _broadcast_global_event("display.install.log", {"profile_key": profile_key, "line": text})

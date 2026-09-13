@@ -8,7 +8,18 @@ than pixel coordinates, which remain supported for models trained on them.
 
 from __future__ import annotations
 
+import copy
 from typing import Any, Dict
+
+# Bot Screen handoff: only meaningful on a Linux gateway that can run the per-profile
+# desktop. Stripped from the live schema on other hosts so the model is not told to
+# "take over this screen from Hermes Desktop" where no such screen exists.
+_HANDOFF_ACTIONS = ("request_handoff", "wait_for_human")
+_HANDOFF_ACTION_BLURB = (
+    " When a login, 2FA, CAPTCHA or payment step needs the human, call "
+    "`request_handoff` (with `reason`) so they can take over this screen from the Hermes "
+    "Desktop app, then `wait_for_human`; while they hold control every other action is refused."
+)
 
 # One consolidated tool with an `action` discriminator keeps the schema compact
 # and the per-turn token cost low. Property groups: capture (mode, app, pid,
@@ -39,9 +50,7 @@ _PROPERTIES: Dict[str, Any] = {
             "Which action to perform. `capture` is free (no side effects). All other actions "
             "require approval unless auto-approved. Use `set_value` for select/popup elements and "
             "sliders — it selects the matching option directly without opening the native menu (no "
-            "focus steal). When a login, 2FA, CAPTCHA or payment step needs the human, call "
-            "`request_handoff` (with `reason`) so they can take over this screen from the Hermes "
-            "Desktop app, then `wait_for_human`; while they hold control every other action is refused."
+            f"focus steal).{_HANDOFF_ACTION_BLURB}"
         ),
     },
     "mode": {
@@ -212,3 +221,19 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
 def get_computer_use_schema() -> Dict[str, Any]:
     """Return the generic OpenAI function-calling schema."""
     return COMPUTER_USE_SCHEMA
+
+
+def schema_for_host(*, bot_desktop_supported: bool) -> Dict[str, Any]:
+    """Live schema for this host. Handoff actions stay on Linux Bot Screen hosts only.
+
+    The module-level ``COMPUTER_USE_SCHEMA`` is the full catalog (tests and docs);
+    this copy is what ``get_tool_definitions`` ships. Host identity is process-stable,
+    so the rewrite does not break per-conversation prompt cache.
+    """
+    if bot_desktop_supported:
+        return COMPUTER_USE_SCHEMA
+    schema = copy.deepcopy(COMPUTER_USE_SCHEMA)
+    action = schema["parameters"]["properties"]["action"]
+    action["enum"] = [name for name in action["enum"] if name not in _HANDOFF_ACTIONS]
+    action["description"] = action["description"].replace(_HANDOFF_ACTION_BLURB, "")
+    return schema

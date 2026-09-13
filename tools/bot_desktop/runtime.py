@@ -21,6 +21,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -167,7 +168,25 @@ def _display_in_use(num: int) -> bool:
     return _pid_alive(pid)
 
 
-_ALLOC_LOCK = Path("/tmp/.hermes-bot-desktop-alloc.lock")  # host-wide: profiles allocate from one band
+# Tests assign a Path here; production resolves a user-owned location at use time so a
+# predictable name in world-writable /tmp cannot chmod-000 and wedge every profile.
+_ALLOC_LOCK: Optional[Path] = None
+
+
+def _alloc_lock_path() -> Path:
+    """Host-wide display-band lock. Prefer ``XDG_RUNTIME_DIR`` (0700, per-user); fall back
+    to a uid-suffixed file under the process temp dir. Never a fixed name in ``/tmp``.
+
+    ``os.getuid`` is looked up at call time so importing this module on Windows (where
+    Bot Screen is unsupported but ``computer_use`` still imports runtime) does not crash.
+    """
+    if _ALLOC_LOCK is not None:
+        return _ALLOC_LOCK
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
+    if runtime_dir:
+        return Path(runtime_dir) / "hermes-bot-desktop-alloc.lock"
+    uid = getattr(os, "getuid", lambda: 0)()
+    return Path(tempfile.gettempdir()) / f"hermes-bot-desktop-alloc-{uid}.lock"
 
 
 @contextlib.contextmanager
@@ -194,7 +213,7 @@ def _pick_display() -> int:
 
 
 def _allocate_display() -> int:
-    with _flocked(_ALLOC_LOCK):
+    with _flocked(_alloc_lock_path()):
         return _pick_display()
 
 
@@ -307,7 +326,7 @@ def start(*, wait_seconds: float = 15.0) -> DesktopStatus:
     with _flocked(sd / "start.lock"):
         if _launcher_pid() is not None and published_env().get("DISPLAY"):
             return status()
-        with _flocked(_ALLOC_LOCK):
+        with _flocked(_alloc_lock_path()):
             return _spawn_and_wait(sd, _pick_display(), wait_seconds)
 
 

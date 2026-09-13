@@ -108,14 +108,16 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
     retention.current = null
   }, [])
 
-  const attach = useCallback(async () => {
+  const attach = useCallback(async (opts?: { resumeWatch?: boolean }) => {
     if (!canvasHost.current) {
       return
     }
 
     detach()
     const generation = attachGeneration.current
-    setConn('attaching')
+    if (!opts?.resumeWatch) {
+      setConn('attaching')
+    }
     setError(null)
 
     try {
@@ -178,6 +180,11 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
 
         if (closeCode === CLOSE_CONTROL_TAKEN || reason.includes('control-taken')) {
           setConn('control-taken')
+          // Overlay stays until the replacement stream connects (`resumeWatch`
+          // skips the attaching spinner). A fresh observe mints a new watcher
+          // id, so the next attach is not evicted again unless someone else
+          // takes over after we are back in watch mode.
+          void attach({ resumeWatch: true })
         } else if (event.detail?.clean) {
           setConn('idle')
         } else {

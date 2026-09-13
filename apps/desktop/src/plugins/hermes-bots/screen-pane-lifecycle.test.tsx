@@ -197,5 +197,7 @@ it('shows the control-taken overlay from the bridge close code, which noVNC does
     rfbs[0].emit('disconnect', { clean: true })
   })
   expect(view.getByText('Another viewer took control')).toBeTruthy()
+  await waitFor(() => expect(sockets).toHaveLength(2))
+  expect(sockets[1].closed).toBe(false)
   view.unmount()
 })
