@@ -507,6 +507,14 @@ def _attach_vault_supervisor(env: dict, task_id: Optional[str]) -> None:
     if not cdp:
         return
     try:
+        from tools.bot_desktop.lease import HumanHasControl
+        from tools.browser_tool_session import _admit_shared_browser
+        _admit_shared_browser(cdp_url=cdp)
+    except HumanHasControl:
+        return
+    except Exception:
+        return
+    try:
         from tools.browser_supervisor import SUPERVISOR_REGISTRY
         from tools.browser_tool_cdp import _get_dialog_policy_config, _resolve_cdp_override
         policy, timeout_s = _get_dialog_policy_config()

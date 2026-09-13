@@ -178,7 +178,7 @@ def _ensure_cdp_supervisor(task_id: str) -> None:
     except HumanHasControl:
         return
     except Exception:
-        pass
+        return
     if raw:
         cdp_url = _get_cdp_override() or ""
     else:
@@ -191,7 +191,7 @@ def _ensure_cdp_supervisor(task_id: str) -> None:
             if not supervisor_may_touch_page(cdp_url):
                 return
         except Exception:
-            pass
+            return
     try:
         from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
         from tools.browser_tool_session import _shares_bot_desktop_browser

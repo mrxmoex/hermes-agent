@@ -367,7 +367,6 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         disconnects, so on drop we reset per-session ids, re-attach, and keep going.
         A failure before the first successful attach is fatal for ``start()``."""
         attempt, last_success_at, backoff = 0, 0.0, 0.5
-        import websockets  # deferred: only supervisors that connect pay the import
         while not self._stop_requested:
             # Cross-process Take over can land while this loop is between
             # sockets. Reconnect would Target.attach / Target.createTarget on
@@ -387,8 +386,15 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
                     self._stop_requested = True
                     return
             except Exception:
-                pass
+                if getattr(self, "targets_bot_desktop", None) is True:
+                    logger.info(
+                        "CDP supervisor %s: not (re)connecting; dock lease check failed closed",
+                        self.task_id,
+                    )
+                    self._stop_requested = True
+                    return
             try:
+                import websockets  # deferred: only supervisors that connect pay the import
                 self._ws = await asyncio.wait_for(websockets.connect(self.cdp_url, max_size=50 * 1024 * 1024), timeout=10.0)
             except Exception as e:
                 attempt += 1
@@ -484,7 +490,14 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
                         await self._close_ws()
                         return
                 except Exception:
-                    pass
+                    if getattr(self, "targets_bot_desktop", None) is True:
+                        logger.info(
+                            "CDP supervisor %s: detaching; dock lease check failed closed",
+                            self.task_id,
+                        )
+                        self._stop_requested = True
+                        await self._close_ws()
+                        return
                 await asyncio.sleep(LEASE_POLL_S)
 
         poller = asyncio.create_task(_poll_lease_while_idle(), name="cdp-lease-poll")
@@ -503,7 +516,13 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
                             )
                             break
                     except Exception:
-                        pass
+                        if getattr(self, "targets_bot_desktop", None) is True:
+                            logger.info(
+                                "CDP supervisor %s: detaching; dock lease check failed closed",
+                                self.task_id,
+                            )
+                            self._stop_requested = True
+                            break
                 try:
                     msg = json.loads(raw)
                 except Exception:

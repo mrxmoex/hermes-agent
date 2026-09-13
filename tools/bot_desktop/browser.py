@@ -118,7 +118,62 @@ def running_instance_cdp_port(user_data_dir: str, *, exclude_session: Optional[s
             pass
     except OSError:
         return None
+    try:
+        if Path(user_data_dir).resolve() == profile_dir().resolve():
+            remember_dock_cdp_port(port)
+    except OSError:
+        pass
     return port
+
+
+_DOCK_PORT_FILE = "dock-cdp-port"
+
+
+def _dock_port_path() -> Path:
+    return runtime.state_dir() / _DOCK_PORT_FILE
+
+
+def remember_dock_cdp_port(port: int) -> None:
+    """Persist the last live dock DevTools port for this profile.
+
+    Take over can unlink ``DevToolsActivePort`` while Chromium is still up.
+    A later process that never saw the live probe still has to treat this
+    port as the dock — not another Chrome.
+    """
+    if not isinstance(port, int) or not (1 <= port <= 65535):
+        return
+    path = _dock_port_path()
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            path.parent.chmod(0o700)
+        except OSError:
+            pass
+        tmp.write_text(str(port), encoding="utf-8")
+        try:
+            os.chmod(tmp, 0o600)
+        except OSError:
+            pass
+        os.replace(tmp, path)
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+    except OSError:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+
+
+def last_known_dock_cdp_port() -> Optional[int]:
+    """Last persisted dock DevTools port for this profile, or ``None``."""
+    try:
+        port = int(_dock_port_path().read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
+    return port if 1 <= port <= 65535 else None
 
 
 def _launched_by_session(chromium_pid: int) -> Optional[str]:

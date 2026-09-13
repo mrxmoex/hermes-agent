@@ -87,7 +87,10 @@ def supervisor_may_touch_page(
     except HumanHasControl:
         return False
     except Exception:
-        return True
+        # Cannot evaluate the lease — leftover I/O must not keep talking to
+        # a jar a human may be typing into. Unrelated CDP is refused too:
+        # admit returns None for another browser; an exception is not that.
+        return False
 
 
 def request_leftover_stop(supervisor) -> bool:

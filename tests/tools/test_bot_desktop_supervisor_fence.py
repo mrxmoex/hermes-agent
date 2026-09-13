@@ -383,3 +383,92 @@ def test_missing_devtools_port_still_stops_stamped_dock_supervisor(monkeypatch):
     lease.acquire("human-viewer")
     stop_reserved_supervisors()
     assert stopped == ["review"]
+
+
+def test_supervisor_may_touch_page_fails_closed_when_admit_raises(monkeypatch):
+    """Leftover I/O must stop if the lease helper cannot decide, not keep talking."""
+    from tools.browser_tool_supervisor_lease import request_leftover_stop, supervisor_may_touch_page
+
+    monkeypatch.setattr(
+        "tools.browser_tool_session._admit_shared_browser",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("lease helper exploded")),
+    )
+    assert supervisor_may_touch_page("ws://127.0.0.1:9333/devtools/browser/x") is False
+    assert supervisor_may_touch_page("wss://browserbase.example/cdp") is False
+    dock = MagicMock()
+    dock.cdp_url = "ws://127.0.0.1:9333/devtools/browser/x"
+    dock._stop_requested = False
+    assert request_leftover_stop(dock) is True
+    assert dock._stop_requested is True
+
+
+def test_ensure_cdp_supervisor_does_not_probe_when_lease_check_raises(monkeypatch):
+    """Discovery is observation; an exploded admit must not HTTP the candidate."""
+    from tools import browser_tool_cdp as cdp
+
+    probed = []
+    started = []
+    monkeypatch.setattr(cdp, "_get_cdp_override_raw", lambda: "http://127.0.0.1:9333")
+    monkeypatch.setattr(
+        cdp, "_get_cdp_override",
+        lambda: probed.append("override") or "ws://127.0.0.1:9333/devtools/browser/x",
+    )
+    monkeypatch.setattr(
+        "tools.browser_tool_supervisor_lease.supervisor_may_touch_page",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("lease helper exploded")),
+    )
+    import tools.browser_supervisor as bs
+    registry = MagicMock()
+    registry.get_or_start.side_effect = lambda **k: started.append(k)
+    monkeypatch.setattr(bs, "SUPERVISOR_REGISTRY", registry)
+    cdp._ensure_cdp_supervisor("review")
+    assert probed == []
+    assert started == []
+
+
+def test_dock_supervisor_does_not_reconnect_when_lease_check_raises(monkeypatch):
+    """A stamped dock leftover must not open a new WS if admit cannot run."""
+    import tools.bot_desktop.browser as bdb
+    from tools.browser_supervisor import CDPSupervisor
+
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: 9333)
+    sup = CDPSupervisor(task_id="review", cdp_url="ws://127.0.0.1:9333/devtools/browser/x")
+    assert sup.targets_bot_desktop is True
+    monkeypatch.setattr(
+        "tools.browser_tool_supervisor_lease.supervisor_may_touch_page",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("lease helper exploded")),
+    )
+    asyncio.run(sup._run())
+    assert sup._stop_requested is True
+    assert sup._ws is None
+
+
+def test_read_loop_detaches_idle_dock_when_lease_check_raises(monkeypatch):
+    """A quiet dock leftover must drop if the idle poller cannot evaluate the lease."""
+    import tools.bot_desktop.browser as bdb
+    from tools.browser_supervisor import CDPSupervisor
+
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: 9333)
+
+    class _QuietWS:
+        def __init__(self):
+            self._closed = asyncio.Event()
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            await self._closed.wait()
+            raise StopAsyncIteration
+
+        async def close(self):
+            self._closed.set()
+
+    sup = CDPSupervisor(task_id="review", cdp_url="ws://127.0.0.1:9333/devtools/browser/x")
+    sup._ws = _QuietWS()
+    monkeypatch.setattr(
+        "tools.browser_tool_supervisor_lease.request_leftover_stop",
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("lease helper exploded")),
+    )
+    asyncio.run(sup._read_loop())
+    assert sup._stop_requested is True

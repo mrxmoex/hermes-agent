@@ -766,6 +766,114 @@ def test_remembered_dock_port_still_fences_when_devtools_file_is_gone(monkeypatc
     assert _admit_shared_browser(cdp_url=other) is None
 
 
+def test_persisted_dock_port_fences_a_cold_process_after_devtools_miss(monkeypatch):
+    """In-memory last-known dies with the process; the on-disk port must still fence."""
+    import tools.bot_desktop.browser as bdb
+    from tools.bot_desktop.lease import HumanHasControl
+    from tools.browser_tool_session import (
+        _admit_shared_browser,
+        _cdp_url_is_bot_desktop_browser,
+        _last_dock_cdp_port,
+    )
+
+    dock = "ws://127.0.0.1:9333/devtools/browser/x"
+    other = "ws://127.0.0.1:9222/devtools/browser/x"
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: 9333)
+    assert _cdp_url_is_bot_desktop_browser(dock) is True
+    _last_dock_cdp_port.clear()
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: None)
+    lease.acquire("human-viewer")
+    assert _cdp_url_is_bot_desktop_browser(dock) is True
+    assert _cdp_url_is_bot_desktop_browser(other) is False
+    with pytest.raises(HumanHasControl):
+        _admit_shared_browser(cdp_url=dock)
+    assert _admit_shared_browser(cdp_url=other) is None
+
+
+def test_persisted_dock_port_does_not_leak_to_a_sibling_profile(monkeypatch, tmp_path):
+    """A dock port stamped under one HERMES_HOME must not fence another bot's Chrome."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    import tools.bot_desktop.browser as bdb
+    from tools.browser_tool_session import (
+        _cdp_url_is_bot_desktop_browser,
+        _last_dock_cdp_port,
+    )
+
+    home_a = tmp_path / "a"
+    home_b = tmp_path / "b"
+    home_a.mkdir()
+    home_b.mkdir()
+    dock = "ws://127.0.0.1:9333/devtools/browser/x"
+    token_a = set_hermes_home_override(home_a)
+    try:
+        monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: 9333)
+        assert _cdp_url_is_bot_desktop_browser(dock) is True
+        _last_dock_cdp_port.clear()
+        monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: None)
+        assert _cdp_url_is_bot_desktop_browser(dock) is True
+    finally:
+        reset_hermes_home_override(token_a)
+    _last_dock_cdp_port.clear()
+    token_b = set_hermes_home_override(home_b)
+    try:
+        monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: None)
+        assert _cdp_url_is_bot_desktop_browser(dock) is False
+    finally:
+        reset_hermes_home_override(token_b)
+
+
+def test_vault_supervisor_attach_does_not_probe_when_admit_raises(monkeypatch):
+    """An unexpected admit failure must not fall through to HTTP /json/version."""
+    from tools import browser_use_cli as bu
+
+    probed = []
+    started = []
+    monkeypatch.setattr(
+        "tools.browser_tool_session._admit_shared_browser",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("lease helper exploded")),
+    )
+    monkeypatch.setattr(
+        "tools.browser_tool_cdp._resolve_cdp_override",
+        lambda url: probed.append(url) or url,
+    )
+    import tools.browser_supervisor as bs
+    registry = __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock()
+    registry.get_or_start.side_effect = lambda **k: started.append(k)
+    monkeypatch.setattr(bs, "SUPERVISOR_REGISTRY", registry)
+    bu._attach_vault_supervisor(
+        {"BU_CDP_WS": "ws://127.0.0.1:9333/devtools/browser/x"}, "review",
+    )
+    assert probed == []
+    assert started == []
+
+
+def test_vault_supervisor_attach_does_not_probe_dock_while_human_holds(monkeypatch):
+    """browser_exec leftover attach used to HTTP /json/version after admit returned None."""
+    import tools.bot_desktop.browser as bdb
+    from tools import browser_use_cli as bu
+
+    probed = []
+    started = []
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: 9333)
+    from tools.browser_tool_session import _cdp_url_is_bot_desktop_browser
+    assert _cdp_url_is_bot_desktop_browser("ws://127.0.0.1:9333/devtools/browser/x") is True
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "tools.browser_tool_cdp._resolve_cdp_override",
+        lambda url: probed.append(url) or url,
+    )
+    import tools.browser_supervisor as bs
+    registry = __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock()
+    registry.get_or_start.side_effect = lambda **k: started.append(k)
+    monkeypatch.setattr(bs, "SUPERVISOR_REGISTRY", registry)
+    lease.acquire("human-viewer")
+    bu._attach_vault_supervisor(
+        {"BU_CDP_WS": "ws://127.0.0.1:9333/devtools/browser/x"}, "review",
+    )
+    assert probed == []
+    assert started == []
+
+
 def test_browser_cdp_remembers_dock_port_when_devtools_file_is_gone(monkeypatch):
     """browser_cdp must not HTTP-probe the remembered dock after the port file vanishes."""
     import tools.bot_desktop.browser as bdb

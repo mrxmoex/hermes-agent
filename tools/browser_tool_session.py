@@ -681,6 +681,11 @@ _last_dock_cdp_port: Dict[str, int] = {}
 
 def _reset_dock_port_memory_for_tests() -> None:
     _last_dock_cdp_port.clear()
+    try:
+        from tools.bot_desktop import browser as _bd_browser
+        _bd_browser._dock_port_path().unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def _cdp_url_is_bot_desktop_browser(cdp_url: str) -> bool:
@@ -700,8 +705,13 @@ def _cdp_url_is_bot_desktop_browser(cdp_url: str) -> bool:
     key = hermes_home_key()
     if live is not None:
         _last_dock_cdp_port[key] = live
+        _bd_browser.remember_dock_cdp_port(live)
         return live == want
     remembered = _last_dock_cdp_port.get(key)
+    if remembered is None:
+        remembered = _bd_browser.last_known_dock_cdp_port()
+        if remembered is not None:
+            _last_dock_cdp_port[key] = remembered
     return remembered is not None and remembered == want
 
 
