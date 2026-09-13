@@ -383,6 +383,19 @@ DANGEROUS_PATTERNS = [
     # (``ln jar /tmp`` / ``rsync jar /tmp``) stay unflagged — same-UID read.
     (rf'\bln\b.*\s["\']?{_SENSITIVE_WRITE_TARGET}[^\s"\']*["\']?{_COMMAND_TAIL}', "link into sensitive credential/SSH/shell-rc path"),
     (rf'\brsync\b.*\s["\']?{_SENSITIVE_WRITE_TARGET}[^\s"\']*["\']?{_COMMAND_TAIL}', "rsync into sensitive credential/SSH/shell-rc path"),
+    # dest-last extract/copy siblings of dest-first 7z/curl: unrar/rar put dest
+    # last; lz4 -d SRC DEST; rclone copy/sync/move DEST last.
+    (rf'\b(?:unrar|rar)\b[^\n]*\s(?:x|e)\b.*\s["\']?{_SENSITIVE_WRITE_TARGET}[^\s"\']*["\']?{_COMMAND_TAIL}',
+     "extract archive into sensitive path"),
+    (rf'\blz4\b[^\n]*\s(?:-d|--decompress)\b.*\s["\']?{_SENSITIVE_WRITE_TARGET}[^\s"\']*["\']?{_COMMAND_TAIL}',
+     "overwrite system file via lz4"),
+    (rf'\brclone\b\s+(?:copy|copyto|sync|move|moveto)\b.*\s["\']?{_SENSITIVE_WRITE_TARGET}[^\s"\']*["\']?{_COMMAND_TAIL}',
+     "rclone into sensitive path"),
+    # last OPEN: address is dest (`socat -u SRC OPEN:lease.json`). Source-only
+    # `OPEN:lease OPEN:/tmp` stays unflagged (same-UID read). The negative
+    # lookahead refuses a sensitive OPEN: that is not the last address.
+    (rf'\bsocat\b[^\n]*\bopen:["\']?{_SENSITIVE_WRITE_TARGET}(?![^\n]*\bopen:)',
+     "overwrite system file via socat"),
     # In-place edits mutate the file directly, bypassing redirection/tee/cp coverage; gate the same
     # startup/credential files.
     (rf'\bsed\s+-[^\s]*i.*(?:{_USER_SENSITIVE_WRITE_TARGET})[^\s"\']*', "in-place edit of sensitive credential/SSH/shell-rc path"),
@@ -488,7 +501,13 @@ DEST_FIRST_SENSITIVE_PATTERNS = [
      "extract archive into sensitive path"),
     (rf'\b(?:bsd)?tar\b[^\n]*\s{_DEST_FIRST_TAR_DIR}[=\s]*["\']?{_DEST_FIRST_WRITE_TARGET}[^\n]*\s{_DEST_FIRST_TAR_EXTRACT}\b',
      "extract archive into sensitive path"),
-    (rf'\bunzip\b[^\n]*\s(?-i:-d)[=\s]*["\']?{_DEST_FIRST_WRITE_TARGET}',
+    (rf'\b(?:unzip|cabextract)\b[^\n]*\s(?-i:-d)[=\s]*["\']?{_DEST_FIRST_WRITE_TARGET}',
+     "extract archive into sensitive path"),
+    (rf'\bunar\b[^\n]*\s(?-i:-o)[=\s]*["\']?{_DEST_FIRST_WRITE_TARGET}',
+     "extract archive into sensitive path"),
+    (rf'\blz4\b[^\n]*\s(?-i:-o)[=\s]*["\']?{_DEST_FIRST_WRITE_TARGET}',
+     "overwrite system file via lz4"),
+    (rf'\bcpio\b[^\n]*\s(?:(?-i:-D)|--directory)[=\s]*["\']?{_DEST_FIRST_WRITE_TARGET}',
      "extract archive into sensitive path"),
     # 7-Zip `-o{dir}` is glued (`-oDEST`) or spaced. Extract only (`x`/`e`);
     # `7z a` / `7z l` stay out. Short `-o` is case-preserved so it does not

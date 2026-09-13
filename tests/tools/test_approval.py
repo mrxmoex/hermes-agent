@@ -449,6 +449,20 @@ class TestHermesBotDesktopWriteProtection:
             "sponge ~/.hermes/bot-desktop/lease.json",
             "cat /tmp/evil | sponge $HERMES_HOME/bot-desktop/lease.json",
             "moreutils sponge ~/.hermes/bot-desktop/dock-cdp-port",
+            # dest-last extract/copy + dest-first unar/cabextract/lz4/cpio
+            "unrar x /tmp/e.rar ~/.hermes/bot-desktop",
+            "rar x /tmp/e.rar $HERMES_HOME/bot-desktop",
+            "unar -o ~/.hermes/bot-desktop /tmp/e.zip",
+            "unar /tmp/e.zip -o $HERMES_HOME/bot-desktop",
+            "cabextract -d ~/.hermes/bot-desktop /tmp/e.cab",
+            "lz4 -d /tmp/e.lz4 ~/.hermes/bot-desktop/lease.json",
+            "lz4 -d -o ~/.hermes/bot-desktop/lease.json /tmp/e.lz4",
+            "rclone copy /tmp/e ~/.hermes/bot-desktop/",
+            "rclone copyto /tmp/e $HERMES_HOME/bot-desktop/lease.json",
+            "rclone sync /tmp/e/ ~/.hermes/bot-desktop/",
+            "socat -u OPEN:/tmp/e OPEN:~/.hermes/bot-desktop/lease.json,creat,trunc",
+            "cpio -id -D ~/.hermes/bot-desktop < /tmp/e.cpio",
+            "cpio -id --directory $HERMES_HOME/bot-desktop",
         ):
             dangerous, key, desc = detect_dangerous_command(command)
             assert dangerous is True, command
@@ -490,6 +504,15 @@ class TestHermesBotDesktopWriteProtection:
             "zstd -d -o /tmp/out /tmp/e",
             "sponge /tmp/out",
             "cat /tmp/e | sponge /tmp/out",
+            "unrar x /tmp/e.rar /tmp/out",
+            "unar -o /tmp/out /tmp/e.zip",
+            "cabextract -d /tmp/out /tmp/e.cab",
+            "lz4 -d /tmp/e.lz4 /tmp/out",
+            "rclone copy /tmp/e /tmp/out/",
+            "rclone copy ~/.hermes/bot-desktop /tmp/stolen",
+            "socat -u OPEN:/tmp/e OPEN:/tmp/out,creat",
+            "socat -u OPEN:~/.hermes/bot-desktop/lease.json OPEN:/tmp/out",
+            "cpio -id -D /tmp/out < /tmp/e.cpio",
         ):
             dangerous, key, desc = detect_dangerous_command(cmd)
             assert dangerous is False, cmd
