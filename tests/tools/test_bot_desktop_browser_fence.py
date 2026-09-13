@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -543,6 +544,38 @@ def test_browser_exec_does_not_overlay_dock_supervisor_on_cloud_route(monkeypatc
         browser._active_sessions.pop(key, None)
     assert ran, "cloud-routed exec was fenced by a leftover dock supervisor"
     assert result.get("success") is True
+
+
+def test_browser_exec_readmits_surviving_real_profile_copy_after_cloud_skip(monkeypatch):
+    """Cache-empty real-profile resolve still lands on the surviving copy CDP."""
+    token = _without_in_process_real_profile()
+    _live_real_profile_copy(monkeypatch)
+    ran: list = []
+    rp_cdp = "http://127.0.0.1:9334"
+    _predict_cloud(monkeypatch)
+    monkeypatch.setattr(bu_cli, "_find_cli", lambda: ["/usr/bin/browser-use"])
+    monkeypatch.setattr(bu_cli, "_attach_vault_supervisor", lambda *a, **k: None)
+
+    def route(env, *_a, **_k):
+        env["BU_CDP_URL"] = rp_cdp
+        return None
+
+    monkeypatch.setattr(bu_cli, "_route_backend", route)
+
+    def run_then_takeover(*_a, **_k):
+        ran.append("cli")
+        lease.acquire("human-viewer")
+        lease.release("human-viewer")
+        return subprocess.CompletedProcess(["browser-use"], 0, "WHAT-THE-HUMAN-TYPED\n", "")
+
+    monkeypatch.setattr(bu_cli, "_run_cli_killing_process_group", run_then_takeover)
+    try:
+        result = json.loads(bu_cli.browser_exec("print(1)", task_id="review", local=True))
+    finally:
+        _restore_in_process_real_profile(token)
+    assert "WHAT-THE-HUMAN-TYPED" not in json.dumps(result)
+    assert result.get("code") == "human_has_control"
+    assert result.get("success") is not True
 
 
 def test_browser_exec_readmits_real_profile_cache_hit_after_cloud_skip(monkeypatch):
@@ -1611,6 +1644,54 @@ def _is_dock_cdp(url, **_k):
     return "45555" in (url or "")
 
 
+def _without_in_process_real_profile():
+    """Drop process-local real-profile identity; return a restore token."""
+    from tools import browser_tool as browser
+
+    key = browser._REAL_PROFILE_SESSION
+    prior_session = browser._active_sessions.pop(key, None)
+    prior_cache = browser._real_profile_cdp_cache.pop("cdp", None)
+    return key, prior_session, prior_cache
+
+
+def _restore_in_process_real_profile(token):
+    from tools import browser_tool as browser
+
+    key, prior_session, prior_cache = token
+    if prior_session is None:
+        browser._active_sessions.pop(key, None)
+    else:
+        browser._active_sessions[key] = prior_session
+    if prior_cache is None:
+        browser._real_profile_cdp_cache.pop("cdp", None)
+    else:
+        browser._real_profile_cdp_cache["cdp"] = prior_cache
+
+
+def _live_real_profile_copy(monkeypatch, port=9334, browser="chrome"):
+    """A surviving snapshot Chrome on ``{HERMES_HOME}/browser-profile/<browser>``.
+
+    Cache / leftover ``hermes-real-profile`` rows are gone (process restart).
+    Identity is the copy dir's live DevTools port — same probe as the dock.
+    """
+    from hermes_constants import get_hermes_home
+
+    copy = get_hermes_home() / "browser-profile" / browser
+    copy.mkdir(parents=True, exist_ok=True)
+
+    def _port(user_data_dir, **_k):
+        try:
+            if Path(user_data_dir).resolve() == copy.resolve():
+                return port
+        except OSError:
+            return None
+        return None
+
+    monkeypatch.setattr("tools.bot_desktop.browser.running_instance_cdp_port", _port)
+    monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", lambda url, **k: False)
+    return copy
+
+
 def test_predicted_dock_cdp_override_is_shared(monkeypatch):
     """``/browser connect`` to the live dock port is this screen, not 'another browser'."""
     monkeypatch.setattr(session_mod._cdp, "_get_cdp_override_raw", lambda: _DOCK_CDP)
@@ -1821,6 +1902,25 @@ def test_cdp_override_session_is_fenced_when_url_is_real_profile(monkeypatch):
     assert result.get("code") == "human_has_control"
 
 
+def test_cdp_override_session_is_fenced_when_url_is_surviving_real_profile_copy(monkeypatch):
+    """Cache-empty ``cdp_override`` session whose URL is the surviving copy."""
+    token = _without_in_process_real_profile()
+    _live_real_profile_copy(monkeypatch)
+    commands: list = []
+    browser, session = _wire(monkeypatch, commands)
+    rp_ws = "ws://127.0.0.1:9334/devtools/browser/real"
+    monkeypatch.setattr(session._cdp, "_get_cdp_override_raw", lambda: rp_ws)
+    monkeypatch.setattr(session, "_get_session_info", lambda *a: {
+        "session_name": "cdp_1", "cdp_url": rp_ws, "features": {"cdp_override": True}})
+    lease.acquire("human-viewer")
+    try:
+        result = json.loads(browser.browser_click("e1", task_id="review"))
+    finally:
+        _restore_in_process_real_profile(token)
+    assert commands == [], f"human holds the lease, yet surviving copy CDP was dispatched: {commands}"
+    assert result.get("code") == "human_has_control"
+
+
 def test_cdp_override_session_is_not_fenced_when_url_is_foreign(monkeypatch):
     commands: list = []
     browser, session = _wire(monkeypatch, commands)
@@ -1908,6 +2008,72 @@ def test_create_cdp_session_allows_foreign_endpoint_with_leftover_real_profile(m
         assert info["features"]["cdp_override"] is True
     finally:
         browser._real_profile_cdp_cache.pop("cdp", None)
+
+
+def test_surviving_real_profile_copy_is_shared_without_cache(monkeypatch):
+    """Copy-dir Chrome survives a process restart; cache / leftover row do not.
+
+    ``/browser connect`` then labels that attach ``cdp_override``. Dock- and
+    cache-only identity treated it as user Chrome.
+    """
+    token = _without_in_process_real_profile()
+    _live_real_profile_copy(monkeypatch)
+    rp_ws = "ws://127.0.0.1:9334/devtools/browser/real"
+    try:
+        assert session_mod._shares_bot_desktop_browser({"cdp_url": rp_ws})
+        assert session_mod._shares_bot_desktop_browser({"cdp_url": "http://127.0.0.1:9334"})
+        assert not session_mod._shares_bot_desktop_browser({"cdp_url": _FOREIGN_CDP})
+    finally:
+        _restore_in_process_real_profile(token)
+
+
+def test_predicted_surviving_real_profile_override_is_shared(monkeypatch):
+    """Cache-empty ``/browser connect`` to the surviving copy is this screen."""
+    token = _without_in_process_real_profile()
+    _live_real_profile_copy(monkeypatch)
+    rp_ws = "ws://127.0.0.1:9334/devtools/browser/real"
+    monkeypatch.setattr(session_mod._cdp, "_get_cdp_override_raw", lambda: rp_ws)
+    try:
+        assert session_mod._predicted_local_shared_browser("review") is True
+        lease.acquire("human-viewer")
+        _admitted, refuse = session_mod._shared_browser_fence("review")
+        assert refuse is not None
+        assert refuse.get("code") == "human_has_control"
+    finally:
+        _restore_in_process_real_profile(token)
+
+
+def test_surviving_real_profile_supervisor_is_shared_when_cloud_is_predicted(monkeypatch):
+    """Predicted-cloud skip + cache-empty supervisor on the surviving copy."""
+    token = _without_in_process_real_profile()
+    _live_real_profile_copy(monkeypatch)
+    rp_ws = "ws://127.0.0.1:9334/devtools/browser/real"
+    _predict_cloud(monkeypatch)
+    _install_supervisor(monkeypatch, rp_ws)
+    try:
+        assert session_mod._predicted_local_shared_browser("cloud-task") is False
+        lease.acquire("human-viewer")
+        _admitted, refuse = session_mod._shared_browser_fence("cloud-task")
+        assert refuse is not None
+        assert refuse.get("code") == "human_has_control"
+    finally:
+        _restore_in_process_real_profile(token)
+
+
+def test_create_cdp_session_refuses_surviving_real_profile_copy(monkeypatch):
+    """``_create_cdp_session`` must refuse the surviving copy, not only cache."""
+    token = _without_in_process_real_profile()
+    _live_real_profile_copy(monkeypatch)
+    rp_ws = "ws://127.0.0.1:9334/devtools/browser/real"
+    lease.acquire("human-viewer")
+    try:
+        with pytest.raises(lease.HumanHasControl, match="human holds"):
+            session_mod._create_cdp_session("review", rp_ws)
+        info = session_mod._create_cdp_session("review", _FOREIGN_CDP)
+        assert info["cdp_url"] == _FOREIGN_CDP
+        assert info["features"]["cdp_override"] is True
+    finally:
+        _restore_in_process_real_profile(token)
 
 
 def _cloud_provider_that_fails():
@@ -2447,6 +2613,27 @@ def test_browser_cdp_stale_real_profile_cache_does_not_fence_foreign_endpoint(mo
         browser._real_profile_cdp_cache.pop("cdp", None)
     assert ran == ["cdp"], f"foreign CDP was refused by a stale real-profile cache: {result}"
     assert result.get("success") is True
+
+
+def test_browser_cdp_stateless_surviving_real_profile_copy_is_fenced(monkeypatch):
+    """Stateless CDP after process restart: copy dir is live, cache is empty."""
+    token = _without_in_process_real_profile()
+    _live_real_profile_copy(monkeypatch)
+    ran: list = []
+    rp_ws = "ws://127.0.0.1:9334/devtools/browser/rp"
+    monkeypatch.setattr(browser_cdp_tool, "_resolve_cdp_endpoint", lambda: rp_ws)
+    monkeypatch.setattr(
+        browser_cdp_tool, "_run_async",
+        lambda *_a, **_k: ran.append("cdp") or {"secret": "WHAT-THE-HUMAN-TYPED"},
+    )
+    monkeypatch.setattr(browser_cdp_tool, "_browser_cdp_private_guard", lambda **_k: None)
+    lease.acquire("human-viewer")
+    try:
+        result = json.loads(browser_cdp_tool.browser_cdp(method="Target.getTargets", task_id="review"))
+    finally:
+        _restore_in_process_real_profile(token)
+    assert ran == [], f"human holds the lease, yet surviving real-profile CDP ran: {ran}"
+    assert result.get("code") == "human_has_control"
 
 
 def test_timeout_does_not_teardown_shared_browser_while_human_holds(monkeypatch, tmp_path):

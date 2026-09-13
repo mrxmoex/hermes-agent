@@ -849,8 +849,10 @@ def _shares_bot_desktop_browser(session_info: Dict[str, Any]) -> bool:
     user-supplied CDP session are another browser — unless that CDP URL is this
     profile's live dock instance or this profile's real-profile Chrome
     (``/browser connect`` / ``browser.cdp_url`` still label that attach
-    ``cdp_override``). A human lease with the screen already gone (dead Xvnc)
-    still fences local sessions — computer_use does the same.
+    ``cdp_override``). Real-profile identity is the in-process cache / leftover
+    session row, or a Chromium still running on this profile's snapshot copy
+    dir after those rows die. A human lease with the screen already gone
+    (dead Xvnc) still fences local sessions — computer_use does the same.
     """
     from tools.bot_desktop import lease as _bd_lease, runtime as _bd_runtime
     from tools.bot_desktop.browser import cdp_url_is_running_instance
@@ -877,13 +879,41 @@ def _cdp_is_this_profile_real_profile(cdp_url: str) -> bool:
     """True when ``cdp_url`` is this profile's consented real-profile Chrome.
 
     Cache stores the HTTP discovery root; callers often have the rewritten
-    ``ws://`` URL on the same loopback port.
+    ``ws://`` URL on the same loopback port. Those rows are process-local —
+    a surviving copy-dir Chrome (``_surviving_chrome_cdp``) outlives them, and
+    ``/browser connect`` then labels the attach ``cdp_override``.
     """
     if not isinstance(cdp_url, str) or not cdp_url:
         return False
     rp = _bt._active_sessions.get(_bt._REAL_PROFILE_SESSION) or {}
     rp_cdp = str((_bt._real_profile_cdp_cache or {}).get("cdp") or rp.get("cdp_url") or "")
-    return bool(rp_cdp and _cdp_endpoints_match(cdp_url, rp_cdp))
+    if rp_cdp and _cdp_endpoints_match(cdp_url, rp_cdp):
+        return True
+    return _cdp_is_live_real_profile_copy(cdp_url)
+
+
+def _real_profile_copy_dirs() -> List[Path]:
+    """Hermes-owned real-profile snapshot dirs (``{HERMES_HOME}/browser-profile/<browser>``)."""
+    root = Path(get_hermes_home()) / "browser-profile"
+    try:
+        return [p for p in root.iterdir() if p.is_dir()]
+    except OSError:
+        return []
+
+
+def _cdp_is_live_real_profile_copy(cdp_url: str) -> bool:
+    """True when ``cdp_url`` is Chromium still running on a snapshot copy dir.
+
+    Same cheap probe as the dock (``DevToolsActivePort`` + live pid + connect),
+    not ``agent-browser get cdp``. Foreign Chrome on another loopback port stays
+    unshared even when a copy dir exists.
+    """
+    from tools.bot_desktop.browser import running_instance_cdp_port
+
+    want = _cdp_loopback_port(cdp_url)
+    if want is None:
+        return False
+    return any(running_instance_cdp_port(str(p)) == want for p in _real_profile_copy_dirs())
 
 
 def _cdp_endpoints_match(left: str, right: str) -> bool:
