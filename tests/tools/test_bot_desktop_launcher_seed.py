@@ -62,8 +62,12 @@ def test_xauth_cookie_is_passed_on_stdin_not_argv(tmp_path):
     bindir.mkdir()
     argv_log = tmp_path / "xauth.argv"
     (bindir / "xauth").write_text(
-        "#!/bin/sh\nprintf '%s\\n' \"$0 $*\" >> \"$HERMES_BD_XAUTH_ARGV\"\n"
-        "if [ \"$1\" = source ] || [ \"$3\" = source ]; then cat >/dev/null; fi\n",
+        "#!/bin/sh\n"
+        "printf '%s\\n' \"$0 $*\" >> \"$HERMES_BD_XAUTH_ARGV\"\n"
+        # Always drain stdin. `printf | xauth -q -f FILE source -` under
+        # `set -o pipefail` exits 141 (SIGPIPE) if this stub returns before
+        # reading — a race on whether the cookie line fits before we close.
+        "cat >/dev/null\n",
         encoding="utf-8",
     )
     (bindir / "xauth").chmod(0o755)
