@@ -129,6 +129,11 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
     }
     setError(null)
 
+    // Retention is adopted only when a live RFB session exists. Any other
+    // exit (observe/ticket/url throw, superseded attach, missing canvas)
+    // must release — otherwise an inactive registry-routed bot stays pinned.
+    let handedOff = false
+
     try {
       // Load the client BEFORE dialing: noVNC's Websock installs its own `onopen`, so a socket that
       // opened while the dynamic import was still in flight never hands it the open event.
@@ -230,10 +235,20 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
         void refresh()
       })
       rfb.current = client
+      handedOff = true
     } catch (err) {
       if (generation === attachGeneration.current) {
         setConn('error')
         setError(err instanceof Error ? err.message : String(err))
+      }
+    } finally {
+      if (!handedOff && generation === attachGeneration.current) {
+        rfb.current?.disconnect()
+        rfb.current = null
+        socket.current?.close()
+        socket.current = null
+        retention.current?.()
+        retention.current = null
       }
     }
   }, [bot, detach, refresh, t.screen.streamLost])

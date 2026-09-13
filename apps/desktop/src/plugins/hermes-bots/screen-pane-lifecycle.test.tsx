@@ -293,6 +293,33 @@ it('offers force hand-back on the stopped pane when a human lease survived the c
   view.unmount()
 })
 
+it('releases the pinned socket when display.observe fails after retain', async () => {
+  vi.mocked(displayRequest).mockImplementation(async (_bot, method) => {
+    if (method === 'display.observe') {
+      throw new Error('observe failed')
+    }
+
+    return { ...status }
+  })
+
+  const view = render(<BotScreenPane bot={bot} />)
+  await waitFor(() => expect(view.getByText('observe failed')).toBeTruthy())
+  expect(retention.held).toBe(0)
+  expect(sockets).toHaveLength(0)
+  view.unmount()
+})
+
+it('releases the pinned socket when the RFB URL cannot be resolved after retain', async () => {
+  const { resolveScreenWsUrl } = await import('./screen-connection')
+  vi.mocked(resolveScreenWsUrl).mockRejectedValueOnce(new Error('no display ticket'))
+
+  const view = render(<BotScreenPane bot={bot} />)
+  await waitFor(() => expect(view.getByText('no display ticket')).toBeTruthy())
+  expect(retention.held).toBe(0)
+  expect(sockets).toHaveLength(0)
+  view.unmount()
+})
+
 it('re-pulls display.status and re-attaches when the gateway reconnects while the pane is already open', async () => {
   const view = render(<BotScreenPane bot={bot} />)
   await waitFor(() => expect(sockets).toHaveLength(1))
