@@ -1633,13 +1633,16 @@ _CWD_RESOLVE_OPERAND_PWD = (
 )
 _CWD_RESOLVE_CMD = (
     r'(?:'
-    r'realpath(?:\s+-[esP]+)?(?:\s+--)?\s+' + _CWD_RESOLVE_OPERAND_PWD +
-    r'|readlink\s+(?:-[fe]+|--canonicalize(?:-existing|-missing)?)(?:\s+--)?\s+'
+    r'realpath(?:\s+(?:-[esmP]+|--canonicalize(?:-existing|-missing)?))*(?:\s+--)?\s+'
+    + _CWD_RESOLVE_OPERAND_PWD +
+    r'|readlink\s+(?:-[fem]+|--canonicalize(?:-existing|-missing)?)(?:\s+--)?\s+'
     + _CWD_RESOLVE_OPERAND_PWD +
     r')'
 )
-# ``$(echo TOKEN)`` / ``$(printf %s TOKEN)`` / backticks. One wrap is
-# enough — ``$(echo $(echo $PWD))`` is not a field-seen shape.
+# ``$(echo TOKEN)`` / ``$(printf %s TOKEN)`` / backticks. Two wraps
+# cover ``$(echo $(echo $PWD))`` / ``$(printf %s $(echo $PWD))``
+# (finding 64). Identity printers (``awk ENVIRON``, here-string
+# ``cat <<< $PWD``, ``echo $PWD | cat``) are the same path.
 _ECHO_BIN = r'(?:(?:builtin|command)\s+)?echo(?:\s+-[neE]+)*(?:\s+--)?'
 _PRINTF_BIN = (
     r'(?:(?:builtin|command)\s+)?printf(?:\s+--)?\s+'
@@ -1663,9 +1666,80 @@ def _echo_printf_subst(inner: str, *, allow_quotes: bool = True) -> str:
     return r'(?:\$\(\s*' + body + r'\s*\)|`' + body + r'`)'
 
 
-def _token_or_printed(inner: str) -> str:
-    """*inner*, or one ``echo``/``printf`` wrap of *inner*."""
-    return r'(?:' + inner + r'|' + _echo_printf_subst(inner) + r')'
+def _token_or_printed(inner: str, wraps: int = 1) -> str:
+    """*inner*, or up to *wraps* ``echo``/``printf`` wraps of *inner*."""
+    expr = inner
+    for _ in range(max(wraps, 0)):
+        expr = r'(?:' + expr + r'|' + _echo_printf_subst(expr) + r')'
+    return expr
+
+
+def _herestring_identity_cmd(var_token: str) -> str:
+    """``$(cat <<< "$PWD")`` / ``$(tr -d '\\n' <<< $PWD)`` print *var_token*."""
+    return (
+        r'(?:(?:builtin|command)\s+)?'
+        r'(?:cat|tee|tr|cut|xargs|head|tail|dd)'
+        r'[^\n<]*<<<\s+(?:["\']?)' + var_token + r'(?:["\']?)'
+    )
+
+
+def _awk_environ_cmd(name: str) -> str:
+    """``$(awk 'BEGIN{print ENVIRON["PWD"]}')`` (also ``gawk`` / ``mawk``)."""
+    return (
+        r'(?:g|m)?awk\b[^\n)]*ENVIRON\s*\[\s*["\']' + name + r'["\'][^\n)]*'
+    )
+
+
+def _pipe_identity_cmd(var_token: str) -> str:
+    """``$(echo $PWD | cat)`` / ``$(printf %s "$PWD" | tee)``."""
+    printed = (
+        r'(?:'
+        + _ECHO_BIN + r'\s+(?:["\']?)' + var_token + r'(?:["\']?)'
+        r'|' + _PRINTF_BIN + r'\s+(?:["\']?)' + var_token + r'(?:["\']?)'
+        r')'
+    )
+    return printed + r'\s*\|\s*(?:cat|tee|xargs|dd|head|tail)\b[^\n)]*'
+
+
+def _process_subst_identity_cmd(var_token: str) -> str:
+    """``$(< <(echo $PWD))`` — bash process-subst identity."""
+    inner = (
+        r'(?:'
+        + _ECHO_BIN + r'\s+(?:["\']?)' + var_token + r'(?:["\']?)'
+        r'|' + _PRINTF_BIN + r'\s+(?:["\']?)' + var_token + r'(?:["\']?)'
+        r')'
+    )
+    return r'<\s*<\(\s*' + inner + r'\s*\)'
+
+
+def _rev_identity_cmd(var_token: str) -> str:
+    """``$(rev <<< "$PWD" | rev)`` / ``$(echo $PWD | rev | rev)``."""
+    quoted = r'(?:["\']?)' + var_token + r'(?:["\']?)'
+    printed = (
+        r'(?:'
+        + _ECHO_BIN + r'\s+' + quoted
+        + r'|' + _PRINTF_BIN + r'\s+' + quoted
+        + r')'
+    )
+    return (
+        r'(?:'
+        r'(?:(?:builtin|command)\s+)?rev\b[^\n<]*<<<\s+' + quoted +
+        r'\s*\|\s*rev\b[^\n)]*'
+        r'|' + printed + r'\s*\|\s*rev\b[^\n|]*\|\s*rev\b[^\n)]*'
+        r')'
+    )
+
+
+def _identity_print_cmd(var_token: str, environ_name: str) -> str:
+    return (
+        r'(?:'
+        + _herestring_identity_cmd(var_token) +
+        r'|' + _awk_environ_cmd(environ_name) +
+        r'|' + _pipe_identity_cmd(var_token) +
+        r'|' + _process_subst_identity_cmd(var_token) +
+        r'|' + _rev_identity_cmd(var_token) +
+        r')'
+    )
 
 
 # ``dirs -v`` prefixes an index; ``dirs -c`` clears. Separate ``-l``/``-p``
@@ -1699,21 +1773,25 @@ _OLDPWD_PARAM = (
     r'|(?:-|:-)[^}]*'
     r')?\}'
 )
+_PWD_VAR = r'(?:\$PWD\b|' + _PWD_PARAM + r')'
+_PWD_IDENTITY_CMD = _identity_print_cmd(_PWD_VAR, "PWD")
 _PWD_CORE = (
     r'(?:'
     + _PWD_PARAM +
     r'|\$PWD\b'
     r'|\$\(\s*(?:'
     + _PWD_CMD + r'|' + _DIRS_PWD_CMD + r'|' + _PRINTENV_BIN + r'\s+PWD\b'
+    r'|' + _PWD_IDENTITY_CMD +
     r')\s*\)'
     r'|`(?:'
     + _PWD_CMD + r'|' + _DIRS_PWD_CMD + r'|' + _PRINTENV_BIN + r'\s+PWD\b'
+    r'|' + _PWD_IDENTITY_CMD +
     r')`'
     r'|\$\(\s*' + _CWD_RESOLVE_CMD + r'\s*\)'
     r'|`' + _CWD_RESOLVE_CMD + r'`'
     r')'
 )
-_PWD_TOKEN = _token_or_printed(_PWD_CORE)
+_PWD_TOKEN = _token_or_printed(_PWD_CORE, wraps=2)
 _PWD_TILDE = r'~(?:\+0+|0+|-0+|\+)'
 # Unquoted ``~+`` / ``~+0`` / ``~00`` / ``~0`` / ``~-0`` are ``$PWD``
 # (``~+1`` / ``~-1`` are DIRSTACK). A one-entry stack's ``dirs -0`` is
@@ -1757,22 +1835,31 @@ _CWD_RESOLVE_OPERAND_OLDPWD = (
 )
 _OLDPWD_RESOLVE_CMD = (
     r'(?:'
-    r'realpath(?:\s+-[esP]+)?(?:\s+--)?\s+' + _CWD_RESOLVE_OPERAND_OLDPWD +
-    r'|readlink\s+(?:-[fe]+|--canonicalize(?:-existing|-missing)?)(?:\s+--)?\s+'
+    r'realpath(?:\s+(?:-[esmP]+|--canonicalize(?:-existing|-missing)?))*(?:\s+--)?\s+'
+    + _CWD_RESOLVE_OPERAND_OLDPWD +
+    r'|readlink\s+(?:-[fem]+|--canonicalize(?:-existing|-missing)?)(?:\s+--)?\s+'
     + _CWD_RESOLVE_OPERAND_OLDPWD +
     r')'
 )
+_OLDPWD_VAR = r'(?:\$OLDPWD\b|' + _OLDPWD_PARAM + r')'
+_OLDPWD_IDENTITY_CMD = _identity_print_cmd(_OLDPWD_VAR, "OLDPWD")
 _OLDPWD_CORE = (
     r'(?:'
     + _OLDPWD_PARAM +
     r'|\$OLDPWD\b'
-    r'|\$\(\s*' + _PRINTENV_BIN + r'\s+OLDPWD\b\s*\)'
-    r'|`' + _PRINTENV_BIN + r'\s+OLDPWD\b`'
+    r'|\$\(\s*(?:'
+    + _PRINTENV_BIN + r'\s+OLDPWD\b'
+    r'|' + _OLDPWD_IDENTITY_CMD +
+    r')\s*\)'
+    r'|`(?:'
+    + _PRINTENV_BIN + r'\s+OLDPWD\b'
+    r'|' + _OLDPWD_IDENTITY_CMD +
+    r')`'
     r'|\$\(\s*' + _OLDPWD_RESOLVE_CMD + r'\s*\)'
     r'|`' + _OLDPWD_RESOLVE_CMD + r'`'
     r')'
 )
-_OLDPWD_TOKEN = _token_or_printed(_OLDPWD_CORE)
+_OLDPWD_TOKEN = _token_or_printed(_OLDPWD_CORE, wraps=2)
 _OLDPWD_WRITE_DEST = (
     r'(?:'
     r'(?:["\']?)' + _OLDPWD_TOKEN + r'(?:["\']?)'
@@ -2226,6 +2313,14 @@ def detect_dangerous_command(command: str, *, cwd: Optional[str] = None) -> tupl
     )
     if not _command_shell_chdirs(outer_chdir):
         oldpwd_parent_levels = 0
+    # Normalization strips ``\n`` in ``printf '%s\n'``, so also search the
+    # raw command for PWD dest writes (finding 64).
+    if in_bot_desktop and _has_relative_bot_desktop_write(
+        command, include_oldpwd=include_oldpwd, include_dirstack=include_dirstack,
+        pwd_parent_levels=pwd_parent_levels,
+        oldpwd_parent_levels=oldpwd_parent_levels,
+    ):
+        return (True, _CHDIR_BOT_DESKTOP_WRITE_DESCRIPTION, _CHDIR_BOT_DESKTOP_WRITE_DESCRIPTION)
     for command_variant in _command_detection_variants(command):
         # Case-preserved: dest-first short flags (`-t` vs `-T`, tar `-C` vs `-c`).
         for pattern_re, description in DEST_FIRST_SENSITIVE_PATTERNS_COMPILED:

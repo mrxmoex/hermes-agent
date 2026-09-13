@@ -1432,6 +1432,86 @@ class TestHermesBotDesktopWriteProtection:
             dangerous, key, desc = detect_dangerous_command(command, cwd=cwd)
             assert dangerous is False, (command, cwd)
 
+    def test_identity_print_pwd_dests(self):
+        """Finding 63 gated one ``echo``/``printf`` wrap and
+        ``$(realpath $PWD)``. Identity printers still expand to the
+        screen: ``$(awk 'BEGIN{print ENVIRON["PWD"]}')``, here-string
+        ``$(cat <<< "$PWD")``, ``$(echo $PWD | cat)``,
+        ``$(< <(echo $PWD))``, ``$(readlink -m "$PWD")``,
+        ``$(realpath -m "$PWD")``, ``$(rev <<< "$PWD" | rev)``,
+        ``$(printf '%s\\n' "$PWD")``, and a second wrap
+        ``$(echo $(echo $PWD))``. After ``cd`` away the ``$OLDPWD``
+        twins are the same class.
+        """
+        for command in (
+            "cd ~/.hermes/bot-desktop && echo '{\"holder\":\"agent\"}' > $(awk 'BEGIN{print ENVIRON[\"PWD\"]}')/lease.json",
+            "cd ~/.hermes/bot-desktop && echo x > $(mawk 'BEGIN{print ENVIRON[\"PWD\"]}')/lease.json",
+            "cd ~/.hermes/bot-desktop && echo x > $(cat <<< \"$PWD\")/lease.json",
+            "cd ~/.hermes/bot-desktop && echo x > $(tr -d '\\n' <<< \"$PWD\")/lease.json",
+            "cd ~/.hermes/bot-desktop && echo x > $(cut -c1-999 <<< \"$PWD\")/lease.json",
+            "cd ~/.hermes/bot-desktop && echo x > $(xargs <<< \"$PWD\")/lease.json",
+            "cd ~/.hermes/bot-desktop && echo x > $(tee <<< \"$PWD\")/lease.json",
+            "cd ~/.hermes/bot-desktop && echo x > $(head -c 999 <<< \"$PWD\")/lease.json",
+            "cd ~/.hermes/bot-desktop && echo x > $(echo $PWD | cat)/lease.json",
+            "cd ~/.hermes/bot-desktop && echo x > $(printf %s \"$PWD\" | cat)/lease.json",
+            "cd ~/.hermes/bot-desktop && echo x > $(echo $PWD | xargs)/lease.json",
+            "cd ~/.hermes/bot-desktop && echo x > $(< <(echo $PWD))/lease.json",
+            "cd ~/.hermes/bot-desktop && echo x > $(readlink -m \"$PWD\")/lease.json",
+            'cd ~/.hermes/bot-desktop && echo x > $(readlink -m -- "$PWD")/lease.json',
+            "cd ~/.hermes/bot-desktop && echo x > $(realpath -m \"$PWD\")/lease.json",
+            'cd ~/.hermes/bot-desktop && echo x > $(realpath --canonicalize-missing "$PWD")/lease.json',
+            "cd ~/.hermes/bot-desktop && echo x > $(rev <<< \"$PWD\" | rev)/lease.json",
+            "cd ~/.hermes/bot-desktop && echo x > $(echo $PWD | rev | rev)/lease.json",
+            "cd ~/.hermes/bot-desktop && echo x > $(printf '%s\\n' \"$PWD\")/lease.json",
+            "cd ~/.hermes/bot-desktop && echo x > $(echo $(echo $PWD))/lease.json",
+            "cd ~/.hermes/bot-desktop && echo x > $(echo $(printf %s \"$PWD\"))/lease.json",
+            "cd ~/.hermes/bot-desktop && echo x > $(printf %s $(echo $PWD))/lease.json",
+            "cd ~/.hermes/bot-desktop && echo x > $(echo $(pwd))/lease.json",
+            "cd ~/.hermes/bot-desktop && echo x > $(echo $(awk 'BEGIN{print ENVIRON[\"PWD\"]}'))/lease.json",
+            "cd ~/.hermes/bot-desktop && cd /tmp && echo x > $(awk 'BEGIN{print ENVIRON[\"OLDPWD\"]}')/lease.json",
+            "cd ~/.hermes/bot-desktop && cd /tmp && echo x > $(cat <<< \"$OLDPWD\")/lease.json",
+            "cd ~/.hermes/bot-desktop && cd /tmp && echo x > $(echo $OLDPWD | cat)/lease.json",
+            "cd ~/.hermes/bot-desktop && cd /tmp && echo x > $(realpath -m \"$OLDPWD\")/lease.json",
+            "cd ~/.hermes/bot-desktop && cd /tmp && echo x > $(rev <<< \"$OLDPWD\" | rev)/lease.json",
+        ):
+            dangerous, key, desc = detect_dangerous_command(command)
+            assert dangerous is True, command
+            assert key is not None, command
+
+        cwd = os.path.expanduser("~/.hermes/bot-desktop")
+        for command in (
+            "echo x > $(awk 'BEGIN{print ENVIRON[\"PWD\"]}')/lease.json",
+            "echo x > $(cat <<< \"$PWD\")/lease.json",
+            "echo x > $(echo $PWD | cat)/lease.json",
+            "echo x > $(readlink -m \"$PWD\")/lease.json",
+            "echo x > $(realpath -m \"$PWD\")/lease.json",
+            "echo x > $(rev <<< \"$PWD\" | rev)/lease.json",
+            "echo x > $(printf '%s\\n' \"$PWD\")/lease.json",
+            "echo x > $(echo $(echo $PWD))/lease.json",
+            "dd of=$(cat <<< \"$PWD\")/lease.json",
+            "cd /tmp && echo x > $(cat <<< \"$OLDPWD\")/lease.json",
+            "cd /tmp && echo x > $(awk 'BEGIN{print ENVIRON[\"OLDPWD\"]}')/lease.json",
+        ):
+            dangerous, key, desc = detect_dangerous_command(command, cwd=cwd)
+            assert dangerous is True, command
+            assert key is not None, command
+
+        for cwd, command in (
+            (None, "echo x > $(cat <<< \"$PWD\")/lease.json"),
+            ("/tmp", "echo x > $(awk 'BEGIN{print ENVIRON[\"PWD\"]}')/lease.json"),
+            ("~/.hermes/bot-desktop", "cat $(cat <<< \"$PWD\")/lease.json"),
+            ("~/.hermes/bot-desktop", "echo x > $(awk 'BEGIN{print ENVIRON[\"HOME\"]}')/lease.json"),
+            ("~/.hermes/bot-desktop", "echo x > $(cat <<< \"$HOME\")/lease.json"),
+            ("~/.hermes/bot-desktop", "echo x > $(cat <<< /tmp)/lease.json"),
+            ("~/.hermes/bot-desktop", "echo x > $(echo $HOME | cat)/lease.json"),
+            ("~/.hermes/bot-desktop", "echo x > $(cat <<< \"$OLDPWD\")/lease.json"),
+            ("~/.hermes/bot-desktop", "echo x > $(rev <<< \"$HOME\" | rev)/lease.json"),
+            ("~/.hermes/bot-desktop", "echo x > $(realpath -m /tmp)/lease.json"),
+            ("/tmp", "echo x > $(echo $(echo $PWD))/lease.json"),
+        ):
+            dangerous, key, desc = detect_dangerous_command(command, cwd=cwd)
+            assert dangerous is False, (command, cwd)
+
     def test_delete_or_move_away_of_lease_requires_approval(self):
         """Missing lease.json fail-opens to agent hold; auto-approve must not
         drop a human's hold the way ``echo > lease.json`` forges one."""
