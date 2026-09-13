@@ -67,6 +67,66 @@ def test_browser_result_crossing_a_takeover_is_discarded(monkeypatch):
     assert "WHAT-THE-HUMAN-TYPED" not in result
 
 
+def test_reminted_screenshot_is_unlinked_from_this_profile_home(monkeypatch):
+    """computer_use fences before persist; browser screenshot writes the PNG
+    first. A remint must unlink that frame so a later read cannot recover it."""
+    from hermes_constants import get_hermes_home
+
+    commands: list = []
+    _browser, session = _wire(monkeypatch, commands)
+    shots = get_hermes_home() / "cache" / "screenshots"
+    shots.mkdir(parents=True, exist_ok=True)
+    path = shots / "browser_screenshot_handoff.png"
+
+    def spawn_then_takeover(*args):
+        path.write_bytes(b"HUMAN_PRIVATE_FRAME")
+        lease.acquire("human-viewer")
+        lease.release("human-viewer")
+        return {"success": True, "data": {"path": str(path), "secret": "WHAT-THE-HUMAN-TYPED"}}
+
+    monkeypatch.setattr(session, "_spawn_and_collect", spawn_then_takeover)
+    result = session._run_browser_command("review", "screenshot", ["--full", str(path)])
+    assert result.get("code") == "human_has_control"
+    assert "WHAT-THE-HUMAN-TYPED" not in json.dumps(result)
+    assert not path.exists(), "human frame left on disk after remint"
+
+
+def test_reminted_screenshot_outside_hermes_home_is_left_alone(monkeypatch, tmp_path):
+    """Unlink is scoped to this profile home — do not delete a caller path elsewhere."""
+    commands: list = []
+    _browser, session = _wire(monkeypatch, commands)
+    path = tmp_path / "user-capture.png"
+    path.write_bytes(b"keep-me")
+
+    def spawn_then_takeover(*args):
+        lease.acquire("human-viewer")
+        lease.release("human-viewer")
+        return {"success": True, "data": {"path": str(path)}}
+
+    monkeypatch.setattr(session, "_spawn_and_collect", spawn_then_takeover)
+    result = session._run_browser_command("review", "screenshot", ["--full", str(path)])
+    assert result.get("code") == "human_has_control"
+    assert path.exists() and path.read_bytes() == b"keep-me"
+
+
+def test_bracket_unlinks_a_reminted_adopted_screenshot(monkeypatch):
+    from hermes_constants import get_hermes_home
+
+    shots = get_hermes_home() / "cache" / "screenshots"
+    shots.mkdir(parents=True, exist_ok=True)
+    path = shots / "browser_screenshot_preroute.png"
+    path.write_bytes(b"HUMAN_PRIVATE_FRAME")
+
+    def adopt():
+        lease.acquire("human-viewer")
+        lease.release("human-viewer")
+        return {"success": True, "data": {"path": str(path)}}
+
+    result = session_mod._bracket_bot_desktop_browser({"features": {"local": True}}, adopt)
+    assert result.get("code") == "human_has_control"
+    assert not path.exists(), "adopted preroute frame left on disk after remint"
+
+
 def test_real_profile_local_browser_is_fenced_by_provenance_even_without_a_live_display(monkeypatch):
     """A real-profile session attaches over a loopback cdp_url but is launched with the Bot Desktop
     DISPLAY, so it IS the human's browser: the fence keys on the ``local`` feature, not on the
@@ -258,6 +318,27 @@ def test_browser_exec_result_crossing_a_takeover_is_discarded(monkeypatch, tmp_p
     assert "HUMAN_PRIVATE_FRAME" not in text
     assert parsed.get("code") == "human_has_control"
     assert parsed.get("success") is not True
+
+
+def test_browser_exec_reminted_screenshot_is_unlinked_from_this_profile_home(monkeypatch):
+    """The harness finds the PNG after the CLI exits; a remint must unlink it."""
+    from hermes_constants import get_hermes_home
+
+    shots = get_hermes_home() / "cache" / "screenshots"
+    shots.mkdir(parents=True, exist_ok=True)
+    shot = shots / "browser_screenshot_exec.png"
+
+    def run_then_takeover(*_a, **_k):
+        shot.write_bytes(b"\x89PNGHUMAN_PRIVATE_FRAME")
+        lease.acquire("human-viewer")
+        lease.release("human-viewer")
+        return subprocess.CompletedProcess(["browser-use"], 0, f"{shot}\n", "")
+
+    bu, _ = _wire_browser_exec(monkeypatch, run_cli=run_then_takeover)
+    raw = bu.browser_exec("print(capture_screenshot())", task_id="review")
+    parsed = json.loads(raw) if isinstance(raw, str) else raw
+    assert parsed.get("code") == "human_has_control"
+    assert not shot.exists(), "harness screenshot left on disk after remint"
 
 
 def test_browser_exec_lookup_miss_fails_closed_while_human_holds(monkeypatch):

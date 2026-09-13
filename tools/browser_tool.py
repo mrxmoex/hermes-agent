@@ -1345,7 +1345,12 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
 
     def _guard(payload):
         stole = _session._discard_if_lease_moved(admitted)
-        return _dumps(stole) if stole else payload
+        if stole:
+            _session._discard_shared_browser_captures(
+                result={"data": {"path": str(screenshot_path)}},
+            )
+            return _dumps(stole)
+        return payload
 
     preroute = _vision._lightpanda_vision_preroute(
         effective_task_id, annotate, screenshot_path)

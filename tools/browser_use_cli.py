@@ -613,6 +613,7 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     # Late import: browser_tool_session → lightpanda fallback → this module.
     from tools.browser_tool_session import (
         _discard_if_lease_moved,
+        _discard_shared_browser_captures,
         _shared_browser_fence,
     )
     # ``get cdp-url`` is already fenced; the harness then talks CDP directly
@@ -678,6 +679,9 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
 
     moved = _lease_moved_error()
     if moved:
+        leftover = _find_screenshot(proc.stdout, started)
+        if leftover:
+            _discard_shared_browser_captures(result={"screenshot_path": leftover})
         return moved
 
     result = {"success": proc.returncode == 0, "exit_code": proc.returncode, "output": proc.stdout}

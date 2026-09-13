@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_constants import get_hermes_home
 from tools.browser_tool_origin import origin as _bt
 from tools import browser_tool_cdp as _cdp
 from tools import browser_tool_cloud as _cloud
@@ -617,7 +618,11 @@ def _run_browser_command(
     result = _run_browser_command_unfenced(
         task_id, command, args, timeout, _engine_override, browser_cmd, session_info
     )
-    return _discard_if_lease_moved(admitted) or result
+    stole = _discard_if_lease_moved(admitted)
+    if stole:
+        _discard_shared_browser_captures(command=command, args=args, result=result)
+        return stole
+    return result
 
 
 _HUMAN_TOOK_OVER = (
@@ -761,6 +766,44 @@ def _discard_if_lease_moved(admitted) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _unlink_shared_capture(raw: str) -> None:
+    """Unlink ``raw`` only when it resolves inside this profile's HERMES_HOME."""
+    try:
+        path = Path(raw).expanduser().resolve()
+        home = Path(get_hermes_home()).resolve()
+        if home not in path.parents and path.parent != home:
+            return
+        path.unlink(missing_ok=True)
+    except Exception:
+        return
+
+
+def _discard_shared_browser_captures(
+    *,
+    command: Optional[str] = None,
+    args: Optional[List[str]] = None,
+    result: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Unlink capture files a reminted run already wrote.
+
+    ``computer_use`` fences before persist; browser screenshot writes the PNG
+    first. A discarded tool result must not leave the human's frame on disk
+    for a later ``read_file`` / ``MEDIA:`` path.
+    """
+    paths: List[str] = []
+    data = (result or {}).get("data") if isinstance(result, dict) else None
+    if isinstance(data, dict) and data.get("path"):
+        paths.append(str(data["path"]))
+    if isinstance(result, dict) and result.get("screenshot_path"):
+        paths.append(str(result["screenshot_path"]))
+    if command == "screenshot":
+        for arg in args or []:
+            if isinstance(arg, str) and arg.endswith((".png", ".jpg", ".jpeg", ".webp")):
+                paths.append(arg)
+    for raw in paths:
+        _unlink_shared_capture(raw)
+
+
 def _bracket_bot_desktop_browser(session_info: Dict[str, Any], run):
     """Refuse or discard a shared-browser result the same way ``computer_use`` does.
 
@@ -772,7 +815,12 @@ def _bracket_bot_desktop_browser(session_info: Dict[str, Any], run):
     if refuse:
         return refuse
     result = run()
-    return _discard_if_lease_moved(admitted) or result
+    stole = _discard_if_lease_moved(admitted)
+    if stole:
+        if isinstance(result, dict):
+            _discard_shared_browser_captures(result=result)
+        return stole
+    return result
 
 
 def _defer_shared_browser_teardown(session_info: Optional[Dict[str, Any]]) -> bool:
