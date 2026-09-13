@@ -785,8 +785,9 @@ def _discard_if_lease_moved(admitted) -> Optional[Dict[str, Any]]:
 def _lease_moved_after_payload(admitted, *, result=None) -> Optional[Dict[str, Any]]:
     """Terminal remint check after a shared-browser payload is assembled.
 
-    Mid-flight checks discard the run. Screenshot encode, console merge, and
-    image JSON must not ship if the epoch moved while that payload was built.
+    Mid-flight checks discard the run. Screenshot encode, console merge,
+    image JSON, and oversized snapshot spills must not ship if the epoch
+    moved while that payload was built.
     """
     stole = _discard_if_lease_moved(admitted)
     if stole:
@@ -815,7 +816,8 @@ def _discard_shared_browser_captures(
     """Unlink capture files a reminted run already wrote.
 
     ``computer_use`` fences before persist; browser screenshot writes the PNG
-    first. A discarded tool result must not leave the human's frame on disk
+    first, and an oversized snapshot spills the full tree to cache/web.
+    A discarded tool result must not leave the human's frame on disk
     for a later ``read_file`` / ``MEDIA:`` path.
     """
     paths: List[str] = []
@@ -824,6 +826,11 @@ def _discard_shared_browser_captures(
         paths.append(str(data["path"]))
     if isinstance(result, dict) and result.get("screenshot_path"):
         paths.append(str(result["screenshot_path"]))
+    extra = (result or {}).get("_stored_snapshot_paths") if isinstance(result, dict) else None
+    if isinstance(extra, list):
+        paths.extend(str(p) for p in extra if p)
+    elif extra:
+        paths.append(str(extra))
     if command == "screenshot":
         for arg in args or []:
             if isinstance(arg, str) and arg.endswith((".png", ".jpg", ".jpeg", ".webp")):

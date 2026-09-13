@@ -600,7 +600,12 @@ def _err(error: str, **extra) -> dict:
     return {"success": False, "error": error, **extra}
 
 
+_PRIVATE_RESULT_KEYS = ("_stored_snapshot_paths",)
+
+
 def _dumps(payload: Dict[str, Any], **kw) -> str:
+    if any(key in payload for key in _PRIVATE_RESULT_KEYS):
+        payload = {key: value for key, value in payload.items() if key not in _PRIVATE_RESULT_KEYS}
     return json.dumps(payload, ensure_ascii=False, **kw)
 
 
@@ -699,9 +704,17 @@ def _snapshot_fields(snap_result: Dict[str, Any]) -> Dict[str, Any]:
     snapshot_text = data.get("snapshot", "")
     refs = data.get("refs", {})
     threshold = get_browser_snapshot_threshold()
+    stored: list = []
     if len(snapshot_text) > threshold:
-        snapshot_text = _snapshot._truncate_snapshot(snapshot_text, max_chars=threshold)
-    return {"snapshot": _snapshot._redact_browser_output(snapshot_text), "element_count": len(refs) if refs else 0}
+        snapshot_text = _snapshot._truncate_snapshot(
+            snapshot_text, max_chars=threshold, stored_paths=stored)
+    fields = {
+        "snapshot": _snapshot._redact_browser_output(snapshot_text),
+        "element_count": len(refs) if refs else 0,
+    }
+    if stored:
+        fields["_stored_snapshot_paths"] = stored
+    return fields
 
 
 def _merge_fallback_warning(response: Dict[str, Any], result: Dict[str, Any]) -> None:
@@ -710,9 +723,13 @@ def _merge_fallback_warning(response: Dict[str, Any], result: Dict[str, Any]) ->
         _lp._copy_fallback_warning(response, result)
 
 
-def _lease_moved_json(admitted) -> Optional[str]:
-    """JSON refuse when the shared-browser epoch moved since ``admitted``."""
-    stole = _session._discard_if_lease_moved(admitted)
+def _lease_moved_json(admitted, result=None) -> Optional[str]:
+    """JSON refuse when the shared-browser epoch moved since ``admitted``.
+
+    When ``result`` is the assembled payload, remint also unlinks captures
+    that payload already spilled (screenshot PNG, oversized snapshot).
+    """
+    stole = _session._lease_moved_after_payload(admitted, result=result)
     return _dumps(stole) if stole else None
 
 
@@ -812,7 +829,7 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     # opens and blocked redirects must not retarget follow-up clicks.
     _last_active_session_key[effective_task_id] = nav_session_key
     _attach_auto_snapshot(response, nav_session_key)
-    moved = _lease_moved_json(admitted)
+    moved = _lease_moved_json(admitted, result=response)
     if moved:
         return moved
     return _dumps(response)
@@ -876,9 +893,9 @@ def browser_snapshot(
                 response.update(_snapshot._redact_browser_output(_sv_snap.to_dict()))
     except Exception as _sv_exc:
         logger.debug("supervisor snapshot merge failed: %s", _sv_exc)
-    stole = _session._discard_if_lease_moved(admitted)
-    if stole:
-        return _dumps(stole)
+    moved = _lease_moved_json(admitted, result=response)
+    if moved:
+        return moved
 
     return _dumps(response)
 

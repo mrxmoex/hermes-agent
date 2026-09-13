@@ -5,7 +5,7 @@ Facade-owned state is read through ``_bt`` (``tools.browser_tool``, resolved per
 """
 
 import re
-from typing import Any, Optional
+from typing import Any, List, Optional
 from tools.browser_tool_origin import origin as _bt
 
 
@@ -66,12 +66,18 @@ def _store_full_snapshot(snapshot_text: str) -> Optional[str]:
         return None
 
 
-def _truncate_snapshot(snapshot_text: str, max_chars: Optional[int] = None) -> str:
+def _truncate_snapshot(
+    snapshot_text: str,
+    max_chars: Optional[int] = None,
+    stored_paths: Optional[List[str]] = None,
+) -> str:
     """Truncate a snapshot at line boundaries (never mid-element) to ``max_chars``.
 
     Defaults to ``browser.snapshot_threshold``. The full snapshot is stored to
     cache/web and the appended note tells the agent how to page through it
     with read_file — element refs beyond the cut are in the file, not lost.
+    ``stored_paths`` collects the host path so a remint can unlink the spill
+    (same class as a reminted screenshot PNG).
     """
     if max_chars is None:
         max_chars = _bt.get_browser_snapshot_threshold()
@@ -80,6 +86,8 @@ def _truncate_snapshot(snapshot_text: str, max_chars: Optional[int] = None) -> s
 
     stored_path = _store_full_snapshot(snapshot_text)
     if stored_path:
+        if stored_paths is not None:
+            stored_paths.append(stored_path)
         # Agent-visible path: read_file runs inside the active backend (#72389).
         from tools.credential_files import to_agent_visible_cache_path
         stored_path = to_agent_visible_cache_path(stored_path)

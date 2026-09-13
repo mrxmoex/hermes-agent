@@ -1333,6 +1333,116 @@ def test_snapshot_supervisor_merge_is_fenced_while_human_controls(monkeypatch):
     assert parsed.get("code") == "human_has_control"
 
 
+def _oversized_snapshot_tree(marker: str = "HUMAN_PRIVATE_DOM") -> str:
+    return marker + "\n" + ("line\n" * 80)
+
+
+def _cache_web_snapshots():
+    from hermes_constants import get_hermes_home
+
+    cache = get_hermes_home() / "cache" / "web"
+    return list(cache.glob("browser-snapshot-*.txt")) if cache.exists() else []
+
+
+def test_reminted_oversized_snapshot_is_unlinked_from_this_profile_home(monkeypatch):
+    """Oversized snapshots spill the full tree to cache/web before the remint
+    check. A discarded takeover must not leave that file for later read_file."""
+    commands: list = []
+    browser, session = _wire(monkeypatch, commands)
+    tree = _oversized_snapshot_tree()
+    monkeypatch.setattr(browser, "get_browser_snapshot_threshold", lambda: 80)
+    monkeypatch.setattr(session, "_run_browser_command", lambda *a, **k: {
+        "success": True, "data": {"snapshot": tree, "refs": {"e1": {}}}})
+    monkeypatch.setattr(browser, "_blocked_private_page_content", lambda *_a: None)
+
+    class _Snap:
+        active = True
+
+        def to_dict(self):
+            return {"pending_dialogs": []}
+
+    class _Sup:
+        def snapshot(self):
+            lease.acquire("human-viewer")
+            lease.release("human-viewer")
+            return _Snap()
+
+    monkeypatch.setattr(
+        "tools.browser_supervisor.SUPERVISOR_REGISTRY",
+        type("R", (), {"get": staticmethod(lambda _tid: _Sup())})(),
+    )
+    result = json.loads(browser.browser_snapshot(task_id="review"))
+    assert result.get("code") == "human_has_control"
+    assert "HUMAN_PRIVATE_DOM" not in json.dumps(result)
+    leftovers = _cache_web_snapshots()
+    assert leftovers == [], f"human snapshot left on disk after remint: {leftovers}"
+
+
+def test_successful_oversized_snapshot_keeps_spill_and_hides_host_path(monkeypatch):
+    """A completed agent snapshot still pages via read_file; the host path
+    must not leak in the tool JSON."""
+    commands: list = []
+    browser, session = _wire(monkeypatch, commands)
+    tree = _oversized_snapshot_tree("AGENT_TREE")
+    monkeypatch.setattr(browser, "get_browser_snapshot_threshold", lambda: 80)
+    monkeypatch.setattr(session, "_run_browser_command", lambda *a, **k: {
+        "success": True, "data": {"snapshot": tree, "refs": {"e1": {}}}})
+    monkeypatch.setattr(browser, "_blocked_private_page_content", lambda *_a: None)
+    monkeypatch.setattr(
+        "tools.browser_supervisor.SUPERVISOR_REGISTRY",
+        type("R", (), {"get": staticmethod(lambda _tid: None)})(),
+    )
+    result = json.loads(browser.browser_snapshot(task_id="review"))
+    assert result.get("success") is True
+    assert "_stored_snapshot_paths" not in result
+    assert "read_file" in result.get("snapshot", "")
+    leftovers = _cache_web_snapshots()
+    assert leftovers, "successful oversized snapshot must keep the spill for paging"
+
+
+def test_reminted_snapshot_spill_outside_hermes_home_is_left_alone(tmp_path):
+    """Unlink is scoped to this profile home — same class as screenshot PNGs."""
+    path = tmp_path / "browser-snapshot-deadbeef01.txt"
+    path.write_text("keep-me", encoding="utf-8")
+    session_mod._discard_shared_browser_captures(
+        result={"_stored_snapshot_paths": [str(path)]},
+    )
+    assert path.exists() and path.read_text(encoding="utf-8") == "keep-me"
+
+
+def test_reminted_navigate_auto_snapshot_is_unlinked_from_this_profile_home(monkeypatch):
+    """Navigate stores the compact snapshot after open. A remint after that
+    spill must unlink it the same way browser_snapshot does."""
+    commands: list = []
+    browser, session = _wire(monkeypatch, commands)
+    tree = _oversized_snapshot_tree()
+    monkeypatch.setattr(browser, "get_browser_snapshot_threshold", lambda: 80)
+    monkeypatch.setattr(session, "_get_session_info", lambda *a, **k: {
+        "session_name": "review", "cdp_url": None, "features": {"local": True}, "_first_nav": False})
+
+    def run_cmd(_task, command, args=None, **_k):
+        if command == "open":
+            return {"success": True, "data": {"url": "https://example.com/", "title": "Example"}}
+        return {"success": True, "data": {"snapshot": tree, "refs": {"e1": {}}}}
+
+    monkeypatch.setattr(session, "_run_browser_command", run_cmd)
+    monkeypatch.setattr(browser, "_post_redirect_block", lambda *_a, **_k: None)
+    orig = browser._snapshot_fields
+
+    def fields_then_takeover(snap):
+        out = orig(snap)
+        lease.acquire("human-viewer")
+        lease.release("human-viewer")
+        return out
+
+    monkeypatch.setattr(browser, "_snapshot_fields", fields_then_takeover)
+    result = json.loads(browser.browser_navigate("https://example.com", task_id="review"))
+    assert result.get("code") == "human_has_control"
+    assert "HUMAN_PRIVATE_DOM" not in json.dumps(result)
+    leftovers = _cache_web_snapshots()
+    assert leftovers == [], f"navigate auto-snapshot left on disk after remint: {leftovers}"
+
+
 def test_vault_fill_does_not_inject_after_inspect_crossed_a_takeover(monkeypatch, tmp_path):
     """Inspect + fill are one ownership epoch: a completed takeover must not write."""
     from agent.vault_store import VaultStore
