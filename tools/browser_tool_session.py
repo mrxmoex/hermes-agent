@@ -1205,26 +1205,84 @@ def _invocation_via_bun_x(tokens: List[str], matches) -> Optional[bool]:
     return bool(operands) and bool(matches(operands))
 
 
+def _package_manager_child_argv(tokens: List[str]) -> Optional[List[str]]:
+    """Child argv after npm|pnpm|yarn exec|dlx or bun x|exec, flags kept.
+
+    ``_package_exec_parts`` / ``_bun_x_operands`` drop ``--port`` /
+    ``--browserUrl`` via ``_first_non_flag_tokens``. Flag parse needs
+    those. ``pnpm run`` / ``bun install`` return None.
+    """
+    if not tokens:
+        return None
+    name0 = _launcher_basename(tokens[0])
+    if name0 in _PACKAGE_EXEC_LAUNCHERS:
+        return _package_exec_child_argv(tokens)
+    if name0 in _BUN_LAUNCHERS:
+        return _bun_x_child_argv(tokens)
+    return None
+
+
+def _package_exec_child_argv(tokens: List[str]) -> Optional[List[str]]:
+    name0 = _launcher_basename(tokens[0])
+    i = 1
+    saw_sub = False
+    while i < len(tokens):
+        raw = str(tokens[i]) if tokens[i] is not None else ""
+        if raw == "--":
+            return [str(t) for t in tokens[i + 1:]] if saw_sub else None
+        if raw in {"--package", "-p"} and i + 1 < len(tokens):
+            nxt = str(tokens[i + 1])
+            if not nxt.startswith("-"):
+                i += 2
+                continue
+        if raw.startswith("-"):
+            i += 1
+            continue
+        if not saw_sub:
+            if (name0 == "npm" and raw == "x") or raw in _PACKAGE_EXEC_SUBCOMMANDS:
+                saw_sub = True
+                i += 1
+                continue
+            return None
+        return [str(t) for t in tokens[i:]]
+    return [] if saw_sub else None
+
+
+def _bun_x_child_argv(tokens: List[str]) -> Optional[List[str]]:
+    i = 1
+    saw_sub = False
+    while i < len(tokens):
+        raw = str(tokens[i]) if tokens[i] is not None else ""
+        if raw == "--":
+            return [str(t) for t in tokens[i + 1:]] if saw_sub else None
+        if raw.startswith("-"):
+            i += 1
+            continue
+        if not saw_sub:
+            if raw in _BUN_X_SUBCOMMANDS:
+                saw_sub = True
+                i += 1
+                continue
+            return None
+        return [str(t) for t in tokens[i:]]
+    return [] if saw_sub else None
+
+
 def _leftover_flag_tokens(tokens: List[str]) -> List[str]:
     """Argv the leftover CLI itself sees.
 
     ``npm exec --package=foo -- --browserUrl <dock>`` puts the child's
     flags after npm's ``--``. Stopping ``_flag_value`` at the first
-    ``--`` then missed the dock aim. Peel corepack / npm|pnpm|yarn
-    exec|dlx / bun x the same way the invocation matchers do. A later
-    ``--`` on the child (lighthouse yargs) still ends flag parse.
+    ``--`` then missed the dock aim. Peel corepack / exec|dlx / bun x
+    *without* dropping child flags. A later ``--`` on the child
+    (lighthouse yargs) still ends flag parse.
     """
     if not tokens:
         return []
     peeled = _corepack_command_tokens(tokens)
     work = peeled or [str(t) if t is not None else "" for t in tokens]
-    parts = _package_exec_parts(work)
-    if parts is not None:
-        return parts[1]
-    bun = _bun_x_operands(work)
-    if bun is not None:
-        return bun
-    return work
+    child = _package_manager_child_argv(work)
+    return child if child is not None else work
 
 
 def _is_agent_browser_invocation(tokens: List[str]) -> bool:
