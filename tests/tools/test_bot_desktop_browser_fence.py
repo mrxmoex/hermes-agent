@@ -3075,6 +3075,64 @@ def test_browser_cdp_stateless_dock_result_crossing_a_takeover_is_discarded(monk
     assert result.get("code") == "human_has_control"
 
 
+def test_browser_cdp_timeout_remints_instead_of_generic_timeout(monkeypatch):
+    """A takeover during a hung DevTools call is wait_for_human, not a retryable timeout."""
+    monkeypatch.setattr(browser_cdp_tool, "_resolve_cdp_endpoint", lambda: _DOCK_CDP)
+    monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", _is_dock_cdp)
+
+    def hang(*_a, **_k):
+        lease.acquire("human-viewer")
+        lease.release("human-viewer")
+        raise TimeoutError("Timed out waiting for response to Page.captureScreenshot")
+
+    monkeypatch.setattr(browser_cdp_tool, "_run_async", hang)
+    monkeypatch.setattr(browser_cdp_tool, "_browser_cdp_private_guard", lambda **_k: None)
+    result = json.loads(browser_cdp_tool.browser_cdp(
+        method="Page.captureScreenshot", task_id="review",
+    ))
+    assert result.get("code") == "human_has_control"
+    assert "timed out" not in (result.get("error") or "").lower()
+
+
+def test_browser_cdp_foreign_timeout_is_not_rewritten_as_handoff(monkeypatch):
+    """Another browser's timeout stays a timeout even while this screen is held."""
+    monkeypatch.setattr(browser_cdp_tool, "_resolve_cdp_endpoint", lambda: _FOREIGN_CDP)
+    monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", lambda url, **k: False)
+
+    def hang(*_a, **_k):
+        raise TimeoutError("Timed out waiting for response to Target.getTargets")
+
+    monkeypatch.setattr(browser_cdp_tool, "_run_async", hang)
+    monkeypatch.setattr(browser_cdp_tool, "_browser_cdp_private_guard", lambda **_k: None)
+    lease.acquire("human-viewer")
+    result = json.loads(browser_cdp_tool.browser_cdp(method="Target.getTargets", task_id="review"))
+    assert result.get("code") != "human_has_control"
+    assert "timed out" in (result.get("error") or "").lower()
+
+
+def test_browser_cdp_terminal_remint_after_redact(monkeypatch):
+    """Redact is the last observation step; a remint there must not ship the frame."""
+    monkeypatch.setattr(browser_cdp_tool, "_resolve_cdp_endpoint", lambda: _DOCK_CDP)
+    monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", _is_dock_cdp)
+    monkeypatch.setattr(
+        browser_cdp_tool, "_run_async",
+        lambda *_a, **_k: {"data": "WHAT-THE-HUMAN-TYPED"},
+    )
+
+    def redact_then_takeover(value, **_k):
+        lease.acquire("human-viewer")
+        lease.release("human-viewer")
+        return value
+
+    monkeypatch.setattr(browser_cdp_tool, "_redact_cdp_output", redact_then_takeover)
+    monkeypatch.setattr(browser_cdp_tool, "_browser_cdp_private_guard", lambda **_k: None)
+    result = json.loads(browser_cdp_tool.browser_cdp(
+        method="Page.captureScreenshot", task_id="review",
+    ))
+    assert "WHAT-THE-HUMAN-TYPED" not in json.dumps(result)
+    assert result.get("code") == "human_has_control"
+
+
 def test_browser_cdp_stateless_real_profile_endpoint_is_fenced(monkeypatch):
     """``/browser connect`` / ``browser.cdp_url`` can be the real-profile Chrome
     on this DISPLAY. Dock-identity-only admit left that endpoint unfenced."""

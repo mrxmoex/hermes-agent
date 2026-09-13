@@ -17,7 +17,7 @@ from tools.registry import registry, tool_error
 from tools.browser_extension_router import routed_browser_handler
 from tools.browser_tool_session import (
     _admit_bot_desktop_browser,
-    _discard_if_lease_moved,
+    _lease_moved_after_payload,
     _non_nav_session_key,
     _session_info_for_routed_cdp,
     _shared_browser_fence,
@@ -234,7 +234,7 @@ def _browser_cdp_via_supervisor(task_id: str, frame_id: str, method: str, params
     if refuse:
         return json.dumps(refuse)
     result = _browser_cdp_via_supervisor_unfenced(task_id, frame_id, method, params, timeout)
-    stole = _discard_if_lease_moved(admitted)
+    stole = _lease_moved_after_payload(admitted)
     return json.dumps(stole) if stole else result
 
 
@@ -351,25 +351,36 @@ def browser_cdp(method: str, params: Optional[Dict[str, Any]] = None, target_id:
     try:
         result = _run_async(_cdp_call(endpoint, method, call_params, target_id, safe_timeout))
     except asyncio.TimeoutError as exc:
+        stole = _lease_moved_after_payload(admitted)
+        if stole:
+            return json.dumps(stole)
         return tool_error(f"CDP call timed out after {safe_timeout}s: {exc}", method=method)
     except (TimeoutError, RuntimeError) as exc:
+        stole = _lease_moved_after_payload(admitted)
+        if stole:
+            return json.dumps(stole)
         return tool_error(str(exc), method=method)
     except WebSocketException as exc:
+        stole = _lease_moved_after_payload(admitted)
+        if stole:
+            return json.dumps(stole)
         return tool_error(f"WebSocket error talking to CDP at {endpoint}: {exc}. The browser may have "
                           "disconnected — try '/browser connect' again.", method=method)
     except Exception as exc:  # pragma: no cover — unexpected
+        stole = _lease_moved_after_payload(admitted)
+        if stole:
+            return json.dumps(stole)
         logger.exception("browser_cdp unexpected error")
         return tool_error(f"Unexpected error: {type(exc).__name__}: {exc}", method=method)
-
-    stole = _discard_if_lease_moved(admitted)
-    if stole:
-        return json.dumps(stole)
 
     payload: Dict[str, Any] = {"success": True, "method": method, "result": _redact_cdp_output(
         result, always_paths=_CDP_ALWAYS_BINARY_PATHS.get(method, ()),
         flagged_paths=_CDP_FLAGGED_BINARY_PATHS.get(method, ()))}
     if target_id:
         payload["target_id"] = target_id
+    stole = _lease_moved_after_payload(admitted)
+    if stole:
+        return json.dumps(stole)
     return json.dumps(payload, ensure_ascii=False)
 
 
