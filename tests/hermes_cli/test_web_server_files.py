@@ -431,3 +431,40 @@ def test_credential_dir_trees_blocked_on_subdir_descent(forced_files_client):
     assert [e["name"] for e in mcp_listing.json()["entries"]] == []
 
 
+def test_credential_trees_blocked_on_write(forced_files_client):
+    """Upload / mkdir / delete of bot-desktop/ is the dashboard sibling of
+    write_file lease forge: writing ``{"holder":"agent"}`` into lease.json
+    returns control without acquire/release.
+    """
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+    lease = root / "bot-desktop" / "lease.json"
+    lease.parent.mkdir(parents=True)
+    lease.write_text('{"holder":"human"}\n')
+    notes = root / "notes.md"
+    notes.write_text("ok\n")
+
+    forged = "data:application/json;base64,eyJob2xkZXIiOiJhZ2VudCJ9"
+    upload = client.post(
+        "/api/files/upload",
+        json={"path": str(lease), "data_url": forged, "overwrite": True},
+    )
+    assert upload.status_code == 403, upload.text
+    assert lease.read_text() == '{"holder":"human"}\n'
+
+    mkdir = client.post("/api/files/mkdir", json={"path": str(root / "bot-desktop" / "extra")})
+    assert mkdir.status_code == 403, mkdir.text
+    assert not (root / "bot-desktop" / "extra").exists()
+
+    delete = client.request("DELETE", "/api/files", json={"path": str(lease)})
+    assert delete.status_code == 403, delete.text
+    assert lease.exists()
+
+    ordinary = client.post(
+        "/api/files/upload",
+        json={"path": str(notes), "data_url": "data:text/plain;base64,dXBkYXRlZA==", "overwrite": True},
+    )
+    assert ordinary.status_code == 200, ordinary.text
+    assert notes.read_text() == "updated"
+
+

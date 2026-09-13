@@ -314,6 +314,12 @@ function sensitiveFileBlockReason(filePath) {
     return `${basename} is blocked because it may include auth credentials.`
   }
 
+  // Bot Screen state: cookie jar, X cookie, lease.json, dock-cdp-port.
+  // Writing lease.json from the spot editor returns control without acquire.
+  if (normalized.includes('/bot-desktop/') || normalized.endsWith('/bot-desktop')) {
+    return 'Bot Screen cookie jar, lease, and X cookie are blocked.'
+  }
+
   return null
 }
 

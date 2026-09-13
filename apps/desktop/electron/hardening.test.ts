@@ -667,6 +667,21 @@ test('sensitiveFileBlockReason blocks obvious secret file patterns', () => {
   assert.match(String(sensitiveFileBlockReason('/tmp/server-cert.pem')), /\.pem/)
 })
 
+test('sensitiveFileBlockReason blocks the Bot Screen cookie jar and lease', () => {
+  assert.match(String(sensitiveFileBlockReason('/home/u/.hermes/bot-desktop')), /Bot Screen/)
+  assert.match(String(sensitiveFileBlockReason('/home/u/.hermes/bot-desktop/lease.json')), /Bot Screen/)
+  assert.match(
+    String(sensitiveFileBlockReason('/home/u/.hermes/bot-desktop/browser-profile/Default/Cookies')),
+    /Bot Screen/
+  )
+  assert.match(
+    String(sensitiveFileBlockReason('C:/Users/me/.hermes/profiles/coder/bot-desktop/Xauthority')),
+    /Bot Screen/
+  )
+  assert.equal(sensitiveFileBlockReason('/home/u/.hermes/notes.md'), null)
+  assert.equal(sensitiveFileBlockReason('/home/u/.hermes/cache/images/shot.png'), null)
+})
+
 test('path helpers reject blank non-string NUL and Windows device syntax', async () => {
   await rejectsWithCode(resolveReadableFileForIpc('', { purpose: 'File preview' }), 'invalid-path')
   await rejectsWithCode(resolveReadableFileForIpc('   ', { purpose: 'File preview' }), 'invalid-path')

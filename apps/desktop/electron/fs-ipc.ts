@@ -8,6 +8,7 @@ import path from 'node:path'
 import { ipcMain, shell } from 'electron'
 
 import { installDesktopPluginFromGit, probePluginRepo } from './desktop-plugin-install'
+import { sensitiveFileBlockReason } from './hardening'
 import {
   DESKTOP_PLUGINS_DIR,
   ensureDir,
@@ -193,6 +194,11 @@ export function registerFsIpc({
     }
 
     const resolved = resolveRequestedPathForIpc(expandUserPath(raw), { purpose: 'Write text file' })
+    const sensitiveReason = sensitiveFileBlockReason(resolved)
+
+    if (sensitiveReason) {
+      throw new Error(`Write blocked for sensitive file: ${sensitiveReason}`)
+    }
 
     if (!directoryExists(path.dirname(resolved))) {
       throw new Error('Parent directory does not exist')
