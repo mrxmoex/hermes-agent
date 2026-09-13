@@ -307,6 +307,14 @@ def test_agent_browser_invocation_is_token_match_not_substring():
         ["node", "/tmp/cdp-debug.js"])
     assert not _is_chrome_remote_interface_invocation(
         ["/bin/bash", "-c", "npx chrome-remote-interface --port 9333 inspect"])
+    from tools.browser_tool_session import _is_chrome_devtools_mcp_invocation
+    assert _is_chrome_devtools_mcp_invocation(
+        ["npx", "-y", "chrome-devtools-mcp@latest", "--browserUrl", "http://127.0.0.1:9333"])
+    assert _is_chrome_devtools_mcp_invocation(
+        ["node", "/home/x/node_modules/chrome-devtools-mcp/build/src/index.js"])
+    assert not _is_chrome_devtools_mcp_invocation(["npx", "chrome-devtools"])
+    assert not _is_chrome_devtools_mcp_invocation(
+        ["/bin/bash", "-c", "npx chrome-devtools-mcp --browserUrl http://127.0.0.1:9333"])
 
 
 def test_unregistered_cdp_dock_cli_killed_on_takeover():
@@ -747,6 +755,69 @@ def test_unregistered_chrome_remote_interface_dock_port_killed_on_takeover():
     assert other.killed == 0
     assert lan.killed == 0
     assert script.killed == 0
+    assert bash_parent.killed == 0
+
+
+def test_unregistered_chrome_devtools_mcp_dock_url_killed_on_takeover():
+    """terminal() chrome-devtools-mcp --browserUrl <dock> is leftover action.
+
+    Hermes docs teach this MCP as a live-Chrome attach. --autoConnect / no
+    URL is a Chrome we cannot prove is this jar.
+    """
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    bdb.remember_dock_cdp_port(9333)
+    leftover = _FakeProc(
+        9200,
+        ["npx", "-y", "chrome-devtools-mcp@latest",
+         "--browserUrl", "http://127.0.0.1:9333"],
+    )
+    kebab = _FakeProc(
+        9201,
+        ["npx", "chrome-devtools-mcp",
+         "--browser-url=http://127.0.0.1:9333"],
+    )
+    shebang = _FakeProc(
+        9202,
+        ["node", "/home/x/node_modules/chrome-devtools-mcp/build/src/index.js",
+         "--wsEndpoint", "ws://127.0.0.1:9333/devtools/browser/x"],
+    )
+    short = _FakeProc(
+        9203,
+        ["chrome-devtools-mcp", "-u", "http://127.0.0.1:9333"],
+    )
+    auto = _FakeProc(
+        9204,
+        ["npx", "chrome-devtools-mcp", "--autoConnect"],
+    )
+    other = _FakeProc(
+        9205,
+        ["npx", "chrome-devtools-mcp", "--browserUrl", "http://127.0.0.1:9222"],
+    )
+    lan = _FakeProc(
+        9206,
+        ["npx", "chrome-devtools-mcp", "--browserUrl", "http://10.0.0.5:9333"],
+    )
+    bash_parent = _FakeProc(
+        9207,
+        ["/bin/bash", "-c",
+         "npx chrome-devtools-mcp --browserUrl http://127.0.0.1:9333"],
+    )
+    lease.acquire("human")
+    n = interrupt_unregistered_dock_cli(
+        processes=[leftover, kebab, shebang, short, auto, other, lan, bash_parent],
+        chromium_pid=9999,
+        owner_daemon_pid=9998,
+    )
+    assert n == 4
+    assert leftover.killed == 1
+    assert kebab.killed == 1
+    assert shebang.killed == 1
+    assert short.killed == 1
+    assert auto.killed == 0
+    assert other.killed == 0
+    assert lan.killed == 0
     assert bash_parent.killed == 0
 
 

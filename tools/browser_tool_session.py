@@ -1294,6 +1294,52 @@ def _is_playwright_mcp_invocation(tokens: List[str]) -> bool:
     return False
 
 
+def _token_is_chrome_devtools_mcp(token: str) -> bool:
+    """True when this token is ``chrome-devtools-mcp`` or its Node entry.
+
+    Hermes docs teach this MCP as a live-Chrome attach. Token-match the
+    package only — ``npx chrome-devtools`` and ``cat chrome-devtools-mcp.log``
+    are not invocations.
+    """
+    if _token_basename_is(token, "chrome-devtools-mcp"):
+        return True
+    raw = (token or "").strip().strip("\"'")
+    if not raw:
+        return False
+    path = Path(raw)
+    parts = [p.lower() for p in path.parts]
+    if "chrome-devtools-mcp" not in parts:
+        return False
+    name = path.name.lower()
+    if name.startswith("chrome-devtools-mcp"):
+        return True
+    return name in {
+        "cli.js", "cli.mjs", "cli.cjs", "index.js", "bin.js", "main.js",
+    }
+
+
+def _is_chrome_devtools_mcp_invocation(tokens: List[str]) -> bool:
+    """True when argv launches chrome-devtools-mcp (npx, shebang node).
+
+    Token-match only. ``--autoConnect`` / no URL launches or attaches a
+    Chrome we cannot prove is this jar — stay unknown. Do not match a
+    bare ``chrome-devtools`` binary.
+    """
+    if not tokens:
+        return False
+    if _token_is_chrome_devtools_mcp(tokens[0]):
+        return True
+    name0 = _launcher_basename(tokens[0])
+    if name0 in _ENV_LAUNCHERS:
+        return _is_chrome_devtools_mcp_invocation(_env_command_tokens(tokens))
+    if name0 in _NPX_LAUNCHERS:
+        rest = _first_non_flag_tokens(tokens)
+        return bool(rest) and _token_is_chrome_devtools_mcp(rest[0])
+    if name0 in _NODE_LAUNCHERS:
+        return any(_token_is_chrome_devtools_mcp(t) for t in _first_non_flag_tokens(tokens))
+    return False
+
+
 def _is_unregistered_dock_cli_invocation(tokens: List[str]) -> bool:
     return (
         _is_agent_browser_invocation(tokens)
@@ -1301,6 +1347,7 @@ def _is_unregistered_dock_cli_invocation(tokens: List[str]) -> bool:
         or _is_playwright_invocation(tokens)
         or _is_playwright_mcp_invocation(tokens)
         or _is_chrome_remote_interface_invocation(tokens)
+        or _is_chrome_devtools_mcp_invocation(tokens)
     )
 
 
@@ -1376,6 +1423,29 @@ def _unregistered_cli_aims_at_dock(
         if port_text and str(port_text).isdigit():
             port = int(port_text)
             return dock_port is not None and 1 <= port <= 65535 and port == dock_port
+        val = (env.get("BROWSER_CDP_URL") or "").strip()
+        if val:
+            if _cdp_url_is_bot_desktop_browser(val):
+                return True
+            port = _loopback_cdp_port(val)
+            return dock_port is not None and port == dock_port
+        return False
+    if (
+        _is_chrome_devtools_mcp_invocation(tokens)
+        and not _is_agent_browser_invocation(tokens)
+    ):
+        for keys in (
+            ("--browserUrl", "--browser-url", "-u"),
+            ("--wsEndpoint", "--ws-endpoint", "-w"),
+            ("--cdp-endpoint", "--cdp"),
+        ):
+            cdp = _flag_value(tokens, keys)
+            if not cdp:
+                continue
+            if _cdp_url_is_bot_desktop_browser(cdp):
+                return True
+            port = _loopback_cdp_port(cdp)
+            return dock_port is not None and port == dock_port
         val = (env.get("BROWSER_CDP_URL") or "").strip()
         if val:
             if _cdp_url_is_bot_desktop_browser(val):
