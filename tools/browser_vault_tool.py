@@ -31,12 +31,12 @@ import secrets
 import logging
 from typing import Any, Dict, Optional
 
+from tools import browser_tool_session as _session
 from tools.browser_tool_session import (
     _bracket_bot_desktop_browser,
     _discard_if_lease_moved,
     _live_supervisor_for_session,
     _non_nav_session_key,
-    _run_browser_command,
     _session_info_for_shared_browser_fence,
     _shared_browser_fence,
 )
@@ -117,7 +117,7 @@ def _eval_js(task_id: str, expression: str) -> Dict[str, Any]:
         except Exception as exc:  # pragma: no cover — defensive
             logger.debug("vault fill: supervisor eval unavailable (%s)", exc)
 
-        result = _run_browser_command(effective, "eval", [expression])
+        result = _session._run_browser_command(effective, "eval", [expression])
         if not result.get("success"):
             out = {"success": False, "error": result.get("error", "eval failed")}
             return _with_handoff_code(out, result)
@@ -141,7 +141,7 @@ def _ensure_supervisor(task_id: str):
     if supervisor is not None:
         return supervisor
 
-    res = _run_browser_command(effective, "get", ["cdp-url"])
+    res = _session._run_browser_command(effective, "get", ["cdp-url"])
     # Independently-fenced get remints; do not rewrite as "no supervisor".
     if (res or {}).get("code") == "human_has_control":
         return res

@@ -1178,11 +1178,11 @@ def test_vault_eval_preserves_human_has_control_code(monkeypatch):
         type("R", (), {"get": staticmethod(lambda *_a: None)})(),
     )
     monkeypatch.setattr("tools.browser_tool._last_session_key", lambda key: key)
-    monkeypatch.setattr(session, "_run_browser_command", lambda *_a, **_k: {
-        "success": False, "code": "human_has_control",
-        "error": "A human has control of this bot's screen.",
-    })
-    result = vault._eval_js("review", "window.location.href")
+        monkeypatch.setattr(session, "_run_browser_command", lambda *_a, **_k: {
+            "success": False, "code": "human_has_control",
+            "error": "A human has control of this bot's screen.",
+        })
+        result = vault._eval_js("review", "window.location.href")
     assert result.get("code") == "human_has_control"
     assert result.get("success") is not True
 
@@ -1378,7 +1378,7 @@ def test_browser_dialog_is_fenced_while_human_controls(monkeypatch):
             return {"ok": True, "dialog": {"message": "WHAT-THE-HUMAN-TYPED"}}
 
     monkeypatch.setattr(
-        dialog, "SUPERVISOR_REGISTRY",
+        "tools.browser_supervisor.SUPERVISOR_REGISTRY",
         type("R", (), {"get": staticmethod(lambda _tid: _Sup())})(),
     )
     lease.acquire("human-viewer")
@@ -1707,11 +1707,11 @@ def test_vault_secret_eval_preserves_handoff_when_cdp_url_probe_remints(monkeypa
         "tools.browser_supervisor.SUPERVISOR_REGISTRY",
         type("R", (), {"get": staticmethod(lambda *_a: None)})(),
     )
-    monkeypatch.setattr(session_mod, "_run_browser_command", lambda *a, **k: {
-        "success": False, "code": "human_has_control",
-        "error": "A human has control of this bot's screen.",
-    })
-    result = vault._eval_js_secret("review", "document.querySelector('input').value='s3cret-pw'")
+        monkeypatch.setattr(session_mod, "_run_browser_command", lambda *a, **k: {
+            "success": False, "code": "human_has_control",
+            "error": "A human has control of this bot's screen.",
+        })
+        result = vault._eval_js_secret("review", "document.querySelector('input').value='s3cret-pw'")
     assert result.get("code") == "human_has_control"
     assert result.get("success") is not True
     assert result.get("error_type") != "supervisor_required"
@@ -2343,8 +2343,6 @@ def test_browser_eval_supervisor_fenced_when_cloud_is_predicted(monkeypatch):
         "tools.browser_supervisor.SUPERVISOR_REGISTRY",
         type("R", (), {"get": staticmethod(lambda _tid: _Sup())})(),
     )
-    monkeypatch.setattr(dialog, "SUPERVISOR_REGISTRY",
-                        type("R", (), {"get": staticmethod(lambda _tid: _Sup())})())
     from tools import browser_tool as browser
     monkeypatch.setattr(browser, "_is_camofox_mode", lambda: False)
     monkeypatch.setattr(browser._eval_policy, "_eval_ssrf_guard_active", lambda *_a: False)
@@ -3025,7 +3023,7 @@ def test_vault_eval_does_not_read_leftover_dock_on_cached_cloud(monkeypatch):
         "tools.browser_supervisor.SUPERVISOR_REGISTRY",
         type("R", (), {"get": staticmethod(lambda _tid: _Sup())})(),
     )
-    monkeypatch.setattr(vault, "_run_browser_command", lambda *_a, **_k: {
+    monkeypatch.setattr(session_mod, "_run_browser_command", lambda *_a, **_k: {
         "success": True, "data": {"result": "from-cli"},
     })
     try:
@@ -3065,7 +3063,7 @@ def test_vault_secret_does_not_write_leftover_dock_on_cached_cloud(monkeypatch):
         "tools.browser_supervisor.SUPERVISOR_REGISTRY",
         type("R", (), {"get": staticmethod(lambda _tid: _Sup())})(),
     )
-    monkeypatch.setattr(vault, "_run_browser_command", lambda *_a, **_k: {
+    monkeypatch.setattr(session_mod, "_run_browser_command", lambda *_a, **_k: {
         "success": True, "data": {},
     })
     try:
@@ -3551,10 +3549,6 @@ def test_non_nav_wrappers_fence_hybrid_sidecar_when_bare_task_predicts_cloud(mon
 
     monkeypatch.setattr(
         "tools.browser_supervisor.SUPERVISOR_REGISTRY",
-        type("R", (), {"get": staticmethod(lambda tid: _Sup() if tid == sidecar else None)})(),
-    )
-    monkeypatch.setattr(
-        dialog, "SUPERVISOR_REGISTRY",
         type("R", (), {"get": staticmethod(lambda tid: _Sup() if tid == sidecar else None)})(),
     )
     monkeypatch.setattr(
