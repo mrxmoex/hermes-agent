@@ -69,6 +69,10 @@ def _lightpanda_fallback_reason(engine: str, command: str, result: Dict[str, Any
     """User-visible reason a Lightpanda result needs the Chrome fallback (copied into the result), or None."""
     if engine != "lightpanda" or command not in _FALLBACK_ELIGIBLE:
         return None
+    # A reminted handoff is not an engine failure. Retrying Chrome would run
+    # another command on the shared desktop after the human's turn.
+    if result.get("code") == "human_has_control":
+        return None
     if not result.get("success"):
         return f"Lightpanda {command!r} failed ({str(result.get('error') or 'command failed').strip()}); retried with Chrome."
     data = result.get("data", {})
@@ -137,6 +141,9 @@ def _run_chrome_fallback_command_unfenced(task_id: str, command: str, args: List
     # 1. Current URL from the Lightpanda session. ``get url`` is not fallback-eligible,
     # so this can't recurse; the explicit override strips Chromium-only env flags.
     url_result = _session._run_browser_command(task_id, "get", ["url"], timeout=10, _engine_override="lightpanda")
+    # Independently-fenced get-url remints; do not rewrite as a missing-origin error.
+    if url_result.get("code") == "human_has_control":
+        return url_result
     current_url = str(url_result.get("data", {}).get("url", "")).strip() if url_result.get("success") else None
     if not current_url:
         _bt.logger.warning("Chrome fallback: could not determine current URL from LP session")

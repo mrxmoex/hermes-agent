@@ -136,6 +136,17 @@ class TestNeedsLightpandaFallback:
         result = {"success": False, "error": "page.goto: Timeout"}
         assert _needs_lightpanda_fallback("lightpanda", "open", result) is True
 
+    def test_handoff_refuse_does_not_trigger_fallback(self):
+        """A reminted lease is not a Lightpanda engine failure."""
+        from tools.browser_tool_lightpanda_fallback import _needs_lightpanda_fallback
+        result = {
+            "success": False,
+            "code": "human_has_control",
+            "error": "A human has control of this bot's screen.",
+        }
+        assert _needs_lightpanda_fallback("lightpanda", "click", result) is False
+        assert _needs_lightpanda_fallback("lightpanda", "screenshot", result) is False
+
 
     def test_empty_snapshot_triggers_fallback(self):
         from tools.browser_tool_lightpanda_fallback import _needs_lightpanda_fallback

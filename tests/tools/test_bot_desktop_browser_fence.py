@@ -153,6 +153,61 @@ def test_chrome_fallback_lookup_miss_fails_closed_while_human_holds(monkeypatch)
     assert result.get("code") == "human_has_control"
 
 
+def test_lightpanda_does_not_retry_chrome_after_a_handoff_refuse(monkeypatch):
+    """A reminted Lightpanda result is not an engine failure. Retrying Chrome
+    would run another command on the shared desktop after the human's turn."""
+    commands: list = []
+    _browser, session = _wire(monkeypatch, commands)
+    monkeypatch.setattr(session._cloud, "_get_browser_engine", lambda: "lightpanda")
+    fallback: list = []
+    monkeypatch.setattr(
+        session._lp, "_run_chrome_fallback_command",
+        lambda *a, **k: fallback.append(a) or {
+            "success": True, "data": {"secret": "WHAT-THE-HUMAN-TYPED"}},
+    )
+    monkeypatch.setattr(
+        session._lp, "_chrome_fallback_screenshot",
+        lambda *a, **k: fallback.append(("screenshot",) + a) or {
+            "success": True, "data": {"secret": "WHAT-THE-HUMAN-TYPED"}},
+    )
+
+    def spawn(*args):
+        commands.append(args[2])
+        return {
+            "success": False, "code": "human_has_control",
+            "error": "A human has control of this bot's screen.",
+        }
+
+    monkeypatch.setattr(session, "_spawn_and_collect", spawn)
+    result = session._run_browser_command("review", "click", ["@e1"])
+    assert fallback == [], f"handoff refuse retried Chrome: {fallback}; result={result}"
+    assert result.get("code") == "human_has_control"
+    assert "WHAT-THE-HUMAN-TYPED" not in json.dumps(result)
+
+
+def test_chrome_fallback_url_probe_preserves_human_has_control(monkeypatch):
+    """Independently-fenced get-url remints; do not rewrite as a missing-URL error."""
+    from tools import browser_tool_lightpanda_fallback as lp
+    from tools import browser_tool_session as session
+
+    spawned: list = []
+    monkeypatch.setattr(session, "_get_session_info", lambda *a: {
+        "session_name": "review", "cdp_url": None, "features": {"local": True}})
+    monkeypatch.setattr(
+        session, "_popen_agent_browser",
+        lambda *a, **k: spawned.append(a) or (_ for _ in ()).throw(AssertionError("unfenced")),
+    )
+    monkeypatch.setattr(session, "_run_browser_command", lambda *a, **k: {
+        "success": False, "code": "human_has_control",
+        "error": "A human has control of this bot's screen.",
+    })
+    result = lp._run_chrome_fallback_command("review", "screenshot", [], timeout=10)
+    assert spawned == [], f"reminted get-url still launched temp Chrome: {spawned}"
+    assert result.get("code") == "human_has_control"
+    assert result.get("success") is not True
+    assert "could not determine" not in (result.get("error") or "").lower()
+
+
 def _wire_browser_exec(monkeypatch, *, session_info=None, run_cli=None):
     """Admit/discard the harness without launching a real browser-use CLI."""
     ran: list = []
