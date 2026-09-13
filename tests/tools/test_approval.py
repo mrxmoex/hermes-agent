@@ -370,6 +370,38 @@ class TestHermesConfigWriteProtection:
             assert dangerous is False, cmd
 
 
+class TestHermesBotDesktopWriteProtection:
+    """Terminal-side pairing for the file_safety write deny on bot-desktop/.
+
+    write_file of lease.json forges holder=agent without acquire/release;
+    write of dock-cdp-port fail-opens leftover CDP. Without these patterns
+    the terminal tool is an unpaired auto-approve door. Same class as
+    #14639 for config.yaml/.env — not a lease-gated computer_use fence.
+    """
+
+    def test_write_idioms_against_lease_and_dock_port(self):
+        for command in (
+            'echo \'{"holder":"agent"}\' > ~/.hermes/bot-desktop/lease.json',
+            "echo 9333 > $HERMES_HOME/bot-desktop/dock-cdp-port",
+            "echo x | tee ~/.hermes/bot-desktop/lease.json",
+            "cp /tmp/evil.json ~/.hermes/bot-desktop/lease.json",
+            "sed -i 's/human/agent/' ~/.hermes/bot-desktop/lease.json",
+            "perl -i -pe 's/human/agent/' $HERMES_HOME/bot-desktop/lease.json",
+        ):
+            dangerous, key, desc = detect_dangerous_command(command)
+            assert dangerous is True, command
+            assert key is not None, command
+
+    def test_reads_and_unrelated_writes_are_safe(self):
+        for cmd in (
+            "cat ~/.hermes/bot-desktop/lease.json",
+            "echo data > /tmp/scratch.txt",
+            "echo x > ~/projects/notes.md",
+        ):
+            dangerous, key, desc = detect_dangerous_command(cmd)
+            assert dangerous is False, cmd
+
+
 class TestFindExecFullPathRm:
     """Detect find -exec with full-path rm bypasses."""
 

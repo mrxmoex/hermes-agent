@@ -133,6 +133,25 @@ def _sanitize_attachment_name(name: str) -> str:
     return candidate.strip().strip(".") or "attachment"
 
 
+def _attachment_block_reason(path) -> str | None:
+    """``get_read_block_error`` for attach RPCs. Fail-closed if the guard is
+    missing or raises — otherwise ``file.attach`` can copy ``bot-desktop/``
+    (or ``.env``) into ``attachments/`` where a later ``@file:`` is allowed."""
+    try:
+        from agent.file_safety import get_read_block_error
+    except Exception:
+        return "Access to sensitive files is not allowed"
+    try:
+        return get_read_block_error(str(path))
+    except Exception:
+        return "Access to sensitive files is not allowed"
+
+
+def _deny_blocked_attachment(path) -> None:
+    if reason := _attachment_block_reason(path):
+        raise PermissionError(reason)
+
+
 def _stage_session_file_attachment(
     session: dict, *, raw_path: str, data_url: str, name: str) -> tuple[Path, bool]:
     """Make a desktop file attachment available to the gateway agent: ``(stored_path, uploaded)``.
@@ -155,6 +174,7 @@ def _stage_session_file_attachment(
                 found = _resolve_attachment_path(path_token)
                 resolved = Path(found).resolve() if found is not None else None
     if resolved is not None:
+        _deny_blocked_attachment(resolved)
         try:
             resolved.relative_to(workspace)
             return resolved, False
