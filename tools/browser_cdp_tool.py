@@ -108,6 +108,16 @@ def _run_async(coro):
     return asyncio.run(coro)
 
 
+def _cdp_override_raw() -> str:
+    """Configured CDP override with no discovery I/O, or \"\"."""
+    try:
+        from tools.browser_tool_cdp import _get_cdp_override_raw
+        return (_get_cdp_override_raw() or "").strip()
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.debug("browser_cdp: failed to read CDP override: %s", exc)
+        return ""
+
+
 def _resolve_cdp_endpoint() -> str:
     """Normalized CDP WebSocket URL via ``browser_tool_cdp._get_cdp_override``, or ""."""
     try:
@@ -300,6 +310,15 @@ def browser_cdp(method: str, params: Optional[Dict[str, Any]] = None, target_id:
     if not _WS_AVAILABLE:
         return tool_error("The 'websockets' Python package is required but not installed. "
                           "Install it with: pip install websockets")
+    # Admit the *configured* override before ``/json/version``. That discovery
+    # is a DevTools read of leftover dock / real-profile Chrome; scheme-less
+    # ``127.0.0.1:PORT`` is how ``/browser connect`` stores it. Tests that
+    # patch only ``_resolve_cdp_endpoint`` still hit the resolved admit below.
+    raw = _cdp_override_raw()
+    if raw:
+        admitted, refuse = _admit_bot_desktop_browser(_session_info_for_routed_cdp(raw))
+        if refuse:
+            return json.dumps(refuse)
     endpoint = _resolve_cdp_endpoint()
     if not endpoint:
         return tool_error("No CDP endpoint is available. Run '/browser connect' to attach to a running Chrome, "

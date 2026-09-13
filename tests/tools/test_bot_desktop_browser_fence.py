@@ -2843,6 +2843,29 @@ def test_browser_cdp_stateless_scheme_less_foreign_is_not_fenced(monkeypatch):
     assert "WebSocket" in result.get("error", "")
 
 
+def test_browser_cdp_does_not_discover_leftover_chrome_while_human_holds(monkeypatch):
+    """``/json/version`` is a DevTools read of leftover Chrome; admit on the raw
+    override first so a human hold remints without probing the shared browser."""
+    token = _without_in_process_real_profile()
+    _live_real_profile_copy(monkeypatch)
+    probed: list = []
+    monkeypatch.setattr(browser_cdp_tool, "_cdp_override_raw", lambda: "127.0.0.1:9334")
+
+    def probe(*_a, **_k):
+        probed.append("get")
+        raise AssertionError("leftover Chrome must not be probed while human holds")
+
+    monkeypatch.setattr("requests.get", probe)
+    monkeypatch.setattr(browser_cdp_tool, "_browser_cdp_private_guard", lambda **_k: None)
+    lease.acquire("human-viewer")
+    try:
+        result = json.loads(browser_cdp_tool.browser_cdp(method="Target.getTargets", task_id="review"))
+    finally:
+        _restore_in_process_real_profile(token)
+    assert probed == [], f"human holds the lease, yet leftover Chrome was probed: {probed}"
+    assert result.get("code") == "human_has_control"
+
+
 def test_timeout_does_not_teardown_shared_browser_while_human_holds(monkeypatch, tmp_path):
     """In-flight timeout recovery is the same class as the janitor: no tree-kill."""
     from tools import browser_tool as browser
