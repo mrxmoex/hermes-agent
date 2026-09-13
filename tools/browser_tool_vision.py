@@ -21,21 +21,24 @@ def _vision_mode_label() -> str:
 
 def _lightpanda_vision_preroute(
     effective_task_id: str, annotate: bool, screenshot_path: Path,
-) -> Tuple[bool, Optional[str], Path]:
+) -> Tuple[bool, Optional[str], Path, Optional[Dict[str, Any]]]:
     """Capture the vision screenshot via the Chrome fallback when Lightpanda is the engine
-    (it has no graphical renderer). Returns ``(prerouted, fallback_warning, path)``;
-    on fallback failure ``prerouted`` is False and the caller takes the normal
-    screenshot path (forcing Chrome) so the standard fallback metadata still applies."""
+    (it has no graphical renderer). Returns ``(prerouted, fallback_warning, path, remint)``;
+    on a reminted handoff ``remint`` carries ``code: human_has_control`` so the caller
+    does not fail-open to a second screenshot. Other fallback failures leave
+    ``prerouted`` False so the caller takes the normal Chrome screenshot path."""
     engine = _cloud._get_browser_engine()
     if engine != "lightpanda" or not _cloud._should_inject_engine(engine):
-        return False, None, screenshot_path
+        return False, None, screenshot_path, None
     _bt.logger.debug("browser_vision: pre-routing screenshot to Chrome (engine=lightpanda)")
     screenshot_args = ["--annotate"] if annotate else []
     fb_result = _lp._chrome_fallback_screenshot(effective_task_id, screenshot_args, _bt._get_command_timeout())
     fb_result = _lp._annotate_lightpanda_fallback(fb_result, _bt._LP_VISION_FALLBACK_REASON)
+    if fb_result.get("code") == "human_has_control":
+        return False, None, screenshot_path, fb_result
     if not fb_result.get("success"):
         _bt.logger.warning("Lightpanda Chrome fallback vision screenshot failed: %s", fb_result.get("error"))
-        return False, None, screenshot_path
+        return False, None, screenshot_path, None
     fb_path = fb_result.get("data", {}).get("path", "")
     if fb_path and os.path.exists(fb_path):
         import uuid as uuid_mod
@@ -46,7 +49,7 @@ def _lightpanda_vision_preroute(
         persistent_path = screenshots_dir / f"browser_screenshot_{uuid_mod.uuid4().hex}.png"
         shutil.copy2(fb_path, persistent_path)
         screenshot_path = persistent_path
-    return True, fb_result.get("fallback_warning"), screenshot_path
+    return True, fb_result.get("fallback_warning"), screenshot_path, None
 
 
 def _native_vision_result(

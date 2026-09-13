@@ -334,6 +334,36 @@ def test_browser_vision_preroute_is_fenced_while_human_controls(monkeypatch, tmp
     assert parsed.get("code") == "human_has_control"
 
 
+def test_vision_preroute_remint_does_not_take_a_second_screenshot(monkeypatch, tmp_path):
+    """A reminted Chrome-fallback preroute must not fail-open to another capture."""
+    commands: list = []
+    browser, session = _wire(monkeypatch, commands)
+    monkeypatch.setattr(session._cloud, "_get_browser_engine", lambda: "lightpanda")
+    monkeypatch.setattr(session._cloud, "_should_inject_engine", lambda *a, **k: True)
+    monkeypatch.setattr(
+        "tools.browser_tool_lightpanda_fallback._chrome_fallback_screenshot",
+        lambda *a, **k: {
+            "success": False, "code": "human_has_control",
+            "error": "A human has control of this bot's screen.",
+        },
+    )
+    second: list = []
+
+    def run(*a, **k):
+        second.append(a)
+        return {
+            "success": True,
+            "data": {"path": str(tmp_path / "SECOND.png"), "secret": "WHAT-THE-HUMAN-TYPED"},
+        }
+
+    monkeypatch.setattr(session, "_run_browser_command", run)
+    result = json.loads(browser.browser_vision("what is on the page?", task_id="review"))
+    assert second == [], f"reminted preroute took a second screenshot: {second}"
+    assert result.get("code") == "human_has_control"
+    assert result.get("success") is not True
+    assert "WHAT-THE-HUMAN-TYPED" not in json.dumps(result)
+
+
 class _EvalSupervisor:
     def __init__(self, ran, result="WHAT-THE-HUMAN-TYPED"):
         self.ran = ran

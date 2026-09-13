@@ -1347,8 +1347,12 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         stole = _session._discard_if_lease_moved(admitted)
         return _dumps(stole) if stole else payload
 
-    _lp_prerouted, _lp_fallback_warning, screenshot_path = _vision._lightpanda_vision_preroute(
+    preroute = _vision._lightpanda_vision_preroute(
         effective_task_id, annotate, screenshot_path)
+    _lp_prerouted, _lp_fallback_warning, screenshot_path, *rest = preroute
+    remint = rest[0] if rest else None
+    if remint and remint.get("code") == "human_has_control":
+        return _guard(_dumps(remint))
     result: Dict[str, Any] = {}
     try:
         screenshots_dir.mkdir(parents=True, exist_ok=True)
