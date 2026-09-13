@@ -16,6 +16,24 @@ _watch_started = False
 _watch_lock = threading.Lock()
 
 
+def supervisor_may_touch_page(cdp_url: str = "") -> bool:
+    """False when a leftover supervisor must not talk to this Chromium.
+
+    A human-held dock jar is the page they are typing into. Reconnect,
+    ``Target.createTarget``, Fetch passthrough, and ``/json/version`` are all
+    observation/action on that jar. Unrelated remote CDP is another browser.
+    """
+    try:
+        from tools.bot_desktop.lease import HumanHasControl
+        from tools.browser_tool_session import _admit_shared_browser
+        _admit_shared_browser(cdp_url=cdp_url or "")
+        return True
+    except HumanHasControl:
+        return False
+    except Exception:
+        return True
+
+
 def install_supervisor_lease_hook() -> None:
     """Stop dock-aimed supervisors the moment *this* process writes HUMAN.
 

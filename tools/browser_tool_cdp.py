@@ -149,30 +149,45 @@ def _ensure_cdp_supervisor(task_id: str) -> None:
     every navigate / ``/browser connect``. URL precedence: the CDP override, then the session's own ``cdp_url``
     (cloud providers, e.g. Browserbase). Swallows all errors — a failed attach must not break the session;
     snapshots just lack ``pending_dialogs`` / ``frame_tree``.
+
+    Admit on the *raw* URL before HTTP ``/json/version``. Discovery talks to the
+    dock jar (tab list + debugger websocket); doing that while a human holds is
+    the leftover observation path ``_get_session_info`` already closed.
     """
     _bt = _origin()
-    cdp_url = _get_cdp_override()
-    if not cdp_url:
+    raw = ""
+    try:
+        raw = (_get_cdp_override_raw() or "").strip()
+    except Exception:
+        raw = ""
+    session_cdp = ""
+    if not raw:
         with _bt._cleanup_lock:
             session_info = _bt._active_sessions.get(task_id, {})
-        maybe = str(session_info.get("cdp_url") or "")
-        if maybe:
-            cdp_url = _resolve_cdp_override(maybe)
-    if not cdp_url:
+        session_cdp = str(session_info.get("cdp_url") or "")
+    candidate = raw or session_cdp
+    if not candidate:
         return
     try:
-        from tools.browser_tool_supervisor_lease import install_supervisor_lease_hook
+        from tools.browser_tool_supervisor_lease import install_supervisor_lease_hook, supervisor_may_touch_page
+        if not supervisor_may_touch_page(candidate):
+            return
         install_supervisor_lease_hook()
     except Exception:
         pass
-    try:
-        from tools.bot_desktop.lease import HumanHasControl
-        from tools.browser_tool_session import _admit_shared_browser
-        _admit_shared_browser(cdp_url=cdp_url)
-    except HumanHasControl:
+    if raw:
+        cdp_url = _get_cdp_override() or ""
+    else:
+        cdp_url = _resolve_cdp_override(session_cdp) if session_cdp else ""
+    if not cdp_url:
         return
-    except Exception:
-        pass
+    if cdp_url != candidate:
+        try:
+            from tools.browser_tool_supervisor_lease import supervisor_may_touch_page
+            if not supervisor_may_touch_page(cdp_url):
+                return
+        except Exception:
+            pass
     try:
         from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
         policy, timeout_s = _get_dialog_policy_config()

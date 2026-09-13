@@ -354,6 +354,21 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         attempt, last_success_at, backoff = 0, 0.0, 0.5
         import websockets  # deferred: only supervisors that connect pay the import
         while not self._stop_requested:
+            # Cross-process Take over can land while this loop is between
+            # sockets. Reconnect would Target.attach / Target.createTarget on
+            # the page the human is typing into; stop instead of racing the 1s
+            # leftover-supervisor watch.
+            try:
+                from tools.browser_tool_supervisor_lease import supervisor_may_touch_page
+                if not supervisor_may_touch_page(self.cdp_url):
+                    logger.info(
+                        "CDP supervisor %s: not (re)connecting; a human holds the Bot Desktop lease",
+                        self.task_id,
+                    )
+                    self._stop_requested = True
+                    return
+            except Exception:
+                pass
             try:
                 self._ws = await asyncio.wait_for(websockets.connect(self.cdp_url, max_size=50 * 1024 * 1024), timeout=10.0)
             except Exception as e:

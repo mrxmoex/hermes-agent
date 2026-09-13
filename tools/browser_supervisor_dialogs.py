@@ -186,6 +186,12 @@ class DialogSupervisionMixin:
         if not request_id:
             return
         if DIALOG_BRIDGE_HOST not in url:
+            try:
+                from tools.browser_tool_supervisor_lease import supervisor_may_touch_page
+                if not supervisor_may_touch_page(getattr(self, "cdp_url", "") or ""):
+                    return
+            except Exception:
+                pass
             await self._cdp_quiet("Fetch.continueRequest", {"requestId": request_id},
                                   session_id=session_id, timeout=3.0, what="passthrough")
             return

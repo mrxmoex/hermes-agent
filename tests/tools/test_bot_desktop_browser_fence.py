@@ -719,6 +719,25 @@ def test_browser_cdp_discards_result_after_takeover(monkeypatch):
     assert "SECRET" not in json.dumps(out)
 
 
+def test_browser_cdp_does_not_resolve_dock_endpoint_while_human_holds(monkeypatch):
+    """Admit before HTTP /json/version — discovery itself reads the human's jar."""
+    import tools.bot_desktop.browser as bdb
+    from tools.bot_desktop import lease
+    from tools import browser_cdp_tool as cdp
+
+    probed = []
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: 9333)
+    monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override_raw", lambda: "http://127.0.0.1:9333")
+    monkeypatch.setattr(cdp, "_resolve_cdp_endpoint", lambda: probed.append("http") or "ws://127.0.0.1:9333/devtools/browser/x")
+    monkeypatch.setattr(cdp, "_WS_AVAILABLE", True)
+    monkeypatch.setattr(cdp, "_run_async", lambda *_a, **_k: {"data": "SECRET"})
+    lease.acquire("human-viewer")
+    out = json.loads(cdp.browser_cdp("Target.getTargets", {}))
+    assert out.get("code") == "human_has_control"
+    assert probed == []
+    assert "SECRET" not in json.dumps(out)
+
+
 def test_sibling_profile_browser_connect_does_not_override_this_home(monkeypatch, tmp_path):
     """``/browser connect`` writes BROWSER_CDP_URL; a multiplex sibling must not inherit it."""
     from hermes_constants import hermes_home_key, reset_hermes_home_override, set_hermes_home_override
