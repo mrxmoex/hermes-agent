@@ -12,6 +12,7 @@ import subprocess
 import sys
 import time
 from typing import Optional, Tuple
+from tools.bot_desktop.lease import HumanHasControl, human_holds
 from tools.browser_tool_origin import origin_module as _origin
 from tools import browser_tool_cloud as _cloud
 from tools import browser_tool_install as _install
@@ -245,6 +246,13 @@ def _real_profile_cdp() -> tuple:
     if _lp._using_lightpanda_engine():
         return None, (_RP + "browser.engine is set to 'lightpanda', which cannot load a real Chromium profile. "
                       "Set browser.engine to 'auto' or 'chrome' to use real-profile browsing, or turn the toggle off.")
+
+    # Real-profile Chrome is launched with this profile's Bot Desktop DISPLAY. A cache
+    # hit still attaches CDP to that shared instance — refuse before lock/launch/attach.
+    if human_holds():
+        raise HumanHasControl(
+            "A human holds the bot's screen; refusing to launch or attach the shared local browser."
+        )
 
     from hermes_cli.browser_connect import (chromium_executable, detect_default_chromium,
                                             real_profile_copy_dir, snapshot_real_profile)

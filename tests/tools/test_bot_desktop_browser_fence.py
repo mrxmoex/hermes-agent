@@ -756,6 +756,49 @@ def test_navigate_cloud_fallback_does_not_create_while_human_holds(monkeypatch):
     assert result.get("code") == "human_has_control"
 
 
+def test_real_profile_cdp_refuses_while_human_holds(monkeypatch):
+    """Cache hit or launch — real-profile Chrome sits on this profile's DISPLAY."""
+    from tools import browser_tool as browser
+    from tools import browser_tool_real_profile as rp
+
+    launched: list = []
+    browser._real_profile_cdp_cache["cdp"] = "http://127.0.0.1:9222"
+    monkeypatch.setattr("tools.browser_tool_cloud._use_real_profile", lambda: True)
+    monkeypatch.setattr(rp._lp, "_using_lightpanda_engine", lambda: False)
+    monkeypatch.setattr(
+        rp, "_launch_real_profile_chrome",
+        lambda *a, **k: launched.append("launch") or (None, "no"))
+    lease.acquire("human-viewer")
+    try:
+        with pytest.raises(lease.HumanHasControl, match="human holds"):
+            rp._real_profile_cdp()
+        assert launched == [], f"real-profile launched or attached while human holds: {launched}"
+    finally:
+        browser._real_profile_cdp_cache.pop("cdp", None)
+
+
+def test_browser_exec_local_real_profile_refuses_while_human_holds(monkeypatch):
+    """``local=true`` upgrades to real-profile even under a cloud provider — after the fence miss."""
+    launched: list = []
+    ran: list = []
+    monkeypatch.setattr(bu_cli, "_real_profile_consented", lambda: True)
+    monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override_raw", lambda: "")
+    monkeypatch.setattr("tools.browser_tool_cloud._get_cloud_provider", _cloud_provider_that_fails)
+    monkeypatch.setattr(session_mod._cloud, "_get_cloud_provider", _cloud_provider_that_fails)
+    monkeypatch.setattr(
+        "tools.browser_tool_real_profile._launch_real_profile_chrome",
+        lambda *a, **k: launched.append("launch") or (None, "no"))
+    monkeypatch.setattr("tools.browser_tool_cloud._use_real_profile", lambda: True)
+    monkeypatch.setattr("tools.browser_tool_lightpanda_fallback._using_lightpanda_engine", lambda: False)
+    monkeypatch.setattr(bu_cli, "_find_cli", lambda: ["/usr/bin/browser-use"])
+    monkeypatch.setattr(bu_cli, "_run_cli_killing_process_group", lambda *a, **k: ran.append("cli"))
+    lease.acquire("human-viewer")
+    result = json.loads(bu_cli.browser_exec("print(1)", task_id="cloud-task", local=True))
+    assert launched == [], f"real-profile Chrome launched while human holds: {launched}"
+    assert ran == [], f"harness ran after a refused real-profile attach: {ran}"
+    assert result.get("code") == "human_has_control"
+
+
 def test_browser_exec_cloud_fallback_does_not_spawn_while_human_holds(monkeypatch):
     created: list = []
     ran: list = []

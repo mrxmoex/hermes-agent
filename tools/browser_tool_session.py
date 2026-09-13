@@ -244,6 +244,8 @@ def _create_cloud_session_or_fallback(task_id: str, provider) -> Dict[str, Any]:
             ) from e
         try:
             session_info = _create_local_session(task_id)
+        except _bd_lease.HumanHasControl:
+            raise
         except Exception as local_error:
             raise RuntimeError(f"Cloud provider {provider_name} failed ({e}) and local "
                                f"fallback also failed ({local_error})") from e
