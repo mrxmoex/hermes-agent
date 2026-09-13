@@ -228,6 +228,67 @@ def test_running_instance_recovers_port_when_devtools_file_is_gone(tmp_path, mon
         listener.close()
 
 
+def test_connect_hosts_for_listen_ip_stay_in_family():
+    """A ::1-only dock must not probe 127.0.0.1 (sibling squat / miss)."""
+    assert browser._connect_hosts_for_listen_ip("::1") == ("::1",)
+    assert browser._connect_hosts_for_listen_ip("127.0.0.1") == ("127.0.0.1",)
+    assert browser._connect_hosts_for_listen_ip("0.0.0.0") == ("127.0.0.1",)
+    assert browser._connect_hosts_for_listen_ip("::") == ("::1",)
+    assert browser._connect_hosts_for_listen_ip("::ffff:127.0.0.1") == ("127.0.0.1",)
+
+
+def test_running_instance_recovers_ipv6_only_listen(tmp_path, monkeypatch):
+    """Dock on [::1] only: IPv4 create_connection misses; connect the listen."""
+    listener = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+    listener.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+    listener.bind(("::1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+    os.symlink(f"host-{os.getpid()}", tmp_path / "SingletonLock")
+    monkeypatch.setattr(
+        browser,
+        "_chromium_cmdline_tokens",
+        lambda pid: ["chrome", f"--user-data-dir={tmp_path}", "--remote-debugging-port=0"],
+    )
+    monkeypatch.setattr(browser, "_loopback_listen_ports_for_pid", lambda pid: {port})
+    monkeypatch.setattr(browser, "_loopback_listen_targets_for_pid", lambda pid: {("::1", port)})
+    try:
+        assert browser.running_instance_cdp_port(str(tmp_path)) == port
+    finally:
+        listener.close()
+
+
+def test_running_instance_does_not_stamp_ipv4_squat_for_ipv6_listen(tmp_path, monkeypatch):
+    """Unique ::1 listen + sibling on 127.0.0.1:same must not become the dock."""
+    v6 = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+    v6.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+    v6.bind(("::1", 0))
+    v6.listen(1)
+    port = v6.getsockname()[1]
+    v4 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    v4.bind(("127.0.0.1", port))
+    v4.listen(1)
+    os.symlink(f"host-{os.getpid()}", tmp_path / "SingletonLock")
+    monkeypatch.setattr(
+        browser,
+        "_chromium_cmdline_tokens",
+        lambda pid: ["chrome", f"--user-data-dir={tmp_path}", "--remote-debugging-port=0"],
+    )
+    monkeypatch.setattr(browser, "_loopback_listen_ports_for_pid", lambda pid: {port})
+    monkeypatch.setattr(browser, "_loopback_listen_targets_for_pid", lambda pid: {("::1", port)})
+    try:
+        assert browser.running_instance_cdp_port(str(tmp_path)) == port
+        v6.close()
+        # IPv4 squat still accepts. Connecting 127.0.0.1 would stamp it.
+        assert browser.running_instance_cdp_port(str(tmp_path)) is None
+    finally:
+        v4.close()
+        try:
+            v6.close()
+        except OSError:
+            pass
+
+
 def test_running_instance_recovers_explicit_cmdline_port(tmp_path, monkeypatch):
     listener = socket.socket()
     listener.bind(("127.0.0.1", 0))

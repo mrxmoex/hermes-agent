@@ -171,13 +171,13 @@ def _proc_socket_inodes(pid: int) -> Set[int]:
     return found
 
 
-def _parse_proc_tcp_listen_ports(
+def _parse_proc_tcp_listen_targets(
     text: str,
     *,
     ipv6: bool = False,
     inodes: Optional[Set[int]] = None,
-) -> Set[int]:
-    """Loopback / unspecified LISTEN ports from one ``/proc/net/tcp{,6}`` table.
+) -> Set[Tuple[str, int]]:
+    """Loopback / unspecified LISTEN ``(ip, port)`` rows from ``/proc/net/tcp{,6}``.
 
     LAN / remote listeners stay out. No connect, no HTTP.
 
@@ -185,7 +185,7 @@ def _parse_proc_tcp_listen_ports(
     belongs to that set. *inodes=None* keeps the unfiltered parse for
     hex-layout unit tests that use truncated lines without an inode.
     """
-    ports: Set[int] = set()
+    found: Set[Tuple[str, int]] = set()
     for line in (text or "").splitlines()[1:]:
         parts = line.split()
         if len(parts) < 4 or parts[3] != "0A":
@@ -211,15 +211,25 @@ def _parse_proc_tcp_listen_ports(
         if not (1 <= port <= 65535):
             continue
         if addr.is_loopback or addr.is_unspecified:
-            ports.add(port)
+            found.add((str(addr), port))
             continue
         mapped = getattr(addr, "ipv4_mapped", None)
         if mapped is not None and (mapped.is_loopback or mapped.is_unspecified):
-            ports.add(port)
-    return ports
+            found.add((str(addr), port))
+    return found
 
 
-def _loopback_listen_ports_for_pid(pid: int) -> Set[int]:
+def _parse_proc_tcp_listen_ports(
+    text: str,
+    *,
+    ipv6: bool = False,
+    inodes: Optional[Set[int]] = None,
+) -> Set[int]:
+    """Loopback / unspecified LISTEN ports from one ``/proc/net/tcp{,6}`` table."""
+    return {port for _ip, port in _parse_proc_tcp_listen_targets(text, ipv6=ipv6, inodes=inodes)}
+
+
+def _loopback_listen_targets_for_pid(pid: int) -> Set[Tuple[str, int]]:
     """Loopback / unspecified TCP listens whose sockets *pid* holds.
 
     Empty inode set → empty result (fail closed). Falling back to the
@@ -228,14 +238,73 @@ def _loopback_listen_ports_for_pid(pid: int) -> Set[int]:
     inodes = _proc_socket_inodes(pid)
     if not inodes:
         return set()
-    ports: Set[int] = set()
+    found: Set[Tuple[str, int]] = set()
     for name, ipv6 in (("tcp", False), ("tcp6", True)):
         try:
             text = Path(f"/proc/{pid}/net/{name}").read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        ports |= _parse_proc_tcp_listen_ports(text, ipv6=ipv6, inodes=inodes)
-    return ports
+        found |= _parse_proc_tcp_listen_targets(text, ipv6=ipv6, inodes=inodes)
+    return found
+
+
+def _loopback_listen_ports_for_pid(pid: int) -> Set[int]:
+    """Loopback / unspecified TCP listen ports whose sockets *pid* holds."""
+    return {port for _ip, port in _loopback_listen_targets_for_pid(pid)}
+
+
+def _connect_hosts_for_listen_ip(ip: str) -> Tuple[str, ...]:
+    """Hosts to TCP-probe for a ``/proc`` listen address. No other family.
+
+    A ::1-only dock plus a sibling on ``127.0.0.1:same`` must not stamp
+    the squat. Unspecified ``0.0.0.0`` / ``::`` map to that family's
+    loopback; IPv4-mapped ``::ffff:127.0.0.1`` maps to ``127.0.0.1``.
+    """
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return (ip,) if ip else ()
+    mapped = getattr(addr, "ipv4_mapped", None)
+    if mapped is not None:
+        if mapped.is_unspecified:
+            return ("127.0.0.1",)
+        return (str(mapped),)
+    if addr.is_unspecified:
+        return ("127.0.0.1",) if addr.version == 4 else ("::1",)
+    return (str(addr),)
+
+
+def _listen_connect_hosts(pid: int, port: int) -> Tuple[str, ...]:
+    """Connect hosts for *port* from this pid's listens, else IPv4 then IPv6.
+
+    Unknown address (DevTools file, mocked ports, inode miss) may try both
+    families. A known ::1-only listen must not probe ``127.0.0.1``.
+    """
+    hosts: list[str] = []
+    try:
+        targets = _loopback_listen_targets_for_pid(pid)
+    except Exception:
+        targets = set()
+    for ip, listen_port in targets:
+        if listen_port != port:
+            continue
+        for host in _connect_hosts_for_listen_ip(ip):
+            if host not in hosts:
+                hosts.append(host)
+    if hosts:
+        return tuple(hosts)
+    return ("127.0.0.1", "::1")
+
+
+def _cdp_port_reachable(port: int, hosts: Tuple[str, ...]) -> bool:
+    """True when *port* accepts TCP on one of *hosts*. No HTTP."""
+    for host in hosts:
+        try:
+            with socket.create_connection((host, port), timeout=0.5):
+                return True
+        except OSError:
+            continue
+    return False
 
 
 def _paths_same_user_data_dir(left: str, right: str) -> bool:
@@ -297,15 +366,16 @@ def running_instance_cdp_port(user_data_dir: str, *, exclude_session: Optional[s
         port_line = ""
     if port_line.isdigit():
         port = int(port_line)
+        # Port file has no address. Chromium defaults to 127.0.0.1; the
+        # IPv4 squat / IPv6-only launch path binds [::1] only.
+        hosts = ("127.0.0.1", "::1")
     else:
         recovered = _recover_cdp_port_from_singleton(user_data_dir, pid)
         if recovered is None:
             return None
         port = recovered
-    try:
-        with socket.create_connection(("127.0.0.1", port), timeout=0.5):
-            pass
-    except OSError:
+        hosts = _listen_connect_hosts(pid, port)
+    if not _cdp_port_reachable(port, hosts):
         return None
     try:
         if Path(user_data_dir).resolve() == profile_dir().resolve():
