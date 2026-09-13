@@ -938,6 +938,57 @@ def test_persisted_dock_port_does_not_leak_to_a_sibling_profile(monkeypatch, tmp
         reset_hermes_home_override(token_b)
 
 
+def test_acquire_persists_dock_port_before_any_agent_probe(monkeypatch):
+    """Human-first Take over used to leave ``dock-cdp-port`` missing. A later
+    DevTools miss then treated the jar as another Chrome (admit None)."""
+    import tools.bot_desktop.browser as bdb
+    from tools.bot_desktop.lease import HumanHasControl
+    from tools.browser_tool_session import (
+        _admit_resolved_cdp_for_attach,
+        _admit_shared_browser,
+        _cdp_url_is_bot_desktop_browser,
+        _last_dock_cdp_port,
+    )
+
+    dock = "ws://127.0.0.1:9333/devtools/browser/x"
+    other = "ws://127.0.0.1:9222/devtools/browser/x"
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: 9333)
+    _last_dock_cdp_port.clear()
+    assert bdb.last_known_dock_cdp_port() is None
+
+    lease.acquire("human-viewer")
+    assert bdb.last_known_dock_cdp_port() == 9333
+
+    _last_dock_cdp_port.clear()
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: None)
+    assert _cdp_url_is_bot_desktop_browser(dock) is True
+    assert _cdp_url_is_bot_desktop_browser(other) is False
+    with pytest.raises(HumanHasControl):
+        _admit_shared_browser(cdp_url=dock)
+    assert _admit_resolved_cdp_for_attach(dock) is False
+    assert _admit_shared_browser(cdp_url=other) is None
+    assert _admit_resolved_cdp_for_attach(other) is True
+
+
+def test_acquire_without_live_dock_does_not_invent_a_port(monkeypatch):
+    """No live probe at Take over must not stamp a loopback port and mute
+    an unrelated Chrome."""
+    import tools.bot_desktop.browser as bdb
+    from tools.browser_tool_session import (
+        _admit_shared_browser,
+        _cdp_url_is_bot_desktop_browser,
+        _last_dock_cdp_port,
+    )
+
+    other = "ws://127.0.0.1:9222/devtools/browser/x"
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: None)
+    _last_dock_cdp_port.clear()
+    lease.acquire("human-viewer")
+    assert bdb.last_known_dock_cdp_port() is None
+    assert _cdp_url_is_bot_desktop_browser(other) is False
+    assert _admit_shared_browser(cdp_url=other) is None
+
+
 def test_vault_supervisor_attach_does_not_probe_when_admit_raises(monkeypatch):
     """An unexpected admit failure must not fall through to HTTP /json/version."""
     from tools import browser_use_cli as bu
@@ -983,6 +1034,34 @@ def test_vault_supervisor_attach_does_not_probe_dock_while_human_holds(monkeypat
     registry.get_or_start.side_effect = lambda **k: started.append(k)
     monkeypatch.setattr(bs, "SUPERVISOR_REGISTRY", registry)
     lease.acquire("human-viewer")
+    bu._attach_vault_supervisor(
+        {"BU_CDP_WS": "ws://127.0.0.1:9333/devtools/browser/x"}, "review",
+    )
+    assert probed == []
+    assert started == []
+
+
+def test_vault_supervisor_attach_fences_never_probed_dock_after_acquire(monkeypatch):
+    """Take over stamps the live port. A later DevTools miss must not HTTP
+    the jar just because no agent call identified it first."""
+    import tools.bot_desktop.browser as bdb
+    from tools import browser_use_cli as bu
+    from tools.browser_tool_session import _last_dock_cdp_port
+
+    probed = []
+    started = []
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: 9333)
+    lease.acquire("human-viewer")
+    _last_dock_cdp_port.clear()
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "tools.browser_tool_cdp._resolve_cdp_override",
+        lambda url: probed.append(url) or url,
+    )
+    import tools.browser_supervisor as bs
+    registry = __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock()
+    registry.get_or_start.side_effect = lambda **k: started.append(k)
+    monkeypatch.setattr(bs, "SUPERVISOR_REGISTRY", registry)
     bu._attach_vault_supervisor(
         {"BU_CDP_WS": "ws://127.0.0.1:9333/devtools/browser/x"}, "review",
     )

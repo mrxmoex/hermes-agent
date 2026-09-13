@@ -133,6 +133,22 @@ def _dock_port_path() -> Path:
     return runtime.state_dir() / _DOCK_PORT_FILE
 
 
+def persist_live_dock_cdp_port() -> Optional[int]:
+    """Best-effort stamp of the live dock DevTools port for this profile.
+
+    Human-first Take over can happen before any agent browser call has
+    seen ``DevToolsActivePort``. Persist now, while the probe still
+    works, so a later miss cannot treat this jar as another Chrome.
+    """
+    try:
+        port = running_instance_cdp_port(str(profile_dir()))
+    except Exception:
+        return None
+    if port is not None:
+        remember_dock_cdp_port(port)
+    return port
+
+
 def remember_dock_cdp_port(port: int) -> None:
     """Persist the last live dock DevTools port for this profile.
 

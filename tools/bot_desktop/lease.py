@@ -195,7 +195,16 @@ def acquire(viewer_id: str, *, profile_key: Optional[str] = None, reason: str = 
         lease.reason = reason or lease.pending_handoff or ""
         lease.pending_handoff = None
         return True
-    return _transition(profile_key, _m)
+    lease = _transition(profile_key, _m)
+    # Persist the live dock port before DevToolsActivePort can disappear.
+    # A never-probed jar would otherwise fail-open leftover CDP after Take
+    # over (admit returns None when the port was never stamped).
+    try:
+        from tools.bot_desktop.browser import persist_live_dock_cdp_port
+        persist_live_dock_cdp_port()
+    except Exception:
+        pass
+    return lease
 
 
 def release(viewer_id: Optional[str] = None, *, profile_key: Optional[str] = None) -> Lease:
