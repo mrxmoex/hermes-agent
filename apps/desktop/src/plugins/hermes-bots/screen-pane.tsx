@@ -245,10 +245,14 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
   }, [bot])
 
   const takeOver = useCallback(async () => {
+    if (!viewer?.id) {
+      return
+    }
+
     setBusy(true)
 
     try {
-      const result = await displayRequest<{ lease: DisplayLease }>(bot, 'display.lease.acquire', { viewer_id: viewer?.id })
+      const result = await displayRequest<{ lease: DisplayLease }>(bot, 'display.lease.acquire', { viewer_id: viewer.id })
       setScreenLease(bot, result.lease)
 
       if (conn !== 'live') {
@@ -346,7 +350,7 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
                 <Codicon name="debug-continue" /> {t.screen.handBackForce}
               </Button>
             ) : null}
-            <Button disabled={busy || conn === 'attaching'} onClick={() => void takeOver()} size="sm">
+            <Button disabled={busy || conn === 'attaching' || !viewer?.id} onClick={() => void takeOver()} size="sm">
               <Codicon name="record-keys" /> {t.screen.takeOver}
             </Button>
           </>

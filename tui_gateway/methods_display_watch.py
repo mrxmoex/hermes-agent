@@ -34,7 +34,27 @@ def _lease_event_payload(profile_key: str, lease) -> dict:
     return {"profile_key": profile_key, "lease": _lease_view(lease)}
 
 
+def _seed_watched_profile_homes() -> None:
+    """Register every local profile home, not only ones a ``display.*`` RPC already hit.
+
+    A secondary bot's ``lease.json`` is otherwise invisible until the first
+    ``_profile_scoped`` call. After a serve restart the Desktop cache can skip
+    ``display.status``, so a gateway ``request_handoff`` on that bot never
+    became ``display.lease``. ``profiles_to_serve(True)`` is the same
+    directory set the multiplex gateway already watches.
+    """
+    try:
+        from hermes_cli.profiles import profiles_to_serve
+        for _name, home in profiles_to_serve(True):
+            path = Path(home)
+            if path.is_dir():
+                _served_profile_homes.add(path)
+    except Exception:  # noqa: BLE001 — a broken profiles root must not kill the poll
+        logger.debug("lease watcher could not enumerate profile homes", exc_info=True)
+
+
 def _watched_lease_homes() -> list[Path]:
+    _seed_watched_profile_homes()
     return [Path(_hermes_home), *_served_profile_homes]
 
 

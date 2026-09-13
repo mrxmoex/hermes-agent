@@ -109,6 +109,17 @@ const emitLease = (viewer_hash: string) =>
     })
   )
 
+it('does not offer Take over before observe mints a viewer id', async () => {
+  $screenState.set({
+    default: { status, lease: status.lease, viewer: null }
+  })
+  vi.mocked(displayRequest).mockImplementation(() => new Promise(() => {}))
+  const view = render(<BotScreenPane bot={bot} />)
+  const button = view.getByText('Take over').closest('button')
+  expect(button?.disabled).toBe(true)
+  view.unmount()
+})
+
 it('holds control when the lease names the hash of the server-minted viewer id, not when it names another', async () => {
   const view = render(<BotScreenPane bot={bot} />)
   await waitFor(() => expect(vi.mocked(displayRequest)).toHaveBeenCalledWith(bot, 'display.observe', {}))

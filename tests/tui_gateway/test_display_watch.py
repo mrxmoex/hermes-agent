@@ -104,6 +104,34 @@ def test_screen_started_or_stopped_by_another_process_is_broadcast_as_status(tmp
     assert [p for e, p in events if e == "display.status"][-1]["running"] is False
 
 
+def test_sibling_profile_handoff_is_watched_before_any_display_rpc(tmp_path, monkeypatch):
+    """A bot the Desktop has never called display.* for still gets display.lease
+    when another process writes its lease.json (gateway request_handoff)."""
+    import tui_gateway.server as server
+    from hermes_cli import profiles as profiles_mod
+    from hermes_constants import hermes_home_key
+
+    launch = tmp_path / "launch"
+    sibling = tmp_path / "bot-b"
+    launch.mkdir()
+    sibling.mkdir()
+    monkeypatch.setattr(
+        profiles_mod,
+        "profiles_to_serve",
+        lambda multiplex=True: [("default", launch), ("bot-b", sibling)],
+    )
+    events = _watching(server, launch, monkeypatch)
+    server._seed_watched_profile_homes()
+    server._poll_lease_files()
+
+    _other_process(sibling, 'lease.request_handoff("sibling-ask")')
+    server._poll_lease_files()
+
+    found = _lease_events(events, pending_handoff="sibling-ask")
+    assert found, events
+    assert found[0]["profile_key"] == hermes_home_key(sibling)
+
+
 def test_launcher_crash_without_unlinking_files_is_broadcast_as_stopped(tmp_path, monkeypatch):
     """runtime.stop() unlinks env/pid; a crash leaves both. The portal only listens
     after the first status, so a dead launcher must still move the runtime mark."""
