@@ -69,18 +69,28 @@ def revoke_unused_tickets(*, viewer_id: str, hermes_home: str) -> int:
     return dropped
 
 
-def consume_ticket(ticket: str) -> Dict[str, Any]:
-    """Validate and consume (single-use). Raises :class:`TicketInvalid` on missing/expired/used."""
+def consume_ticket(ticket: str, *, provider: Optional[str] = None) -> Dict[str, Any]:
+    """Validate and consume (single-use). Raises :class:`TicketInvalid` on missing/expired/used.
+
+    ``provider`` binds the consume to one route. Display and gateway tickets share
+    this store: popping before that check burned a 30 s ``/api/ws`` login when it
+    was presented as ``?display_ticket=``. A mismatch leaves the ticket in the
+    store so its real door can still redeem it. Expired entries are still dropped.
+    """
     now = int(time.time())
     with _lock:
-        entry = _tickets.pop(ticket, None)
+        entry = _tickets.get(ticket)
         if entry is None:
             # Truncated so misuse never logs the secret in full.
             truncated = (ticket[:8] + "…") if ticket else "<empty>"
             raise TicketInvalid(f"unknown ticket: {truncated}")
         expires_at, info = entry
         if expires_at < now:
+            _tickets.pop(ticket, None)
             raise TicketInvalid("expired")
+        if provider is not None and info.get("provider") != provider:
+            raise TicketInvalid("ticket not valid for this route")
+        _tickets.pop(ticket, None)
         return info
 
 

@@ -9,7 +9,12 @@ import pytest
 
 from hermes_cli import web_server
 import hermes_cli.web_server_chat as _web_server_chat
-from hermes_cli.dashboard_auth.ws_tickets import _reset_for_tests, mint_ticket
+from hermes_cli.dashboard_auth.ws_tickets import (
+    TicketInvalid,
+    _reset_for_tests,
+    consume_ticket,
+    mint_ticket,
+)
 
 
 @pytest.fixture
@@ -35,3 +40,8 @@ def test_display_ticket_is_refused_as_a_gateway_login(gated_state):
     reason, _credential = _web_server_chat._ws_auth_reason(ws)
     assert reason == "ticket_invalid"
     assert not hasattr(ws, "_hermes_auth_identity")
+    # Login-door policy: a leaked display ticket that was offered as a login
+    # is burned so it cannot still open the RFB bridge. The display door is
+    # the inverse — it must not burn a gateway ticket (see test_display_ws_ticket).
+    with pytest.raises(TicketInvalid):
+        consume_ticket(ticket)

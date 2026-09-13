@@ -89,7 +89,10 @@ def _consume_display_ticket(ws: WebSocket) -> Optional[dict]:
     if not ticket:
         return None
     try:
-        info = consume_ticket(ticket)
+        # Provider is checked BEFORE the pop: a gateway login ticket presented
+        # here must stay redeemable on /api/ws (the inverse of that door
+        # refusing a display ticket as a login).
+        info = consume_ticket(ticket, provider="bot-desktop")
     except TicketInvalid:
         return None
     # Both pins are required. A ticket with a home but no viewer used to fall
