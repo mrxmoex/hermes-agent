@@ -1633,6 +1633,32 @@ def test_predicted_foreign_cdp_override_is_not_shared(monkeypatch):
     assert admitted is None
 
 
+def test_predicted_real_profile_cdp_override_is_shared(monkeypatch):
+    """``/browser connect`` to this profile's real-profile Chrome is this screen.
+
+    Real-profile cache stores HTTP; the override is the rewritten WebSocket.
+    Same loopback port = same Chromium launched on this Bot Desktop DISPLAY.
+    Dock-identity-only predict treated that attach as another browser, so
+    the outer fence skipped and ``_create_cdp_session`` attached while the
+    human held.
+    """
+    from tools import browser_tool as browser
+
+    rp_http = "http://127.0.0.1:9334"
+    rp_ws = "ws://127.0.0.1:9334/devtools/browser/real"
+    browser._real_profile_cdp_cache["cdp"] = rp_http
+    monkeypatch.setattr(session_mod._cdp, "_get_cdp_override_raw", lambda: rp_ws)
+    monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", _is_dock_cdp)
+    try:
+        assert session_mod._predicted_local_shared_browser("review") is True
+        lease.acquire("human-viewer")
+        _admitted, refuse = session_mod._shared_browser_fence("review")
+        assert refuse is not None
+        assert refuse.get("code") == "human_has_control"
+    finally:
+        browser._real_profile_cdp_cache.pop("cdp", None)
+
+
 def _install_supervisor(monkeypatch, cdp_url, task_id="cloud-task"):
     supervisor = type("S", (), {"cdp_url": cdp_url})()
     monkeypatch.setattr(
@@ -1658,6 +1684,29 @@ def test_dock_supervisor_is_shared_when_cloud_is_predicted(monkeypatch):
     _admitted, refuse = session_mod._shared_browser_fence("cloud-task")
     assert refuse is not None
     assert refuse.get("code") == "human_has_control"
+
+
+def test_real_profile_supervisor_is_shared_when_cloud_is_predicted(monkeypatch):
+    """A live supervisor on this profile's real-profile Chrome is this screen.
+
+    ``_dock_supervisor_session_info`` used to key only on dock identity, so a
+    predicted-cloud miss left a real-profile supervisor unfenced.
+    """
+    from tools import browser_tool as browser
+
+    rp_http = "http://127.0.0.1:9334"
+    rp_ws = "ws://127.0.0.1:9334/devtools/browser/real"
+    browser._real_profile_cdp_cache["cdp"] = rp_http
+    _predict_cloud(monkeypatch)
+    _install_supervisor(monkeypatch, rp_ws)
+    try:
+        assert session_mod._predicted_local_shared_browser("cloud-task") is False
+        lease.acquire("human-viewer")
+        _admitted, refuse = session_mod._shared_browser_fence("cloud-task")
+        assert refuse is not None
+        assert refuse.get("code") == "human_has_control"
+    finally:
+        browser._real_profile_cdp_cache.pop("cdp", None)
 
 
 def test_foreign_supervisor_is_not_shared_when_cloud_is_predicted(monkeypatch):
@@ -1750,6 +1799,28 @@ def test_cdp_override_session_is_fenced_when_url_is_dock(monkeypatch):
     assert result.get("code") == "human_has_control"
 
 
+def test_cdp_override_session_is_fenced_when_url_is_real_profile(monkeypatch):
+    """Session label is ``cdp_override``; identity is this profile's Chrome."""
+    from tools import browser_tool as browser_mod
+
+    commands: list = []
+    browser, session = _wire(monkeypatch, commands)
+    rp_http = "http://127.0.0.1:9334"
+    rp_ws = "ws://127.0.0.1:9334/devtools/browser/real"
+    browser_mod._real_profile_cdp_cache["cdp"] = rp_http
+    monkeypatch.setattr(session._cdp, "_get_cdp_override_raw", lambda: rp_ws)
+    monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", _is_dock_cdp)
+    monkeypatch.setattr(session, "_get_session_info", lambda *a: {
+        "session_name": "cdp_1", "cdp_url": rp_ws, "features": {"cdp_override": True}})
+    lease.acquire("human-viewer")
+    try:
+        result = json.loads(browser.browser_click("e1", task_id="review"))
+    finally:
+        browser_mod._real_profile_cdp_cache.pop("cdp", None)
+    assert commands == [], f"human holds the lease, yet real-profile CDP was dispatched: {commands}"
+    assert result.get("code") == "human_has_control"
+
+
 def test_cdp_override_session_is_not_fenced_when_url_is_foreign(monkeypatch):
     commands: list = []
     browser, session = _wire(monkeypatch, commands)
@@ -1770,12 +1841,73 @@ def test_create_cdp_session_refuses_dock_while_human_holds(monkeypatch):
         session_mod._create_cdp_session("review", _DOCK_CDP)
 
 
+def test_create_cdp_session_refuses_real_profile_while_human_holds(monkeypatch):
+    """``_create_cdp_session`` used to refuse only a live dock URL.
+
+    A ``cdp_override`` pointing at this profile's real-profile Chrome is the
+    same DISPLAY Chromium. Creating the session while the human holds would
+    then let later clicks run through a ``cdp_override`` label the old
+    predicate treated as foreign.
+    """
+    from tools import browser_tool as browser
+
+    rp_http = "http://127.0.0.1:9334"
+    rp_ws = "ws://127.0.0.1:9334/devtools/browser/real"
+    browser._real_profile_cdp_cache["cdp"] = rp_http
+    monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", _is_dock_cdp)
+    lease.acquire("human-viewer")
+    try:
+        with pytest.raises(lease.HumanHasControl, match="human holds"):
+            session_mod._create_cdp_session("review", rp_ws)
+    finally:
+        browser._real_profile_cdp_cache.pop("cdp", None)
+
+
+def test_create_cdp_session_refuses_leftover_real_profile_session_url(monkeypatch):
+    """Cache miss; identity is the process-global ``hermes-real-profile`` row."""
+    from tools import browser_tool as browser
+
+    key = browser._REAL_PROFILE_SESSION
+    prior = browser._active_sessions.get(key)
+    rp_ws = "ws://127.0.0.1:9334/devtools/browser/real"
+    browser._active_sessions[key] = {
+        "session_name": key,
+        "cdp_url": rp_ws,
+        "features": {"local": True, "real_profile": True},
+    }
+    monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", _is_dock_cdp)
+    lease.acquire("human-viewer")
+    try:
+        with pytest.raises(lease.HumanHasControl, match="human holds"):
+            session_mod._create_cdp_session("review", "http://127.0.0.1:9334")
+    finally:
+        if prior is None:
+            browser._active_sessions.pop(key, None)
+        else:
+            browser._active_sessions[key] = prior
+
+
 def test_create_cdp_session_allows_foreign_endpoint_while_human_holds(monkeypatch):
     monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", lambda url, **k: False)
     lease.acquire("human-viewer")
     info = session_mod._create_cdp_session("review", _FOREIGN_CDP)
     assert info["cdp_url"] == _FOREIGN_CDP
     assert info["features"]["cdp_override"] is True
+
+
+def test_create_cdp_session_allows_foreign_endpoint_with_leftover_real_profile(monkeypatch):
+    """A leftover real-profile cache must not fence a foreign CDP attach."""
+    from tools import browser_tool as browser
+
+    browser._real_profile_cdp_cache["cdp"] = "http://127.0.0.1:9334"
+    monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", lambda url, **k: False)
+    lease.acquire("human-viewer")
+    try:
+        info = session_mod._create_cdp_session("review", _FOREIGN_CDP)
+        assert info["cdp_url"] == _FOREIGN_CDP
+        assert info["features"]["cdp_override"] is True
+    finally:
+        browser._real_profile_cdp_cache.pop("cdp", None)
 
 
 def _cloud_provider_that_fails():

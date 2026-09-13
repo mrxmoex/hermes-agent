@@ -219,11 +219,10 @@ def _local_backend_process_dead(session_info: Dict[str, Any]) -> bool:
 def _create_cdp_session(task_id: str, cdp_url: str) -> Dict[str, str]:
     """Session connecting to a user-supplied CDP endpoint."""
     from tools.bot_desktop import lease as _bd_lease
-    from tools.bot_desktop.browser import cdp_url_is_running_instance
 
-    if cdp_url_is_running_instance(cdp_url) and _bd_lease.human_holds():
+    if _shares_bot_desktop_browser({"cdp_url": cdp_url}) and _bd_lease.human_holds():
         raise _bd_lease.HumanHasControl(
-            "A human holds the bot's screen; refusing to attach to the shared dock Chromium."
+            "A human holds the bot's screen; refusing to attach to the shared local browser."
         )
     info = _session_record("cdp", cdp_url, {"cdp_override": True})
     _bt.logger.info("Created CDP browser session %s → %s for task %s",
@@ -655,15 +654,15 @@ def _predicted_local_shared_browser(task_id: str) -> bool:
 
     Mirrors ``_create_session_for_key`` precedence without launching: a CDP
     override is another browser unless the URL is this profile's live dock
-    instance; a configured cloud provider is another browser; everything else
-    (including a sidecar ``::local`` key) lands on this profile's DISPLAY.
+    instance or this profile's real-profile Chrome; a configured cloud
+    provider is another browser; everything else (including a sidecar
+    ``::local`` key) lands on this profile's DISPLAY.
     """
     force_local = _bt._is_local_sidecar_key(task_id)
     if not force_local:
         override = _cdp._get_cdp_override_raw()
         if override:
-            from tools.bot_desktop.browser import cdp_url_is_running_instance
-            return cdp_url_is_running_instance(override)
+            return _shares_bot_desktop_browser({"cdp_url": override})
         if _cloud._get_cloud_provider() is not None:
             return False
     return True
@@ -683,18 +682,17 @@ def _supervisor_cdp_url(task_id: str) -> str:
 
 
 def _dock_supervisor_session_info(task_id: str) -> Dict[str, Any]:
-    """Session-info overlay when the live supervisor is this profile's dock Chromium.
+    """Session-info overlay when the live supervisor is this profile's shared Chromium.
 
     Supervisor-only paths (eval / dialog / CDP) never call
     ``_session_after_shared_fence``, so a predicted-cloud cache miss would
-    otherwise leave the dock unfenced. Foreign / cloud supervisors stay ``{}``.
+    otherwise leave the dock / real-profile unfenced. Foreign / cloud
+    supervisors stay ``{}``.
     """
     cdp_url = _supervisor_cdp_url(task_id)
     if not cdp_url:
         return {}
-    from tools.bot_desktop.browser import cdp_url_is_running_instance
-
-    if cdp_url_is_running_instance(cdp_url):
+    if _shares_bot_desktop_browser({"cdp_url": cdp_url}):
         return {"cdp_url": cdp_url}
     return {}
 
@@ -849,10 +847,10 @@ def _shares_bot_desktop_browser(session_info: Dict[str, Any]) -> bool:
     Every LOCAL session (plain ``--session``, real-profile CDP attach, Lightpanda)
     is a browser Hermes launched with this profile's DISPLAY. Cloud and a
     user-supplied CDP session are another browser — unless that CDP URL is this
-    profile's live dock instance (``/browser connect`` / ``browser.cdp_url``
-    still label that attach ``cdp_override``). A human lease with the screen
-    already gone (dead Xvnc) still fences local sessions — computer_use does
-    the same.
+    profile's live dock instance or this profile's real-profile Chrome
+    (``/browser connect`` / ``browser.cdp_url`` still label that attach
+    ``cdp_override``). A human lease with the screen already gone (dead Xvnc)
+    still fences local sessions — computer_use does the same.
     """
     from tools.bot_desktop import lease as _bd_lease, runtime as _bd_runtime
     from tools.bot_desktop.browser import cdp_url_is_running_instance
@@ -860,7 +858,9 @@ def _shares_bot_desktop_browser(session_info: Dict[str, Any]) -> bool:
     if (session_info.get("features") or {}).get("local"):
         return bool(_bd_runtime.published_env().get("DISPLAY")) or _bd_lease.human_holds()
     cdp_url = session_info.get("cdp_url")
-    return isinstance(cdp_url, str) and cdp_url_is_running_instance(cdp_url)
+    if not isinstance(cdp_url, str) or not cdp_url:
+        return False
+    return cdp_url_is_running_instance(cdp_url) or _cdp_is_this_profile_real_profile(cdp_url)
 
 
 def _cdp_loopback_port(url: str) -> Optional[int]:
@@ -871,6 +871,19 @@ def _cdp_loopback_port(url: str) -> Optional[int]:
     if parsed.hostname not in ("127.0.0.1", "localhost", "::1"):
         return None
     return parsed.port
+
+
+def _cdp_is_this_profile_real_profile(cdp_url: str) -> bool:
+    """True when ``cdp_url`` is this profile's consented real-profile Chrome.
+
+    Cache stores the HTTP discovery root; callers often have the rewritten
+    ``ws://`` URL on the same loopback port.
+    """
+    if not isinstance(cdp_url, str) or not cdp_url:
+        return False
+    rp = _bt._active_sessions.get(_bt._REAL_PROFILE_SESSION) or {}
+    rp_cdp = str((_bt._real_profile_cdp_cache or {}).get("cdp") or rp.get("cdp_url") or "")
+    return bool(rp_cdp and _cdp_endpoints_match(cdp_url, rp_cdp))
 
 
 def _cdp_endpoints_match(left: str, right: str) -> bool:
