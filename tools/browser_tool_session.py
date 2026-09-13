@@ -703,6 +703,27 @@ def _dock_supervisor_session_info(task_id: str) -> Dict[str, Any]:
     return {}
 
 
+def _live_supervisor_for_session(task_id: str):
+    """Registered supervisor only when it is the CLI session's browser.
+
+    Leftover ``/browser connect`` can keep a dock supervisor on the same
+    task_id as a cached cloud session. Snapshot merge, eval, dialog, vault
+    fill, and frame CDP used to talk that screen while the CLI session was
+    another browser. Overlay still remints those paths when a human holds.
+    """
+    try:
+        from tools.browser_supervisor import SUPERVISOR_REGISTRY
+
+        supervisor = SUPERVISOR_REGISTRY.get(task_id)
+    except Exception:
+        return None
+    if supervisor is None:
+        return None
+    if not _supervisor_belongs_to_session(supervisor, _peek_active_session(task_id) or {}):
+        return None
+    return supervisor
+
+
 def _supervisor_belongs_to_session(supervisor, session_info: Dict[str, Any]) -> bool:
     """True when ``supervisor`` is the same browser the CLI session talks to.
 

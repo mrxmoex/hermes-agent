@@ -2921,6 +2921,244 @@ def test_snapshot_merges_supervisor_dialogs_when_session_is_the_dock(monkeypatch
     assert parsed.get("pending_dialogs") == [{"message": "DOCK_DIALOG"}]
 
 
+def test_eval_does_not_run_leftover_dock_supervisor_on_cached_cloud(monkeypatch):
+    """Leftover dock ``evaluate_runtime`` must not run JS on this screen for a cloud session."""
+    from tools import browser_tool as browser
+    from tools import browser_tool_session as session
+
+    monkeypatch.setattr(browser, "_is_camofox_mode", lambda: False)
+    monkeypatch.setattr(browser, "_blocked_private_page_content", lambda *_a: None)
+    monkeypatch.setattr(browser._eval_policy, "_eval_ssrf_guard_active", lambda *_a: False)
+    monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", _is_dock_cdp)
+    prior = browser._active_sessions.get("review")
+    browser._active_sessions["review"] = {
+        "session_name": "cloud", "cdp_url": "wss://browserbase.example/s",
+        "features": {"cloud": True},
+    }
+    ran: list = []
+
+    class _Sup:
+        cdp_url = _DOCK_CDP
+
+        def evaluate_runtime(self, expr):
+            ran.append(expr)
+            return {"ok": True, "result": "WHAT-THE-HUMAN-TYPED"}
+
+    monkeypatch.setattr(
+        "tools.browser_supervisor.SUPERVISOR_REGISTRY",
+        type("R", (), {"get": staticmethod(lambda _tid: _Sup())})(),
+    )
+    monkeypatch.setattr(session, "_run_browser_command", lambda *_a, **_k: {
+        "success": True, "data": {"result": "from-cli"},
+    })
+    try:
+        parsed = json.loads(browser._browser_eval("1+1", task_id="review"))
+    finally:
+        if prior is None:
+            browser._active_sessions.pop("review", None)
+        else:
+            browser._active_sessions["review"] = prior
+    assert ran == [], f"leftover dock evaluate_runtime ran on a cloud session: {ran}"
+    assert parsed.get("success") is True
+    assert parsed.get("result") == "from-cli"
+    assert "WHAT-THE-HUMAN-TYPED" not in json.dumps(parsed)
+
+
+def test_eval_still_uses_supervisor_when_session_is_that_endpoint(monkeypatch):
+    """Same-browser leftover connect still evaluates on the dock supervisor."""
+    from tools import browser_tool as browser
+
+    monkeypatch.setattr(browser, "_is_camofox_mode", lambda: False)
+    monkeypatch.setattr(browser, "_blocked_private_page_content", lambda *_a: None)
+    monkeypatch.setattr(browser._eval_policy, "_eval_ssrf_guard_active", lambda *_a: False)
+    monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", _is_dock_cdp)
+    prior = browser._active_sessions.get("review")
+    browser._active_sessions["review"] = {
+        "session_name": "cdp", "cdp_url": _DOCK_CDP, "features": {"cdp_override": True},
+    }
+    ran: list = []
+
+    class _Sup:
+        cdp_url = _DOCK_CDP
+
+        def evaluate_runtime(self, expr):
+            ran.append(expr)
+            return {"ok": True, "result": 7}
+
+    monkeypatch.setattr(
+        "tools.browser_supervisor.SUPERVISOR_REGISTRY",
+        type("R", (), {"get": staticmethod(lambda _tid: _Sup())})(),
+    )
+    try:
+        parsed = json.loads(browser._browser_eval("1+1", task_id="review"))
+    finally:
+        if prior is None:
+            browser._active_sessions.pop("review", None)
+        else:
+            browser._active_sessions["review"] = prior
+    assert ran == ["1+1"]
+    assert parsed.get("success") is True
+    assert parsed.get("result") == 7
+
+
+def test_vault_eval_does_not_read_leftover_dock_on_cached_cloud(monkeypatch):
+    """Vault ``_eval_js`` must not read leftover dock JS for a cached cloud session."""
+    from tools import browser_tool as browser
+    from tools import browser_vault_tool as vault
+
+    monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", _is_dock_cdp)
+    prior = browser._active_sessions.get("review")
+    browser._active_sessions["review"] = {
+        "session_name": "cloud", "cdp_url": "wss://browserbase.example/s",
+        "features": {"cloud": True},
+    }
+    ran: list = []
+
+    class _Sup:
+        cdp_url = _DOCK_CDP
+
+        def evaluate_runtime(self, expr):
+            ran.append(expr)
+            return {"ok": True, "result": "WHAT-THE-HUMAN-TYPED"}
+
+    monkeypatch.setattr(
+        "tools.browser_supervisor.SUPERVISOR_REGISTRY",
+        type("R", (), {"get": staticmethod(lambda _tid: _Sup())})(),
+    )
+    monkeypatch.setattr(vault, "_run_browser_command", lambda *_a, **_k: {
+        "success": True, "data": {"result": "from-cli"},
+    })
+    try:
+        result = vault._eval_js("review", "document.title")
+    finally:
+        if prior is None:
+            browser._active_sessions.pop("review", None)
+        else:
+            browser._active_sessions["review"] = prior
+    assert ran == [], f"leftover dock evaluate_runtime ran on a cloud vault eval: {ran}"
+    assert result.get("success") is True
+    assert result.get("result") == "from-cli"
+    assert "WHAT-THE-HUMAN-TYPED" not in json.dumps(result)
+
+
+def test_vault_secret_does_not_write_leftover_dock_on_cached_cloud(monkeypatch):
+    """Vault fill must not write credentials through leftover dock ``evaluate_runtime``."""
+    from tools import browser_tool as browser
+    from tools import browser_vault_tool as vault
+
+    monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", _is_dock_cdp)
+    prior = browser._active_sessions.get("review")
+    browser._active_sessions["review"] = {
+        "session_name": "cloud", "cdp_url": "wss://browserbase.example/s",
+        "features": {"cloud": True},
+    }
+    ran: list = []
+
+    class _Sup:
+        cdp_url = _DOCK_CDP
+
+        def evaluate_runtime(self, expr):
+            ran.append(expr)
+            return {"ok": True, "result": "WHAT-THE-HUMAN-TYPED"}
+
+    monkeypatch.setattr(
+        "tools.browser_supervisor.SUPERVISOR_REGISTRY",
+        type("R", (), {"get": staticmethod(lambda _tid: _Sup())})(),
+    )
+    monkeypatch.setattr(vault, "_run_browser_command", lambda *_a, **_k: {
+        "success": True, "data": {},
+    })
+    try:
+        result = vault._eval_js_secret(
+            "review", "document.querySelector('input').value='s3cret-pw'")
+    finally:
+        if prior is None:
+            browser._active_sessions.pop("review", None)
+        else:
+            browser._active_sessions["review"] = prior
+    assert ran == [], f"leftover dock evaluate_runtime wrote a cloud vault secret: {ran}"
+    assert result.get("success") is not True
+    assert result.get("error_type") == "supervisor_required"
+    assert "WHAT-THE-HUMAN-TYPED" not in json.dumps(result)
+    assert "s3cret-pw" not in json.dumps(result)
+
+
+def test_dialog_does_not_accept_leftover_dock_on_cached_cloud(monkeypatch):
+    """Leftover dock ``respond_to_dialog`` must not accept a prompt on this screen."""
+    from tools import browser_dialog_tool as dialog
+    from tools import browser_tool as browser
+
+    monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", _is_dock_cdp)
+    prior = browser._active_sessions.get("review")
+    browser._active_sessions["review"] = {
+        "session_name": "cloud", "cdp_url": "wss://browserbase.example/s",
+        "features": {"cloud": True},
+    }
+    ran: list = []
+
+    class _Sup:
+        cdp_url = _DOCK_CDP
+
+        def respond_to_dialog(self, **_k):
+            ran.append("dialog")
+            return {"ok": True, "dialog": {"message": "WHAT-THE-HUMAN-TYPED"}}
+
+    monkeypatch.setattr(
+        "tools.browser_supervisor.SUPERVISOR_REGISTRY",
+        type("R", (), {"get": staticmethod(lambda _tid: _Sup())})(),
+    )
+    try:
+        parsed = json.loads(dialog.browser_dialog("accept", task_id="review"))
+    finally:
+        if prior is None:
+            browser._active_sessions.pop("review", None)
+        else:
+            browser._active_sessions["review"] = prior
+    assert ran == [], f"leftover dock respond_to_dialog ran on a cloud session: {ran}"
+    assert parsed.get("success") is not True
+    assert "WHAT-THE-HUMAN-TYPED" not in json.dumps(parsed)
+
+
+def test_cdp_does_not_drive_leftover_dock_supervisor_on_cached_cloud(monkeypatch):
+    """Frame CDP must not walk leftover dock frames for a cached cloud session."""
+    from tools import browser_tool as browser
+
+    monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", _is_dock_cdp)
+    prior = browser._active_sessions.get("review")
+    browser._active_sessions["review"] = {
+        "session_name": "cloud", "cdp_url": "wss://browserbase.example/s",
+        "features": {"cloud": True},
+    }
+    ran: list = []
+
+    class _Snap:
+        frame_tree = {"top": {"frame_id": "oopif"}}
+
+    class _Sup:
+        cdp_url = _DOCK_CDP
+
+        def snapshot(self):
+            ran.append("snapshot")
+            return _Snap()
+
+    monkeypatch.setattr(
+        "tools.browser_supervisor.SUPERVISOR_REGISTRY",
+        type("R", (), {"get": staticmethod(lambda _tid: _Sup())})(),
+    )
+    try:
+        parsed = json.loads(browser_cdp_tool._browser_cdp_via_supervisor_unfenced(
+            "review", "oopif", "Runtime.evaluate", {"expression": "1"}, 5.0,
+        ))
+    finally:
+        if prior is None:
+            browser._active_sessions.pop("review", None)
+        else:
+            browser._active_sessions["review"] = prior
+    assert ran == [], f"leftover dock snapshot ran on a cloud CDP call: {ran}"
+    assert parsed.get("success") is not True
+    assert "No CDP supervisor" in (parsed.get("error") or "")
+
+
 def test_supervisor_belongs_to_session_is_endpoint_identity(monkeypatch):
     """Merge identity is the live CDP endpoint, not the cache label."""
     monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", _is_dock_cdp)
@@ -2936,6 +3174,34 @@ def test_supervisor_belongs_to_session_is_endpoint_identity(monkeypatch):
     assert session_mod._supervisor_belongs_to_session(
         dock, {"session_name": "local", "features": {"local": True}},
     ) is True
+
+
+def test_live_supervisor_for_session_skips_leftover_on_another_browser(monkeypatch):
+    """Registered leftover is this screen; a cached cloud session must not talk it."""
+    from tools import browser_tool as browser
+
+    monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", _is_dock_cdp)
+    leftover = type("S", (), {"cdp_url": _DOCK_CDP})()
+    monkeypatch.setattr(
+        "tools.browser_supervisor.SUPERVISOR_REGISTRY",
+        type("R", (), {"get": staticmethod(lambda _tid: leftover)})(),
+    )
+    prior = browser._active_sessions.get("review")
+    browser._active_sessions["review"] = {
+        "session_name": "cloud", "cdp_url": "wss://browserbase.example/s",
+        "features": {"cloud": True},
+    }
+    try:
+        assert session_mod._live_supervisor_for_session("review") is None
+        browser._active_sessions["review"] = {
+            "session_name": "cdp", "cdp_url": _DOCK_CDP, "features": {"cdp_override": True},
+        }
+        assert session_mod._live_supervisor_for_session("review") is leftover
+    finally:
+        if prior is None:
+            browser._active_sessions.pop("review", None)
+        else:
+            browser._active_sessions["review"] = prior
 
 
 def test_browser_click_cached_cloud_does_not_probe_leftover_override(monkeypatch):

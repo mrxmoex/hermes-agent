@@ -18,6 +18,7 @@ from tools.browser_extension_router import routed_browser_handler
 from tools.browser_tool_session import (
     _admit_bot_desktop_browser,
     _lease_moved_after_payload,
+    _live_supervisor_for_session,
     _non_nav_session_key,
     _session_info_for_routed_cdp,
     _shared_browser_fence,
@@ -248,7 +249,7 @@ def _browser_cdp_via_supervisor_unfenced(
         return tool_error(f"CDP supervisor is not available: {exc}. frame_id routing requires a running "
                           "supervisor attached via /browser connect or an active Browserbase session.")
 
-    supervisor = SUPERVISOR_REGISTRY.get(task_id)
+    supervisor = _live_supervisor_for_session(task_id)
     if supervisor is None:
         return tool_error(f"No CDP supervisor is attached for task={task_id!r}. Call browser_navigate or "
                           "/browser connect first so the supervisor can attach. Once attached, browser_snapshot "

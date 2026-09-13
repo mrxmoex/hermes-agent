@@ -885,15 +885,8 @@ def browser_snapshot(
     # attached. See website/docs/developer-guide/browser-supervisor.md.
     # Same ticket as the CLI snapshot: reminting here would attach a later epoch's dialogs.
     try:
-        from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
-        _supervisor = SUPERVISOR_REGISTRY.get(effective_task_id)
-        # Leftover ``/browser connect`` can keep a dock supervisor on the
-        # same task_id as a cached cloud session. The CLI tree is the cloud
-        # page; those dialogs are this screen.
-        session_row = _session._peek_active_session(effective_task_id) or {}
-        if _supervisor is not None and _session._supervisor_belongs_to_session(
-            _supervisor, session_row,
-        ):
+        _supervisor = _session._live_supervisor_for_session(effective_task_id)
+        if _supervisor is not None:
             _sv_snap = _supervisor.snapshot()
             if _sv_snap.active:
                 response.update(_snapshot._redact_browser_output(_sv_snap.to_dict()))
@@ -1130,8 +1123,7 @@ def _eval_supervisor_fast_path(effective_task_id: str, expression: str, admitted
     JS-side exception — NOT retried via subprocess, that would just reproduce it slower);
     None to fall through to the subprocess path."""
     try:
-        from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
-        supervisor = SUPERVISOR_REGISTRY.get(effective_task_id)
+        supervisor = _session._live_supervisor_for_session(effective_task_id)
         if supervisor is None:
             return None
         sup_result = supervisor.evaluate_runtime(expression)

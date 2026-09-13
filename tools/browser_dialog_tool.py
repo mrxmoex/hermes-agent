@@ -10,9 +10,9 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, Optional
 
-from tools.browser_supervisor import SUPERVISOR_REGISTRY
 from tools.browser_tool_session import (
     _discard_if_lease_moved,
+    _live_supervisor_for_session,
     _non_nav_session_key,
     _shared_browser_fence,
 )
@@ -83,7 +83,7 @@ def browser_dialog(
     admitted, refuse = _shared_browser_fence(effective_task_id)
     if refuse:
         return json.dumps(refuse)
-    supervisor = SUPERVISOR_REGISTRY.get(effective_task_id)
+    supervisor = _live_supervisor_for_session(effective_task_id)
     if supervisor is None:
         return json.dumps({
             "success": False,

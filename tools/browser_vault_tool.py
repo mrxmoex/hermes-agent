@@ -34,7 +34,9 @@ from typing import Any, Dict, Optional
 from tools.browser_tool_session import (
     _bracket_bot_desktop_browser,
     _discard_if_lease_moved,
+    _live_supervisor_for_session,
     _non_nav_session_key,
+    _run_browser_command,
     _session_info_for_shared_browser_fence,
     _shared_browser_fence,
 )
@@ -102,9 +104,7 @@ def _eval_js(task_id: str, expression: str) -> Dict[str, Any]:
     effective = _non_nav_session_key(task_id)
     def _run():
         try:
-            from tools.browser_supervisor import SUPERVISOR_REGISTRY
-
-            supervisor = SUPERVISOR_REGISTRY.get(effective)
+            supervisor = _live_supervisor_for_session(effective)
             if supervisor is not None:
                 sup = supervisor.evaluate_runtime(expression)
                 if sup.get("ok"):
@@ -116,8 +116,6 @@ def _eval_js(task_id: str, expression: str) -> Dict[str, Any]:
             pass
         except Exception as exc:  # pragma: no cover — defensive
             logger.debug("vault fill: supervisor eval unavailable (%s)", exc)
-
-        from tools.browser_tool_session import _run_browser_command
 
         result = _run_browser_command(effective, "eval", [expression])
         if not result.get("success"):
@@ -136,13 +134,12 @@ def _ensure_supervisor(task_id: str):
     for the packaged Chromium's endpoint (``get cdp-url``: same daemon, same reaper) and attach.
     Returns None when no endpoint is reachable; the fill then refuses rather than touching argv."""
     from tools.browser_supervisor import SUPERVISOR_REGISTRY
+    from tools.browser_tool_cdp import _get_dialog_policy_config, _resolve_cdp_override
 
     effective = _non_nav_session_key(task_id)
-    supervisor = SUPERVISOR_REGISTRY.get(effective)
+    supervisor = _live_supervisor_for_session(effective)
     if supervisor is not None:
         return supervisor
-    from tools.browser_tool_cdp import _get_dialog_policy_config, _resolve_cdp_override
-    from tools.browser_tool_session import _run_browser_command
 
     res = _run_browser_command(effective, "get", ["cdp-url"])
     # Independently-fenced get remints; do not rewrite as "no supervisor".
