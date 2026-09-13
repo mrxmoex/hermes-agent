@@ -102,26 +102,46 @@ def _chromium_cmdline_tokens(pid: int) -> list[str]:
     return [part.decode("utf-8", "replace") for part in raw.split(b"\0") if part]
 
 
-def _user_data_dir_from_cmdline(tokens: list[str]) -> Optional[str]:
-    for token in tokens:
-        if token.startswith("--user-data-dir="):
-            return token.split("=", 1)[1] or None
+def _chromium_switch_value(tokens: list[str], name: str) -> Optional[str]:
+    """``--name=value`` or ``--name value``. Chromium accepts both.
+
+    Equals is what the dock writes. A human or wrapper can still launch
+    the same jar with the spaced form; recover / configured-listen then
+    missed ``user-data-dir`` and leftover identity treated the jar as
+    another Chrome. A following flag is not a value.
+    """
+    key = f"--{name}"
+    prefix = key + "="
+    for i, token in enumerate(tokens):
+        raw = token if isinstance(token, str) else str(token)
+        if raw.startswith(prefix):
+            return raw.split("=", 1)[1] or None
+        if raw == key and i + 1 < len(tokens):
+            nxt = tokens[i + 1]
+            nxt = nxt if isinstance(nxt, str) else str(nxt)
+            if nxt.startswith("-"):
+                return None
+            return nxt or None
     return None
+
+
+def _user_data_dir_from_cmdline(tokens: list[str]) -> Optional[str]:
+    return _chromium_switch_value(tokens, "user-data-dir")
 
 
 def _remote_debugging_port_from_cmdline(tokens: list[str]) -> Optional[int]:
-    """Explicit ``--remote-debugging-port=N`` when N is a real port.
+    """Explicit ``--remote-debugging-port`` when the value is a real port.
 
     Dock argv uses ``--remote-debugging-port=0`` (ephemeral); that is not a port.
     """
-    for token in tokens:
-        if token.startswith("--remote-debugging-port="):
-            try:
-                port = int(token.split("=", 1)[1])
-            except ValueError:
-                return None
-            return port if 1 <= port <= 65535 else None
-    return None
+    raw = _chromium_switch_value(tokens, "remote-debugging-port")
+    if raw is None:
+        return None
+    try:
+        port = int(raw)
+    except ValueError:
+        return None
+    return port if 1 <= port <= 65535 else None
 
 
 def _proc_hex_ip(ip_hex: str, *, ipv6: bool = False):

@@ -196,6 +196,22 @@ def test_remote_debugging_port_from_cmdline_ignores_ephemeral_zero():
     ) == 9333
 
 
+def test_chromium_cmdline_accepts_spaced_user_data_dir_and_port():
+    """Chromium accepts ``--switch value``. Equals-only parse missed the jar."""
+    tokens = ["chrome", "--user-data-dir", "/p/dir", "--remote-debugging-port", "9333"]
+    assert browser._user_data_dir_from_cmdline(tokens) == "/p/dir"
+    assert browser._remote_debugging_port_from_cmdline(tokens) == 9333
+    assert browser._remote_debugging_port_from_cmdline(
+        ["chrome", "--remote-debugging-port", "0"]
+    ) is None
+    assert browser._user_data_dir_from_cmdline(
+        ["chrome", "--user-data-dir", "--no-first-run"]
+    ) is None
+    assert browser._user_data_dir_from_cmdline(
+        ["chrome", "--user-data-dir=/p/dir"]
+    ) == "/p/dir"
+
+
 def test_running_instance_recovers_port_when_devtools_file_is_gone(tmp_path, monkeypatch):
     """Persist-never-ran + missing DevToolsActivePort still identifies this jar.
 
@@ -378,6 +394,25 @@ def test_running_instance_recovers_explicit_cmdline_port(tmp_path, monkeypatch):
     monkeypatch.setattr(browser, "_loopback_listen_ports_for_pid", lambda pid: {port, 22})
     try:
         # Explicit cmdline port wins even when several listens exist.
+        assert browser.running_instance_cdp_port(str(tmp_path)) == port
+    finally:
+        listener.close()
+
+
+def test_running_instance_recovers_spaced_user_data_dir(tmp_path, monkeypatch):
+    """Equals-only parse treated a spaced ``--user-data-dir`` as another Chrome."""
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+    os.symlink(f"host-{os.getpid()}", tmp_path / "SingletonLock")
+    monkeypatch.setattr(
+        browser,
+        "_chromium_cmdline_tokens",
+        lambda pid: ["chrome", "--user-data-dir", str(tmp_path), f"--remote-debugging-port={port}"],
+    )
+    monkeypatch.setattr(browser, "_loopback_listen_ports_for_pid", lambda pid: {port, 22})
+    try:
         assert browser.running_instance_cdp_port(str(tmp_path)) == port
     finally:
         listener.close()
