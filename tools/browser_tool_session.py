@@ -768,12 +768,12 @@ def _admit_shared_browser(
         if treat_as_dock:
             if not (_bd_runtime.published_env().get("DISPLAY") or _bd_lease.human_holds()):
                 return None
-            return _bd_lease.assert_agent_may_act()
+            return _stamp_admitted(_bd_lease.assert_agent_may_act())
         if session_info is None and cdp_url:
             session_info = {"cdp_url": cdp_url, "features": {"cdp_override": True}}
         if not session_info or not _shares_bot_desktop_browser(session_info):
             return None
-        return _bd_lease.assert_agent_may_act()
+        return _stamp_admitted(_bd_lease.assert_agent_may_act())
     finally:
         if token is not None:
             from hermes_constants import reset_hermes_home_override
@@ -799,25 +799,11 @@ def _admit_task_shared_browser(task_id: Optional[str] = None, *, cdp_url: str = 
         except Exception:
             raw = ""
     if not raw:
-        # Leftover supervisor after the session row was dropped: still the dock jar
-        # if it was stamped as this profile's Chromium at mint, or its stored
-        # CDP URL still matches the live port.
-        try:
-            from tools.browser_supervisor import SUPERVISOR_REGISTRY
-            for candidate in (task_id, key, "default"):
-                if not candidate:
-                    continue
-                sup = SUPERVISOR_REGISTRY.get(candidate)
-                if sup is None:
-                    continue
-                raw = str(getattr(sup, "cdp_url", "") or "")
-                home = getattr(sup, "hermes_home", None)
-                leftover_home = home if isinstance(home, str) and home else None
-                leftover_dock = getattr(sup, "targets_bot_desktop", None) is True
-                if raw or leftover_dock:
-                    break
-        except Exception:
-            raw = raw
+        # Leftover supervisor after the session row was dropped: still the dock
+        # jar if it was stamped as THIS profile's Chromium at mint. Do not walk
+        # another task's ``default`` leftover — the registry is keyed only by
+        # task_id, so a sibling multiplex bot can leave one behind.
+        raw, leftover_home, leftover_dock = _leftover_supervisor_identity(task_id, key)
     if info:
         admitted = _admit_shared_browser(info)
         if admitted is not None:
@@ -827,12 +813,62 @@ def _admit_task_shared_browser(task_id: Optional[str] = None, *, cdp_url: str = 
     )
 
 
+def _stamp_admitted(lease):
+    """Remember which HERMES_HOME this snapshot was read from.
+
+    Leftover admit re-enters the minting profile, then resets the override
+    before the caller sees the lease. Epoch checks must re-read THAT file,
+    not the launch profile's ``lease.json``.
+    """
+    from hermes_constants import hermes_home_key
+    lease._hermes_home = hermes_home_key()
+    return lease
+
+
+def _leftover_supervisor_identity(
+    task_id: Optional[str], session_key: str,
+) -> tuple:
+    """This task's leftover supervisor on this profile, or empty.
+
+    ``SUPERVISOR_REGISTRY`` is one map for the process. A sibling leftover
+    stored as ``default`` is a different bot's jar — adopting it would admit
+    that screen (and its lease) on this turn.
+    """
+    try:
+        from hermes_constants import hermes_home_key
+        from tools.browser_supervisor import SUPERVISOR_REGISTRY
+    except Exception:
+        return "", None, False
+    candidates: List[str] = []
+    for name in (task_id, session_key):
+        if isinstance(name, str) and name and name not in candidates:
+            candidates.append(name)
+    if (not task_id or task_id == "default") and "default" not in candidates:
+        candidates.append("default")
+    here = hermes_home_key()
+    for candidate in candidates:
+        sup = SUPERVISOR_REGISTRY.get(candidate)
+        if sup is None:
+            continue
+        home = getattr(sup, "hermes_home", None)
+        owner = home if isinstance(home, str) and home else None
+        if owner and hermes_home_key(owner) != here:
+            continue
+        url = str(getattr(sup, "cdp_url", "") or "")
+        dock = getattr(sup, "targets_bot_desktop", None) is True
+        if url or dock:
+            return url, owner, dock
+    return "", None, False
+
+
 def _lease_moved_result(admitted) -> Optional[Dict[str, Any]]:
     """Refuse payload when the lease epoch moved after ``admitted``, else ``None``."""
     if admitted is None:
         return None
     from tools.bot_desktop import lease as _bd_lease
-    if _bd_lease.get().epoch != admitted.epoch:
+    home = getattr(admitted, "_hermes_home", None)
+    current = _bd_lease.get(home if isinstance(home, str) and home else None)
+    if current.epoch != admitted.epoch:
         return {"success": False, "code": "human_has_control", "error": _LEASE_MOVED_ERROR}
     return None
 

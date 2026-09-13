@@ -472,3 +472,77 @@ def test_read_loop_detaches_idle_dock_when_lease_check_raises(monkeypatch):
     )
     asyncio.run(sup._read_loop())
     assert sup._stop_requested is True
+
+
+def test_admit_task_does_not_adopt_a_sibling_default_leftover(monkeypatch, tmp_path):
+    """The registry is keyed by task_id; a sibling leftover stored as default is another bot."""
+    import tools.bot_desktop.browser as bdb
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.bot_desktop.lease import _path
+    from tools.browser_supervisor import CDPSupervisor
+    from tools.browser_tool_session import _admit_task_shared_browser
+
+    launch, bot = _sibling_homes(tmp_path)
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", _dock_port_for(bot))
+    token_bot = set_hermes_home_override(str(bot))
+    try:
+        sup = CDPSupervisor(task_id="default", cdp_url="ws://127.0.0.1:9333/devtools/browser/x")
+        lease.acquire("human-viewer")
+        assert sup.targets_bot_desktop is True
+    finally:
+        reset_hermes_home_override(token_bot)
+
+    import tools.browser_supervisor as bs
+    registry = MagicMock()
+    registry.get.side_effect = lambda tid: sup if tid == "default" else None
+    monkeypatch.setattr(bs, "SUPERVISOR_REGISTRY", registry)
+
+    token_launch = set_hermes_home_override(str(launch))
+    try:
+        # Another task — and even task_id default — on the launch profile must
+        # not inherit the sibling leftover (that would raise HumanHasControl
+        # from the bot's lease, or worse, admit that jar).
+        assert _admit_task_shared_browser("review") is None
+        assert _admit_task_shared_browser(None) is None
+        assert _admit_task_shared_browser("default") is None
+    finally:
+        reset_hermes_home_override(token_launch)
+        for home in (launch, bot):
+            for f in (_path(str(home)), _path(str(home)).with_suffix(".lock")):
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+
+
+def test_lease_moved_result_uses_the_home_that_admitted(tmp_path):
+    """A leftover admit under the bot home must see that home's take-over."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.bot_desktop.lease import HUMAN, Lease, _path, _write
+    from tools.browser_tool_session import _admit_shared_browser, _lease_moved_result
+
+    launch, bot = _sibling_homes(tmp_path)
+    token_bot = set_hermes_home_override(str(bot))
+    try:
+        admitted = _admit_shared_browser(treat_as_dock=True)
+        assert admitted is not None
+        assert admitted.epoch == 0
+        assert getattr(admitted, "_hermes_home", None)
+    finally:
+        reset_hermes_home_override(token_bot)
+
+    _write(_path(str(bot)), Lease(holder=HUMAN, viewer_id="human-viewer", epoch=1))
+    token_launch = set_hermes_home_override(str(launch))
+    try:
+        moved = _lease_moved_result(admitted)
+        assert moved is not None
+        assert moved.get("code") == "human_has_control"
+        assert lease.get().epoch == 0
+    finally:
+        reset_hermes_home_override(token_launch)
+        for home in (launch, bot):
+            for f in (_path(str(home)), _path(str(home)).with_suffix(".lock")):
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
