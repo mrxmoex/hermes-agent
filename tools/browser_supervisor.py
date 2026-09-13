@@ -101,6 +101,12 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         self.cdp_url = cdp_url
         self.dialog_policy = dialog_policy
         self.dialog_timeout_s = float(dialog_timeout_s)
+        # Leftover I/O outlives the turn that minted this supervisor. The
+        # leftover-lease fence must re-enter THIS profile — the process home
+        # after a multiplex turn is the launch profile, whose dock port and
+        # lease.json are a different bot.
+        from hermes_constants import hermes_home_key
+        self.hermes_home = hermes_home_key()
 
         # State protected by ``_state_lock`` for cross-thread reads.
         self._state_lock = threading.Lock()
@@ -360,7 +366,9 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
             # leftover-supervisor watch.
             try:
                 from tools.browser_tool_supervisor_lease import supervisor_may_touch_page
-                if not supervisor_may_touch_page(self.cdp_url):
+                if not supervisor_may_touch_page(
+                    self.cdp_url, home=getattr(self, "hermes_home", None),
+                ):
                     logger.info(
                         "CDP supervisor %s: not (re)connecting; a human holds the Bot Desktop lease",
                         self.task_id,
@@ -450,6 +458,25 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         except Exception:
             LEASE_POLL_S, request_leftover_stop = 0.25, None
         last_lease_check = 0.0
+
+        async def _poll_lease_while_idle() -> None:
+            """A quiet page sends no CDP frames; ``async for`` would never re-admit."""
+            if request_leftover_stop is None:
+                return
+            while not self._stop_requested:
+                try:
+                    if request_leftover_stop(self):
+                        logger.info(
+                            "CDP supervisor %s: detaching; a human holds the Bot Desktop lease",
+                            self.task_id,
+                        )
+                        await self._close_ws()
+                        return
+                except Exception:
+                    pass
+                await asyncio.sleep(LEASE_POLL_S)
+
+        poller = asyncio.create_task(_poll_lease_while_idle(), name="cdp-lease-poll")
         try:
             async for raw in self._ws:
                 if self._stop_requested:
@@ -485,6 +512,10 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
                         await result
         except Exception as e:
             logger.debug("CDP read loop exited: %s", e)
+        finally:
+            poller.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await poller
 
     # CDP event → handler(self, params, session_id). Async handlers return an
     # awaitable that ``_read_loop`` awaits; sync handlers return None.

@@ -212,3 +212,122 @@ def test_read_loop_detaches_live_socket_when_human_holds(monkeypatch):
     lease.acquire("human-viewer")
     asyncio.run(sup._read_loop())
     assert sup._stop_requested is True
+
+
+def test_read_loop_detaches_idle_socket_when_human_holds(monkeypatch):
+    """A quiet page sends no CDP frames; leftover Fetch/dialog I/O must still drop."""
+    import tools.bot_desktop.browser as bdb
+    from tools.browser_supervisor import CDPSupervisor
+
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: 9333)
+
+    class _QuietWS:
+        def __init__(self):
+            self._closed = asyncio.Event()
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            await self._closed.wait()
+            raise StopAsyncIteration
+
+        async def close(self):
+            self._closed.set()
+
+    sup = CDPSupervisor(task_id="review", cdp_url="ws://127.0.0.1:9333/devtools/browser/x")
+    sup._ws = _QuietWS()
+    lease.acquire("human-viewer")
+    asyncio.run(sup._read_loop())
+    assert sup._stop_requested is True
+
+
+def _sibling_homes(tmp_path):
+    launch = tmp_path / "launch"
+    bot = tmp_path / "bot"
+    launch.mkdir()
+    bot.mkdir()
+    return launch, bot
+
+
+def _dock_port_for(bot_home, bot_port=9333, other_port=9444):
+    from pathlib import Path
+
+    bot_profile = (bot_home / "bot-desktop" / "browser-profile").resolve()
+
+    def fake_port(user_data_dir, **_k):
+        return bot_port if Path(user_data_dir).resolve() == bot_profile else other_port
+
+    return fake_port
+
+
+def test_leftover_supervisor_follows_the_profile_that_minted_it(monkeypatch, tmp_path):
+    """After a multiplex turn the process home is the launch profile; leftover I/O is not."""
+    import tools.bot_desktop.browser as bdb
+    from hermes_constants import hermes_home_key, reset_hermes_home_override, set_hermes_home_override
+    from tools.bot_desktop.lease import _path
+    from tools.browser_supervisor import CDPSupervisor
+    from tools.browser_tool_supervisor_lease import request_leftover_stop, supervisor_may_touch_page
+
+    launch, bot = _sibling_homes(tmp_path)
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", _dock_port_for(bot))
+    token_bot = set_hermes_home_override(str(bot))
+    try:
+        sup = CDPSupervisor(task_id="review", cdp_url="ws://127.0.0.1:9333/devtools/browser/x")
+        lease.acquire("human-viewer")
+        assert sup.hermes_home == hermes_home_key(bot)
+    finally:
+        reset_hermes_home_override(token_bot)
+    token_launch = set_hermes_home_override(str(launch))
+    try:
+        assert supervisor_may_touch_page(sup.cdp_url) is True
+        assert supervisor_may_touch_page(sup.cdp_url, home=sup.hermes_home) is False
+        assert request_leftover_stop(sup) is True
+        assert sup._stop_requested is True
+    finally:
+        reset_hermes_home_override(token_launch)
+        for home in (launch, bot):
+            for f in (_path(str(home)), _path(str(home)).with_suffix(".lock")):
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+
+
+def test_cross_process_takeover_stops_sibling_profile_supervisor(monkeypatch, tmp_path):
+    """Desktop writes another profile's lease.json; the watch sweep must still detach."""
+    import tools.bot_desktop.browser as bdb
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.bot_desktop.lease import HUMAN, Lease, _path, _write
+    from tools.browser_supervisor import CDPSupervisor
+    from tools.browser_tool_supervisor_lease import _watch_once
+
+    launch, bot = _sibling_homes(tmp_path)
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", _dock_port_for(bot))
+    token_bot = set_hermes_home_override(str(bot))
+    try:
+        sup = CDPSupervisor(task_id="review", cdp_url="ws://127.0.0.1:9333/devtools/browser/x")
+    finally:
+        reset_hermes_home_override(token_bot)
+
+    stopped = []
+    import tools.browser_supervisor as bs
+    registry = __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock()
+    registry._lock = __import__("threading").Lock()
+    registry._by_task = {"review": sup}
+    registry.stop.side_effect = lambda tid: stopped.append(tid)
+    monkeypatch.setattr(bs, "SUPERVISOR_REGISTRY", registry)
+
+    token_launch = set_hermes_home_override(str(launch))
+    try:
+        _write(_path(str(bot)), Lease(holder=HUMAN, viewer_id="human-viewer"))
+        _watch_once()
+        assert stopped == ["review"]
+    finally:
+        reset_hermes_home_override(token_launch)
+        for home in (launch, bot):
+            for f in (_path(str(home)), _path(str(home)).with_suffix(".lock")):
+                try:
+                    f.unlink()
+                except OSError:
+                    pass

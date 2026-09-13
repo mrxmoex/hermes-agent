@@ -2,11 +2,19 @@
 
 Leftover watchdogs and auto-dialog policies talk to the page over CDP with no
 command fence. Take over from Desktop writes the lease in another process; this
-module subscribes to in-process acquires and polls once a second for the rest.
+module subscribes to in-process acquires and polls served profile homes for the
+rest.
+
+A leftover supervisor is minted under a bot's ``HERMES_HOME`` and then outlives
+that turn. The process home after a multiplex turn is the launch profile —
+whose dock port and ``lease.json`` belong to a different bot. Every leftover
+check therefore re-enters the home stamped on the supervisor (or recorded on
+the session), not the ambient process home.
 """
 
 from __future__ import annotations
 
+import contextlib
 import threading
 import time
 from typing import Optional
@@ -21,17 +29,53 @@ _watch_lock = threading.Lock()
 LEASE_POLL_S = 0.25
 
 
-def supervisor_may_touch_page(cdp_url: str = "") -> bool:
+@contextlib.contextmanager
+def _home_scope(home: Optional[str]):
+    """Evaluate lease + dock identity on ``home``, or the current profile if unset."""
+    if not home:
+        yield
+        return
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    token = set_hermes_home_override(home)
+    try:
+        yield
+    finally:
+        reset_hermes_home_override(token)
+
+
+def _supervisor_home(supervisor, task_id: Optional[str] = None) -> Optional[str]:
+    """Profile that minted this leftover supervisor, else the session owner, else None."""
+    home = getattr(supervisor, "hermes_home", None)
+    if home:
+        return str(home)
+    if not task_id:
+        task_id = getattr(supervisor, "task_id", None)
+    if not task_id:
+        return None
+    try:
+        from tools import browser_tool as _bt
+        owner = _bt._session_owner_homes.get(task_id)
+        return str(owner) if owner else None
+    except Exception:
+        return None
+
+
+def supervisor_may_touch_page(cdp_url: str = "", home: Optional[str] = None) -> bool:
     """False when a leftover supervisor must not talk to this Chromium.
 
     A human-held dock jar is the page they are typing into. Reconnect,
     ``Target.createTarget``, Fetch passthrough, and ``/json/version`` are all
     observation/action on that jar. Unrelated remote CDP is another browser.
+
+    ``home`` is the HERMES_HOME that owns the dock. Without it, a leftover
+    supervisor thread in a multiplex process would match the launch profile's
+    port (a miss) and treat the sibling bot's jar as "another browser".
     """
     try:
         from tools.bot_desktop.lease import HumanHasControl
         from tools.browser_tool_session import _admit_shared_browser
-        _admit_shared_browser(cdp_url=cdp_url or "")
+        with _home_scope(home):
+            _admit_shared_browser(cdp_url=cdp_url or "")
         return True
     except HumanHasControl:
         return False
@@ -45,7 +89,8 @@ def request_leftover_stop(supervisor) -> bool:
     Does not ``join()`` — that deadlocks the supervisor loop. Callers close the
     WebSocket or break the read loop; ``_run`` then exits instead of reconnecting.
     """
-    if supervisor_may_touch_page(getattr(supervisor, "cdp_url", "") or ""):
+    home = _supervisor_home(supervisor)
+    if supervisor_may_touch_page(getattr(supervisor, "cdp_url", "") or "", home=home):
         return False
     setattr(supervisor, "_stop_requested", True)
     return True
@@ -54,7 +99,8 @@ def request_leftover_stop(supervisor) -> bool:
 def install_supervisor_lease_hook() -> None:
     """Stop dock-aimed supervisors the moment *this* process writes HUMAN.
 
-    Cross-process takeovers are picked up by the 1s watch thread. ``lease._reset_for_tests``
+    Cross-process takeovers are picked up by the watch thread, which walks
+    every leftover supervisor under its own home. ``lease._reset_for_tests``
     drops listeners, so we re-subscribe when the callback is gone.
     """
     global _listener, _watch_started
@@ -75,12 +121,19 @@ def install_supervisor_lease_hook() -> None:
             ).start()
 
 
+def _watch_once() -> None:
+    """Detach leftover supervisors on every served profile whose human holds.
+
+    Must not pre-filter on the launch home's ``human_holds()`` — a sibling
+    bot's Take over writes a different ``lease.json``.
+    """
+    stop_reserved_supervisors()
+
+
 def _watch_loop() -> None:
     while True:
         try:
-            from tools.bot_desktop import lease as _bd_lease
-            if _bd_lease.human_holds():
-                stop_reserved_supervisors()
+            _watch_once()
         except Exception:
             pass
         time.sleep(LEASE_POLL_S)
@@ -92,6 +145,10 @@ def stop_reserved_supervisors(home: Optional[str] = None) -> None:
     Closing the WS drops the Fetch interceptor so a leftover bridge XHR fails
     closed (dismiss) instead of auto-accepting. Cloud / unrelated CDP
     supervisors are left alone.
+
+    ``home`` limits the sweep to one profile (in-process acquire). ``None``
+    walks every leftover supervisor under the home it was minted on — the
+    cross-process / multiplex path.
     """
     install_supervisor_lease_hook()
     try:
@@ -100,10 +157,9 @@ def stop_reserved_supervisors(home: Optional[str] = None) -> None:
         from tools.browser_supervisor import SUPERVISOR_REGISTRY
         from tools import browser_tool as _bt
         from tools import browser_tool_session as _session
-        from tools.browser_tool_lifecycle import _session_owner_scope
     except Exception:
         return
-    want = hermes_home_key(home) if home is not None else hermes_home_key()
+    want = hermes_home_key(home) if home is not None else None
     try:
         with SUPERVISOR_REGISTRY._lock:
             items = list(SUPERVISOR_REGISTRY._by_task.items())
@@ -111,8 +167,11 @@ def stop_reserved_supervisors(home: Optional[str] = None) -> None:
         return
     for task_id, sup in items:
         try:
-            with _session_owner_scope(task_id):
-                if hermes_home_key() != want:
+            owner = _supervisor_home(sup, task_id)
+            if want is not None and owner is not None and hermes_home_key(owner) != want:
+                continue
+            with _home_scope(owner):
+                if want is not None and hermes_home_key() != want:
                     continue
                 if not _bd_lease.human_holds():
                     continue

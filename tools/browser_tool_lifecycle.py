@@ -166,6 +166,11 @@ def _stop_reserved_recordings() -> None:
                 _bt._maybe_stop_recording(task_id)
         except Exception:
             _bt.logger.debug("reserved recording stop failed for %s", task_id, exc_info=True)
+    try:
+        from tools.browser_tool_supervisor_lease import stop_reserved_supervisors
+        stop_reserved_supervisors()
+    except Exception:
+        _bt.logger.debug("reserved supervisor sweep failed", exc_info=True)
 
 
 def _cleanup_inactive_browser_sessions():
