@@ -214,19 +214,28 @@ def _parse_json_result(raw: Any) -> Any:
     return raw
 
 
-def _current_page_origin(task_id: str) -> Optional[str]:
+def _origin_probe(task_id: str) -> tuple[Optional[str], Optional[Dict[str, Any]]]:
+    """Current page origin, or a handoff refuse. ``_eval_js`` remints; do not
+    rewrite ``human_has_control`` as a missing-origin error."""
     res = _eval_js(task_id, "window.location.href")
+    if res.get("code") == "human_has_control":
+        return None, res
     if not res.get("success"):
-        return None
+        return None, None
     href = str(res.get("result") or "").strip().strip('"').strip("'")
     if not href or href == "about:blank":
-        return None
+        return None, None
     try:
         from agent.vault_store import normalize_origin
 
-        return normalize_origin(href)
+        return normalize_origin(href), None
     except Exception:
-        return None
+        return None, None
+
+
+def _current_page_origin(task_id: str) -> Optional[str]:
+    origin, _refuse = _origin_probe(task_id)
+    return origin
 
 
 # Per kind: a JS probe that is truthy on a tab holding the form this kind fills.
@@ -343,10 +352,12 @@ def browser_vault_save_login(label: str = "", task_id: Optional[str] = None) -> 
     # The supervisor's default page session is whatever tab it attached to first (on Browser Use that is
     # the daemon's blank tab); the login form lives in the tab with a password field, so focus that one.
     _focus_bound_origin(effective_task_id, "", "login")
-    origin = _current_page_origin(effective_task_id)
+    origin, refuse = _origin_probe(effective_task_id)
     moved = _json_if_lease_moved(admitted)
     if moved:
         return moved
+    if refuse:
+        return json.dumps(refuse)
     if not origin:
         return json.dumps({"success": False, "error": "Open the site's login page first; the login is saved for that page's origin."})
     prompt = get_save_login_prompt_callback()
@@ -398,10 +409,12 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
     if refuse:
         return json.dumps(refuse)
     _focus_bound_origin(effective_task_id, "", "otp")
-    origin = _current_page_origin(effective_task_id)
+    origin, refuse = _origin_probe(effective_task_id)
     moved = _json_if_lease_moved(admitted)
     if moved:
         return moved
+    if refuse:
+        return json.dumps(refuse)
     if not origin:
         return json.dumps({"success": False, "error": "No page with a code field is open."})
     site = origin.split("://", 1)[-1]
@@ -411,6 +424,8 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
     moved = _json_if_lease_moved(admitted)
     if moved:
         return moved
+    if inspect.get("code") == "human_has_control":
+        return json.dumps(inspect)
     raw_controls = _parse_json_result(inspect.get("result")) if inspect.get("success") else None
     if isinstance(raw_controls, str):
         raw_controls = _parse_json_result(raw_controls)
@@ -528,7 +543,11 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
 
     # ── Origin binding pre-check (cheap early exit; the authoritative check
     # runs synchronously inside the fill script itself) ──────────────────────
-    page_origin = _focus_bound_origin(effective_task_id, str(meta.origin), meta.kind) or _current_page_origin(effective_task_id)
+    page_origin = _focus_bound_origin(effective_task_id, str(meta.origin), meta.kind)
+    if page_origin is None:
+        page_origin, refuse = _origin_probe(effective_task_id)
+        if refuse:
+            return json.dumps(refuse)
     moved = _json_if_lease_moved(admitted)
     if moved:
         return moved

@@ -296,7 +296,7 @@ class TestBrowserVaultTools:
 
         meta = _add_login(store, origin="https://example.com")
         with patch("agent.vault_store.get_vault_store", return_value=store), \
-             patch.object(browser_vault_tool, "_current_page_origin", return_value="https://evil.com"):
+             patch.object(browser_vault_tool, "_focus_bound_origin", return_value="https://evil.com"):
             out = json.loads(browser_vault_tool.browser_vault_fill(meta.id))
         assert out["success"] is False
         assert "Refused" in out["error"]
@@ -627,7 +627,7 @@ class TestSaveLoginPrompt:
             return {"identifier": "tek@acme.test", "password": "hunter2-very-secret"}
 
         unlock_mod.set_save_login_prompt_callback(prompt)
-        monkeypatch.setattr(browser_vault_tool, "_current_page_origin", lambda task_id: "https://acme.test")
+        monkeypatch.setattr(browser_vault_tool, "_origin_probe", lambda task_id: ("https://acme.test", None))
         monkeypatch.setattr(browser_vault_tool, "browser_vault_fill",
                             lambda handle, task_id=None: json.dumps({"success": True, "filled_fields": 1}))
         with patch("agent.vault_store.get_vault_store", return_value=store), \
@@ -645,7 +645,7 @@ class TestSaveLoginPrompt:
         from agent.vault_backends import unlock as unlock_mod
         from tools import browser_vault_tool
 
-        monkeypatch.setattr(browser_vault_tool, "_current_page_origin", lambda task_id: "https://acme.test")
+        monkeypatch.setattr(browser_vault_tool, "_origin_probe", lambda task_id: ("https://acme.test", None))
         with patch("agent.vault_store.get_vault_store", return_value=store):
             unlock_mod.set_save_login_prompt_callback(lambda origin, site: None)
             with patch("agent.vault_backends.unlock.can_prompt_here", return_value=True):

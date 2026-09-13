@@ -387,6 +387,97 @@ def test_vault_fill_inspect_failure_preserves_human_has_control(monkeypatch, tmp
     assert result.get("success") is not True
 
 
+def _vault_origin_remint(expression):
+    """Independently-fenced eval remints without moving the tool-level ticket."""
+    return {
+        "success": False,
+        "code": "human_has_control",
+        "error": "A human has control of this bot's screen.",
+    }
+
+
+def test_vault_save_login_origin_probe_preserves_human_has_control(monkeypatch):
+    """save_login used to rewrite a reminted origin eval as 'open the login page'."""
+    from tools import browser_vault_tool as vault
+
+    monkeypatch.setattr(session_mod, "_get_session_info", lambda *a, **k: {
+        "session_name": "review", "cdp_url": None, "features": {"local": True}})
+    monkeypatch.setattr(vault, "_focus_bound_origin", lambda *a, **k: None)
+    monkeypatch.setattr(vault, "_eval_js", lambda *_a, **_k: _vault_origin_remint("href"))
+    result = json.loads(vault.browser_vault_save_login(task_id="review"))
+    assert result.get("code") == "human_has_control"
+    assert result.get("success") is not True
+    assert "login page" not in (result.get("error") or "").lower()
+
+
+def test_vault_enter_code_origin_probe_preserves_human_has_control(monkeypatch):
+    """enter_code used to rewrite a reminted origin eval as 'no page with a code field'."""
+    from tools import browser_vault_tool as vault
+
+    monkeypatch.setattr(session_mod, "_get_session_info", lambda *a, **k: {
+        "session_name": "review", "cdp_url": None, "features": {"local": True}})
+    monkeypatch.setattr(vault, "_focus_bound_origin", lambda *a, **k: None)
+    monkeypatch.setattr(vault, "_eval_js", lambda *_a, **_k: _vault_origin_remint("href"))
+    result = json.loads(vault.browser_vault_enter_code(task_id="review"))
+    assert result.get("code") == "human_has_control"
+    assert result.get("success") is not True
+    assert "code field" not in (result.get("error") or "").lower()
+
+
+def test_vault_enter_code_inspect_preserves_human_has_control(monkeypatch):
+    """enter_code inspect used to rewrite a reminted eval as no_code_field."""
+    from tools import browser_vault_tool as vault
+
+    monkeypatch.setattr(session_mod, "_get_session_info", lambda *a, **k: {
+        "session_name": "review", "cdp_url": None, "features": {"local": True}})
+    monkeypatch.setattr(vault, "_focus_bound_origin", lambda *a, **k: None)
+
+    def fake_eval(_task, expression):
+        if "location.href" in expression:
+            return {"success": True, "result": "https://example.com/2fa"}
+        return _vault_origin_remint(expression)
+
+    monkeypatch.setattr(vault, "_eval_js", fake_eval)
+    result = json.loads(vault.browser_vault_enter_code(task_id="review"))
+    assert result.get("code") == "human_has_control"
+    assert result.get("success") is not True
+    assert result.get("error_type") != "no_code_field"
+
+
+def test_vault_fill_origin_probe_preserves_human_has_control(monkeypatch, tmp_path):
+    """Fill used to treat a reminted origin eval as a missing-origin error."""
+    from agent.vault_store import VaultStore
+    from tools import browser_vault_tool as vault
+
+    store = VaultStore(base_dir=tmp_path / "vault")
+    meta = store.add_item(
+        kind="login",
+        label="Example login",
+        origin="https://example.com",
+        secret={
+            "identifier_type": "email",
+            "identifier": "user@example.com",
+            "password": "s3cret-pw",
+            "origin": "https://example.com",
+        },
+    )
+    monkeypatch.setattr(session_mod, "_get_session_info", lambda *a, **k: {
+        "session_name": "review", "cdp_url": None, "features": {"local": True}})
+    monkeypatch.setattr("agent.vault_store.get_vault_store", lambda: store)
+    monkeypatch.setattr(vault, "_focus_bound_origin", lambda *a, **k: None)
+    injected: list = []
+    monkeypatch.setattr(vault, "_eval_js", lambda *_a, **_k: _vault_origin_remint("href"))
+    monkeypatch.setattr(
+        vault, "_eval_js_secret",
+        lambda *_a, **_k: injected.append("secret") or {"success": True, "result": "{}"},
+    )
+    result = json.loads(vault.browser_vault_fill(meta.id, task_id="review"))
+    assert injected == [], f"password was injected after a handoff refuse: {injected}"
+    assert result.get("code") == "human_has_control"
+    assert result.get("success") is not True
+    assert "could not determine" not in (result.get("error") or "").lower()
+
+
 def test_vault_eval_and_save_login_are_fenced_while_human_controls(monkeypatch):
     from tools import browser_vault_tool as vault
 
