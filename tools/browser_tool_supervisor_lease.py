@@ -180,8 +180,10 @@ def stop_reserved_supervisors(home: Optional[str] = None) -> None:
             items = list(SUPERVISOR_REGISTRY._by_task.items())
     except Exception:
         return
-    for task_id, sup in items:
+    for raw_key, sup in items:
         try:
+            stored_id = getattr(sup, "task_id", None)
+            task_id = stored_id if isinstance(stored_id, str) and stored_id else raw_key
             owner = _supervisor_home(sup, task_id)
             if want is not None and owner is not None and hermes_home_key(owner) != want:
                 continue
@@ -201,6 +203,8 @@ def stop_reserved_supervisors(home: Optional[str] = None) -> None:
                     and not _session._cdp_url_is_bot_desktop_browser(cdp_url)
                 ):
                     continue
+                # Re-enter the minting home so stop() pops THIS profile's row,
+                # not a launch-home collision on the same task_id.
                 SUPERVISOR_REGISTRY.stop(task_id)
         except Exception:
             _bt.logger.debug("reserved supervisor stop failed for %s", task_id, exc_info=True)

@@ -546,3 +546,95 @@ def test_lease_moved_result_uses_the_home_that_admitted(tmp_path):
                     f.unlink()
                 except OSError:
                     pass
+
+
+def test_registry_does_not_hand_out_a_sibling_leftover(monkeypatch, tmp_path):
+    """Vault/dialog I/O uses SUPERVISOR_REGISTRY.get; a sibling default leftover is another jar."""
+    import json
+    import tools.bot_desktop.browser as bdb
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.bot_desktop.lease import _path
+    from tools.browser_supervisor import (
+        CDPSupervisor, SUPERVISOR_REGISTRY, _supervisor_registry_key,
+    )
+    from tools import browser_dialog_tool as dialog
+    from tools import browser_vault_tool as vault
+
+    launch, bot = _sibling_homes(tmp_path)
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", _dock_port_for(bot))
+    saved = dict(SUPERVISOR_REGISTRY._by_task)
+    SUPERVISOR_REGISTRY._by_task.clear()
+    token_bot = set_hermes_home_override(str(bot))
+    try:
+        sup = CDPSupervisor(task_id="default", cdp_url="ws://127.0.0.1:9333/devtools/browser/x")
+        bot_key = _supervisor_registry_key("default")
+        SUPERVISOR_REGISTRY._by_task[bot_key] = sup
+        evaluated = []
+        replied = []
+        sup.evaluate_runtime = lambda *a, **k: evaluated.append(a) or {"ok": True, "result": "SECRET"}
+        sup.respond_to_dialog = lambda **k: replied.append(k) or {"ok": True, "dialog": {}}
+        assert SUPERVISOR_REGISTRY.get("default") is sup
+    finally:
+        reset_hermes_home_override(token_bot)
+
+    monkeypatch.setattr(
+        "tools.browser_tool_session._run_browser_command",
+        lambda *a, **k: {"success": False, "error": "no session"},
+    )
+    token_launch = set_hermes_home_override(str(launch))
+    try:
+        assert SUPERVISOR_REGISTRY.get("default") is None
+        SUPERVISOR_REGISTRY.stop("default")
+        assert SUPERVISOR_REGISTRY._by_task.get(bot_key) is sup
+        vault_out = vault._eval_js("default", "window.location.href")
+        dialog_out = json.loads(dialog.browser_dialog("accept", task_id="default"))
+        assert evaluated == []
+        assert replied == []
+        assert "SECRET" not in json.dumps(vault_out)
+        assert dialog_out.get("success") is not True
+    finally:
+        reset_hermes_home_override(token_launch)
+        SUPERVISOR_REGISTRY._by_task.clear()
+        SUPERVISOR_REGISTRY._by_task.update(saved)
+        for home in (launch, bot):
+            for f in (_path(str(home)), _path(str(home)).with_suffix(".lock")):
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+
+
+def test_get_or_start_does_not_stop_a_sibling_leftover(monkeypatch, tmp_path):
+    """A launch-home attach on the same task_id must not tear down the other bot's leftover."""
+    import tools.bot_desktop.browser as bdb
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.browser_supervisor import (
+        CDPSupervisor, SUPERVISOR_REGISTRY, _supervisor_registry_key,
+    )
+
+    launch, bot = _sibling_homes(tmp_path)
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", _dock_port_for(bot))
+    monkeypatch.setattr(CDPSupervisor, "start", lambda self, timeout=15.0: None)
+    saved = dict(SUPERVISOR_REGISTRY._by_task)
+    SUPERVISOR_REGISTRY._by_task.clear()
+    token_bot = set_hermes_home_override(str(bot))
+    try:
+        leftover = CDPSupervisor(task_id="default", cdp_url="ws://127.0.0.1:9333/devtools/browser/x")
+        leftover.stop = lambda *a, **k: (_ for _ in ()).throw(AssertionError("sibling leftover stopped"))
+        bot_key = _supervisor_registry_key("default")
+        SUPERVISOR_REGISTRY._by_task[bot_key] = leftover
+    finally:
+        reset_hermes_home_override(token_bot)
+
+    token_launch = set_hermes_home_override(str(launch))
+    try:
+        started = SUPERVISOR_REGISTRY.get_or_start(
+            "default", "ws://127.0.0.1:9222/devtools/browser/x",
+        )
+        assert started is not leftover
+        assert SUPERVISOR_REGISTRY._by_task.get(bot_key) is leftover
+        assert SUPERVISOR_REGISTRY.get("default") is started
+    finally:
+        reset_hermes_home_override(token_launch)
+        SUPERVISOR_REGISTRY._by_task.clear()
+        SUPERVISOR_REGISTRY._by_task.update(saved)

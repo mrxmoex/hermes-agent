@@ -554,33 +554,75 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
     }
 
 
+def _supervisor_registry_key(task_id: str, home: Optional[str] = None) -> str:
+    """Map key for a leftover supervisor: this profile's home plus ``task_id``.
+
+    The registry is process-global. Multiplex bots share ``default`` / the same
+    session-shaped id; a bare task_id key lets vault/dialog I/O talk to another
+    bot's jar after leftover admit has already refused to adopt it.
+    """
+    from hermes_constants import hermes_home_key
+    return f"{hermes_home_key(home)}\n{task_id}"
+
+
+def _supervisor_belongs_here(supervisor, home: Optional[str] = None) -> bool:
+    owner = getattr(supervisor, "hermes_home", None)
+    if not (isinstance(owner, str) and owner):
+        return True
+    from hermes_constants import hermes_home_key
+    return hermes_home_key(owner) == hermes_home_key(home)
+
+
 class _SupervisorRegistry:
-    """Process-global (task_id → supervisor) map with idempotent start/stop (``SUPERVISOR_REGISTRY``)."""
+    """Process-global (profile, task_id) → supervisor map with idempotent start/stop."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._by_task: Dict[str, CDPSupervisor] = {}
 
+    def _lookup_locked(self, task_id: str) -> Optional[CDPSupervisor]:
+        found = self._by_task.get(_supervisor_registry_key(task_id))
+        if found is not None:
+            return found
+        legacy = self._by_task.get(task_id)
+        if legacy is not None and _supervisor_belongs_here(legacy):
+            return legacy
+        return None
+
     def get(self, task_id: str) -> Optional[CDPSupervisor]:
         with self._lock:
-            return self._by_task.get(task_id)
+            return self._lookup_locked(task_id)
 
     def _pop(self, task_id: str) -> Optional[CDPSupervisor]:
         with self._lock:
-            return self._by_task.pop(task_id, None)
+            supervisor = self._by_task.pop(_supervisor_registry_key(task_id), None)
+            if supervisor is None and task_id in self._by_task:
+                candidate = self._by_task[task_id]
+                if _supervisor_belongs_here(candidate):
+                    supervisor = self._by_task.pop(task_id, None)
+            return supervisor
 
     def get_or_start(self, task_id: str, cdp_url: str, *, dialog_policy: str = DEFAULT_DIALOG_POLICY,
                      dialog_timeout_s: float = DEFAULT_DIALOG_TIMEOUT_S, start_timeout: float = 15.0) -> CDPSupervisor:
-        """Idempotently ensure a supervisor runs for ``(task_id, cdp_url)``; one bound to a
-        different ``cdp_url`` or unhealthy (dead thread / stopped loop) is stopped and replaced."""
+        """Idempotently ensure a supervisor runs for ``(profile, task_id, cdp_url)``.
+
+        A sibling leftover occupying the bare ``task_id`` is left alone. A
+        different ``cdp_url`` or unhealthy row for THIS profile is replaced.
+        """
+        key = _supervisor_registry_key(task_id)
+        existing = None
         with self._lock:
-            existing = self._by_task.get(task_id)
+            existing = self._lookup_locked(task_id)
             if existing is not None:
                 thread, loop = existing._thread, existing._loop
                 healthy = thread is not None and thread.is_alive() and loop is not None and loop.is_running()
                 if existing.cdp_url == cdp_url and healthy:
                     return existing
-                self._by_task.pop(task_id, None)
+                self._by_task.pop(key, None)
+                if existing is self._by_task.get(task_id) and _supervisor_belongs_here(existing):
+                    self._by_task.pop(task_id, None)
+            else:
+                existing = None
         if existing is not None:
             existing.stop()
 
@@ -589,11 +631,11 @@ class _SupervisorRegistry:
         supervisor.start(timeout=start_timeout)
         with self._lock:
             # Guard against a concurrent get_or_start from another thread.
-            already = self._by_task.get(task_id)
+            already = self._lookup_locked(task_id)
             if already is not None and already.cdp_url == cdp_url:
                 supervisor.stop()
                 return already
-            self._by_task[task_id] = supervisor
+            self._by_task[key] = supervisor
         return supervisor
 
     def stop(self, task_id: str) -> None:
