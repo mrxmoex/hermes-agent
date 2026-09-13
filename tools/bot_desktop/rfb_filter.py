@@ -33,6 +33,10 @@ _FENCE = 248
 # TigerVNC's default MaxCutText. The length is client-declared (int32); without a cap a watcher
 # with a ticket but no lease could make the bridge buffer ~2 GiB waiting for a payload.
 _MAX_CUT_TEXT = 256 * 1024
+# Largest legal framed client message (clipboard header + payload). An incomplete
+# header used to return None from _message_length and leave feed() accumulating
+# forever — a watcher could send type 6 then stream gigabytes.
+_MAX_BUF = _MAX_CUT_TEXT + 8
 
 
 class RfbClientFilter:
@@ -49,6 +53,10 @@ class RfbClientFilter:
 
     def feed(self, chunk: bytes) -> bytes:
         self._buf += chunk
+        # Cap before framing: an incomplete SetEncodings / ClientCutText / Fence
+        # header returns None and the loop would otherwise retain every extra byte.
+        if len(self._buf) > _MAX_BUF + self._handshake_left:
+            raise ValueError("RFB client buffer overflow")
         out = bytearray()
         if self._handshake_left:
             take = min(self._handshake_left, len(self._buf))
