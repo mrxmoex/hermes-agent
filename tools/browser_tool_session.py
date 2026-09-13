@@ -166,6 +166,7 @@ def _create_local_session(task_id: str, allow_real_profile: bool = True) -> Dict
     ``allow_real_profile=False``: the user's cookie jar must not reach an arbitrary
     internal host the model chose.
     """
+    _refuse_shared_session_while_human_holds()
     if allow_real_profile:
         cdp_url, err = _real_profile._real_profile_cdp()
         if err:
@@ -210,6 +211,7 @@ def _local_backend_process_dead(session_info: Dict[str, Any]) -> bool:
 
 def _create_cdp_session(task_id: str, cdp_url: str) -> Dict[str, str]:
     """Session connecting to a user-supplied CDP endpoint."""
+    _refuse_shared_session_while_human_holds(cdp_url=cdp_url)
     info = _session_record("cdp", cdp_url, {"cdp_override": True})
     _bt.logger.info("Created CDP browser session %s → %s for task %s",
                 info["session_name"], _bt._sanitize_url_for_logs(cdp_url), task_id)
@@ -228,11 +230,17 @@ def _create_cloud_session_or_fallback(task_id: str, provider) -> Dict[str, Any]:
             session_info["cdp_url"] = _cdp._resolve_cdp_override(str(session_info["cdp_url"]))
         return session_info
     except Exception as e:
+        from tools.bot_desktop.lease import HumanHasControl
+
+        if isinstance(e, HumanHasControl):
+            raise
         provider_name = type(provider).__name__
         _bt.logger.warning("Cloud provider %s failed (%s); attempting fallback to local Chromium for task %s",
                            provider_name, e, task_id, exc_info=True)
         try:
             session_info = _create_local_session(task_id)
+        except HumanHasControl:
+            raise
         except Exception as local_error:
             raise RuntimeError(f"Cloud provider {provider_name} failed ({e}) and local "
                                f"fallback also failed ({local_error})") from e
@@ -245,13 +253,23 @@ def _create_cloud_session_or_fallback(task_id: str, provider) -> Dict[str, Any]:
 def _create_session_for_key(task_id: str, force_local: bool) -> Dict[str, Any]:
     """Fresh session for ``task_id`` (runs OUTSIDE the lock: cloud mode makes a network call).
     Precedence: CDP override > hybrid local sidecar (never real-profile) > cloud > local."""
-    cdp_override = _cdp._get_cdp_override()
-    if cdp_override and not force_local:
-        return _create_cdp_session(task_id, cdp_override)
+    # Peek the raw override before the HTTP /json/version probe. A live
+    # dock Chromium is this profile's desktop jar; probing it while a
+    # human holds would still talk to the jar — including the hybrid
+    # ``::local`` sidecar, which used to skip the refuse and then probe.
+    raw_cdp = _cdp._get_cdp_override_raw()
+    if raw_cdp:
+        _refuse_shared_session_while_human_holds(cdp_url=raw_cdp)
     if force_local:
+        _refuse_shared_session_while_human_holds()
         return _create_local_session(task_id, allow_real_profile=False)
+    if raw_cdp:
+        cdp_override = _cdp._get_cdp_override()
+        if cdp_override:
+            return _create_cdp_session(task_id, cdp_override)
     provider = _cloud._get_cloud_provider()
     if provider is None:
+        _refuse_shared_session_while_human_holds()
         return _create_local_session(task_id)
     return _create_cloud_session_or_fallback(task_id, provider)
 
@@ -299,7 +317,18 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, Any]:
                 return replacement
 
     force_local = _bt._is_local_sidecar_key(task_id)
-    session_info = _create_session_for_key(task_id, force_local)
+    try:
+        session_info = _create_session_for_key(task_id, force_local)
+    except Exception as exc:
+        from tools.bot_desktop.lease import HumanHasControl
+
+        if isinstance(exc, HumanHasControl):
+            # Create never wrote a row. Drop the activity touch so the
+            # janitor does not reap a session that was never minted.
+            with _bt._cleanup_lock:
+                _bt._session_last_activity.pop(task_id, None)
+            raise
+        raise
 
     with _bt._cleanup_lock:
         if task_id in _bt._active_sessions:  # created concurrently during the network call — don't leak ours
@@ -576,6 +605,18 @@ def _run_browser_command(
     try:
         session_info = _get_session_info(task_id)
     except Exception as e:
+        from tools.bot_desktop.lease import HumanHasControl
+
+        if isinstance(e, HumanHasControl):
+            # No session row exists to drive. ``record stop`` has nothing to
+            # cease — do not mint or attach to the dock just to no-op.
+            if command == "record" and args and str(args[0]).strip() == "stop":
+                return {"success": True, "data": {"stopped": False}}
+            try:
+                _bt._maybe_stop_recording(task_id)
+            except Exception:
+                pass
+            return {"success": False, "error": str(e), "code": "human_has_control"}
         _bt.logger.warning("Failed to create browser session for task=%s: %s", task_id, e)
         return {"success": False, "error": f"Failed to create browser session: {str(e)}"}
     # The bot's LOCAL browser lives on its Bot Desktop screen, in the same profile a human who took
@@ -651,6 +692,26 @@ _LEASE_MOVED_ERROR = (
     "A human took over the bot's screen while this browser command ran; its result was "
     "discarded. Call computer_use action='wait_for_human' to block until they hand back."
 )
+
+
+def _refuse_shared_session_while_human_holds(*, cdp_url: str = "") -> None:
+    """Refuse minting or joining the profile's shared local browser.
+
+    ``_run_browser_command`` fences the *command*, but ``_get_session_info``
+    launches and joins first. A leftover reserved session is already refused
+    by the existing holder check; this covers the no-row path: dock CDP
+    override, local Chromium, Lightpanda, and real-profile copies. Unrelated
+    remote CDP and cloud sessions are left alone — they are not the bot's
+    desktop jar.
+    """
+    if cdp_url:
+        session_info: Dict[str, Any] = {"cdp_url": cdp_url, "features": {"cdp_override": True}}
+    else:
+        session_info = {"features": {"local": True}}
+    if not _shares_bot_desktop_browser(session_info):
+        return
+    from tools.bot_desktop import lease as _bd_lease
+    _bd_lease.assert_agent_may_act()
 
 
 def _admit_shared_browser(session_info: Optional[Dict[str, Any]] = None, *, cdp_url: str = ""):

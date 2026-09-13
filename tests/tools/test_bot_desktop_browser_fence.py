@@ -168,6 +168,149 @@ def test_get_session_info_does_not_recycle_shared_browser_while_human_holds(monk
         _restore_session_state(bt, saved)
 
 
+def test_get_session_info_does_not_mint_shared_browser_while_human_holds(monkeypatch):
+    """No leftover row: create used to launch / join the dock jar, then the command fence refused."""
+    from tools import browser_tool_session as session
+    from tools.bot_desktop.lease import HumanHasControl
+
+    bt, saved = _session_state()
+    launched = []
+    monkeypatch.setattr(session._lifecycle, "_start_browser_cleanup_thread", lambda: None)
+    monkeypatch.setattr(session._cdp, "_get_cdp_override_raw", lambda: "")
+    monkeypatch.setattr(session._cdp, "_get_cdp_override", lambda: launched.append("http") or "")
+    monkeypatch.setattr(session, "_create_local_session", lambda *a, **k: launched.append("local") or {
+        "session_name": "h_new", "features": {"local": True}})
+    monkeypatch.setattr(session, "_create_cdp_session", lambda *a, **k: launched.append("cdp") or {
+        "session_name": "cdp_new", "features": {"cdp_override": True}})
+    monkeypatch.setattr(session._cloud, "_get_cloud_provider", lambda: None)
+    monkeypatch.setattr(session, "_browser_command_preflight", lambda: {"browser_cmd": "agent-browser"})
+    try:
+        for name in saved:
+            getattr(bt, name).clear()
+        lease.acquire("human-viewer")
+        with pytest.raises(HumanHasControl):
+            session._get_session_info("review")
+        assert launched == []
+        assert "review" not in bt._active_sessions
+        assert "review" not in bt._session_last_activity
+
+        result = session._run_browser_command("review", "click", ["e1"])
+        assert result.get("code") == "human_has_control"
+        assert launched == []
+        assert "review" not in bt._active_sessions
+    finally:
+        _restore_session_state(bt, saved)
+
+
+def test_get_session_info_does_not_probe_dock_cdp_while_human_holds(monkeypatch):
+    """``_get_cdp_override`` HTTP-discovers /json/version on the dock jar. Peek raw, then refuse."""
+    import tools.bot_desktop.browser as bdb
+    from tools import browser_tool_session as session
+    from tools.bot_desktop.lease import HumanHasControl
+
+    bt, saved = _session_state()
+    probed = []
+    monkeypatch.setattr(session._lifecycle, "_start_browser_cleanup_thread", lambda: None)
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: 9333)
+    monkeypatch.setattr(session._cdp, "_get_cdp_override_raw", lambda: "http://127.0.0.1:9333")
+    monkeypatch.setattr(session._cdp, "_get_cdp_override", lambda: probed.append("http") or "http://127.0.0.1:9333")
+    monkeypatch.setattr(session, "_create_cdp_session", lambda *a, **k: probed.append("cdp") or {
+        "session_name": "cdp_x", "cdp_url": a[1], "features": {"cdp_override": True}})
+    monkeypatch.setattr(session, "_create_local_session", lambda *a, **k: probed.append("local") or {
+        "session_name": "h_x", "features": {"local": True}})
+    try:
+        for name in saved:
+            getattr(bt, name).clear()
+        lease.acquire("human-viewer")
+        with pytest.raises(HumanHasControl):
+            session._get_session_info("review")
+        assert probed == []
+        assert "review" not in bt._active_sessions
+
+        with pytest.raises(HumanHasControl):
+            session._get_session_info("review::local")
+        assert probed == []
+        assert "review::local" not in bt._active_sessions
+    finally:
+        _restore_session_state(bt, saved)
+
+
+def test_get_session_info_still_mints_cloud_session_while_human_holds(monkeypatch):
+    """A remote cloud browser is not the dock jar; takeover must not block minting it."""
+    from tools import browser_tool_session as session
+
+    bt, saved = _session_state()
+
+    class Cloud:
+        def create_session(self, task_id):
+            return {"session_name": "cloud_1", "cdp_url": "wss://cloud.example/cdp",
+                    "features": {"cloud": True}}
+
+    monkeypatch.setattr(session._lifecycle, "_start_browser_cleanup_thread", lambda: None)
+    monkeypatch.setattr(session._cdp, "_get_cdp_override_raw", lambda: "")
+    monkeypatch.setattr(session._cdp, "_get_cdp_override", lambda: "")
+    monkeypatch.setattr(session._cloud, "_get_cloud_provider", lambda: Cloud())
+    monkeypatch.setattr(session._cdp, "_ensure_cdp_supervisor", lambda *a, **k: None)
+    monkeypatch.setattr(session._cdp, "_resolve_cdp_override", lambda url: url)
+    try:
+        for name in saved:
+            getattr(bt, name).clear()
+        lease.acquire("human-viewer")
+        got = session._get_session_info("review")
+        assert got["session_name"] == "cloud_1"
+        assert bt._active_sessions["review"]["session_name"] == "cloud_1"
+    finally:
+        _restore_session_state(bt, saved)
+
+
+def test_cloud_fallback_does_not_wrap_human_has_control(monkeypatch):
+    """A failed cloud mint must not wrap the local-path refuse into a generic RuntimeError."""
+    from tools import browser_tool_session as session
+    from tools.bot_desktop.lease import HumanHasControl
+
+    bt, saved = _session_state()
+
+    class Cloud:
+        def create_session(self, task_id):
+            raise RuntimeError("cloud down")
+
+    monkeypatch.setattr(session._lifecycle, "_start_browser_cleanup_thread", lambda: None)
+    monkeypatch.setattr(session._cdp, "_get_cdp_override_raw", lambda: "")
+    monkeypatch.setattr(session._cdp, "_get_cdp_override", lambda: "")
+    monkeypatch.setattr(session._cloud, "_get_cloud_provider", lambda: Cloud())
+    monkeypatch.setattr(session._real_profile, "_real_profile_cdp", lambda: (_ for _ in ()).throw(
+        AssertionError("real-profile launch")))
+    try:
+        for name in saved:
+            getattr(bt, name).clear()
+        lease.acquire("human-viewer")
+        with pytest.raises(HumanHasControl):
+            session._get_session_info("review")
+        assert "review" not in bt._active_sessions
+    finally:
+        _restore_session_state(bt, saved)
+
+
+def test_browser_navigate_does_not_start_recording_while_human_holds(monkeypatch):
+    """Navigate used to mint (and optionally start a WebM) before the command fence."""
+    from tools import browser_tool as browser
+    from tools.bot_desktop.lease import HumanHasControl
+
+    recorded = []
+    monkeypatch.setattr(browser, "_is_camofox_mode", lambda: False)
+    monkeypatch.setattr(
+        browser._session, "_get_session_info",
+        lambda *a, **k: (_ for _ in ()).throw(HumanHasControl("held")),
+    )
+    monkeypatch.setattr(browser, "_maybe_start_recording", lambda *a, **k: recorded.append(a))
+    monkeypatch.setattr(browser, "_url_policy_error", lambda *a, **k: None)
+    monkeypatch.setattr(browser, "_secret_url_error_normalized", lambda url: (url, None))
+    lease.acquire("human-viewer")
+    out = json.loads(browser.browser_navigate("https://example.com", task_id="review"))
+    assert out.get("code") == "human_has_control"
+    assert recorded == []
+
+
 def test_record_stop_is_allowed_while_human_holds_so_capture_can_cease(monkeypatch):
     """An opted-in WebM must be stoppable during takeover; close stays refused."""
     commands: list = []

@@ -123,6 +123,10 @@ def _export_session_cdp(env: dict, get_session_info: Callable[[str], Any], cache
     try:
         cdp = str((get_session_info(cache_key) or {}).get("cdp_url") or "")
     except Exception as e:
+        from tools.bot_desktop.lease import HumanHasControl
+
+        if isinstance(e, HumanHasControl):
+            raise
         return fail_msg(e)
     if not cdp:
         return no_cdp_msg
@@ -390,6 +394,9 @@ def _resolve_managed_chromium_cdp(env: dict, task_id: Optional[str], session_nam
         return None
     res = _run_browser_command(_backend_cache_key(task_id, session_name), "get", ["cdp-url"],
                                timeout=_get_open_command_timeout(first_open=True))
+    if (res or {}).get("code") == "human_has_control":
+        from tools.bot_desktop.lease import HumanHasControl
+        raise HumanHasControl((res or {}).get("error") or "A human has taken over this desktop.")
     cdp = str(((res or {}).get("data") or {}).get("cdpUrl") or "") if (res or {}).get("success") else ""
     if not cdp:
         return (f"The local browser could not be started: {(res or {}).get('error') or 'agent-browser returned no CDP endpoint'} "
@@ -422,11 +429,14 @@ def _resolve_backend_cdp(env: dict, task_id: Optional[str], session_name: str = 
         return None
     try:
         from tools.browser_tool_cloud import _get_cloud_provider
-        from tools.browser_tool_session import _get_session_info
-        from tools.browser_tool_cdp import _get_cdp_override
+        from tools.browser_tool_session import _get_session_info, _refuse_shared_session_while_human_holds
+        from tools.browser_tool_cdp import _get_cdp_override, _get_cdp_override_raw
     except Exception as e:  # pragma: no cover — stubbed browser_tool in tests
         logger.debug("browser_tool backend resolution unavailable: %s", e)
         return None
+    raw = _quiet(_get_cdp_override_raw, "")
+    if raw:
+        _refuse_shared_session_while_human_holds(cdp_url=raw)
     override = _quiet(_get_cdp_override, "")
     if override:
         _set_cdp_env(env, override)
@@ -481,6 +491,8 @@ def _resolve_real_profile_cdp(env: dict, force_local: bool) -> Optional[str]:
     if not force_local and (_quiet(_get_cloud_provider, object()) is not None
                             or is_legacy_browser_use_cloud_config(_read_browser_cfg())):
         return None
+    from tools.browser_tool_session import _refuse_shared_session_while_human_holds
+    _refuse_shared_session_while_human_holds()
     cdp, err = _real_profile_cdp()
     if cdp and not err:
         _set_cdp_env(env, cdp)
@@ -603,7 +615,14 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
             return tool_error(f"Invalid session name {session!r}: use 1-64 letters, digits, "
                               "dashes, or underscores (e.g. 'r7k2').")
         env["BU_NAME"] = session
-    route_err = _route_backend(env, session, task_id, bool(local))
+    try:
+        route_err = _route_backend(env, session, task_id, bool(local))
+    except Exception as e:
+        from tools.bot_desktop.lease import HumanHasControl
+
+        if isinstance(e, HumanHasControl):
+            return tool_error(str(e), code="human_has_control")
+        raise
     if route_err:
         return tool_error(route_err)
     admitted = None
