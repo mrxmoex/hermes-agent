@@ -269,6 +269,71 @@ def test_chrome_fallback_url_probe_preserves_human_has_control(monkeypatch):
     assert "could not determine" not in (result.get("error") or "").lower()
 
 
+def test_chrome_fallback_is_fenced_when_cached_session_is_cloud(monkeypatch):
+    """Temp Chrome is this screen. A cached cloud row used to skip the bracket."""
+    from tools import browser_tool as browser
+    from tools import browser_tool_lightpanda_fallback as lp
+    from tools import browser_tool_session as session
+
+    spawned: list = []
+    prior = browser._active_sessions.get("review")
+    browser._active_sessions["review"] = {
+        "session_name": "cloud", "cdp_url": "wss://cloud.example/devtools/browser/x",
+        "features": {"local": False},
+    }
+    monkeypatch.setattr(session, "_popen_agent_browser", lambda *a, **k: spawned.append(a) or (_ for _ in ()).throw(AssertionError("unfenced")))
+    monkeypatch.setattr(session, "_run_browser_command", lambda *a, **k: spawned.append(("get-url",)) or {"success": True, "data": {"url": "https://example.com/"}})
+    lease.acquire("human-viewer")
+    try:
+        result = lp._run_chrome_fallback_command("review", "screenshot", [], timeout=10)
+    finally:
+        if prior is None:
+            browser._active_sessions.pop("review", None)
+        else:
+            browser._active_sessions["review"] = prior
+    assert spawned == [], f"cached cloud skipped the local Chrome-fallback fence: {spawned}"
+    assert result.get("code") == "human_has_control"
+
+
+def test_lightpanda_does_not_retry_chrome_after_cached_cloud_failure(monkeypatch):
+    """A failed cloud command plus ``browser.engine: lightpanda`` used to launch temp Chrome."""
+    from tools import browser_tool as browser
+
+    fallback: list = []
+    prior = browser._active_sessions.get("review")
+    browser._active_sessions["review"] = {
+        "session_name": "cloud", "cdp_url": "wss://cloud.example/devtools/browser/x",
+        "features": {"local": False},
+    }
+    monkeypatch.setattr(session_mod, "_browser_command_preflight", lambda: {"browser_cmd": "agent-browser"})
+    monkeypatch.setattr(session_mod._cloud, "_get_browser_engine", lambda: "lightpanda")
+    monkeypatch.setattr(session_mod._cdp, "_get_cdp_override_raw", lambda: "")
+    monkeypatch.setattr(
+        session_mod._lp, "_run_chrome_fallback_command",
+        lambda *a, **k: fallback.append(a) or {"success": True, "data": {"secret": "WHAT-THE-HUMAN-TYPED"}},
+    )
+    monkeypatch.setattr(
+        session_mod._lp, "_chrome_fallback_screenshot",
+        lambda *a, **k: fallback.append(("screenshot",) + a) or {
+            "success": True, "data": {"secret": "WHAT-THE-HUMAN-TYPED"}},
+    )
+    monkeypatch.setattr(
+        session_mod, "_spawn_and_collect",
+        lambda *a, **k: {"success": False, "error": "cloud snapshot empty"},
+    )
+    lease.acquire("human-viewer")
+    try:
+        result = session_mod._run_browser_command("review", "snapshot", [])
+    finally:
+        if prior is None:
+            browser._active_sessions.pop("review", None)
+        else:
+            browser._active_sessions["review"] = prior
+    assert fallback == [], f"cached cloud failure retried Chrome on this screen: {fallback}; result={result}"
+    assert result.get("success") is False
+    assert "WHAT-THE-HUMAN-TYPED" not in json.dumps(result)
+
+
 def _wire_browser_exec(monkeypatch, *, session_info=None, run_cli=None):
     """Admit/discard the harness without launching a real browser-use CLI."""
     ran: list = []

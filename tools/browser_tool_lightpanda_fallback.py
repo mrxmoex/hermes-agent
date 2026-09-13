@@ -128,9 +128,13 @@ def _run_chrome_fallback_command(task_id: str, command: str, args: List[str], ti
     The temp session is popped outside ``_run_browser_command``, so this path must
     apply the same Bot Desktop lease bracket or a vision preroute can return
     pixels captured while a human holds the shared profile.
+
+    Admit as **local** Chromium — that is what the temp session launches — not
+    ``_session_info_for_shared_browser_fence(task_id)``. A cached cloud / leftover
+    ``/browser connect`` row is another browser and used to skip this bracket.
     """
     return _session._bracket_bot_desktop_browser(
-        _session._session_info_for_shared_browser_fence(task_id),
+        {"features": {"local": True}},
         lambda: _run_chrome_fallback_command_unfenced(task_id, command, args, timeout),
     )
 

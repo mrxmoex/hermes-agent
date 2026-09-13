@@ -1022,8 +1022,17 @@ def _run_browser_command_unfenced(task_id: str, command: str, args: List[str], t
         result = {"success": False, "error": str(e)}
 
     # Lightpanda automatic Chrome fallback — runs for ALL exit paths (timeout,
-    # empty, non-JSON, nonzero rc, parsed).
-    fallback_reason = _lp._lightpanda_fallback_reason(engine, command, result)
+    # empty, non-JSON, nonzero rc, parsed). Temp Chrome is this screen; do not
+    # retry a cloud / foreign-CDP command onto the shared desktop.
+    feat = session_info.get("features") or {}
+    other_browser = (
+        bool(session_info.get("cdp_url"))
+        and not feat.get("local")
+        and not feat.get("lightpanda")
+    )
+    fallback_reason = (
+        None if other_browser else _lp._lightpanda_fallback_reason(engine, command, result)
+    )
     if fallback_reason:
         _bt.logger.info("Lightpanda fallback: retrying '%s' with Chrome (task=%s): %s", command, task_id, fallback_reason)
         if command == "screenshot":  # separate Chrome session to the same URL
