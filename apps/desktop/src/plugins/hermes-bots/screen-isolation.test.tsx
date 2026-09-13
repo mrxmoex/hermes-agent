@@ -28,6 +28,7 @@ vi.mock('./i18n', () => ({
     screen: {
       portalTitle: 'Screen',
       portalWatching: 'Live',
+      handoffRequested: 'Bot needs you',
       portalYouControl: 'You control',
       portalOtherControls: 'Other viewer',
       heroOpenLive: 'Open live',

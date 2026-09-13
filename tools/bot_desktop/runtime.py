@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Dict, Optional
 
 from hermes_constants import get_hermes_home
+from tools.bot_desktop import lease as _bd_lease
 
 logger = logging.getLogger(__name__)
 
@@ -380,10 +381,21 @@ def stop() -> bool:
         return _stop_locked(sd)
 
 
+def _release_lease_for_stopped_screen() -> None:
+    """A leftover human lease after the launcher is gone wedges ``computer_use``
+    on ``human_has_control`` with no screen to hand back. Same force-release as
+    ``display.stop`` / ``hermes computer-use screen stop``."""
+    try:
+        _bd_lease.release()
+    except Exception:
+        logger.debug("bot-desktop: lease release after stop failed", exc_info=True)
+
+
 def _stop_locked(sd: Path) -> bool:
     pid = _launcher_pid()
     if pid is None:
         (sd / "env").unlink(missing_ok=True)
+        _release_lease_for_stopped_screen()
         return False
     # The launcher runs in its own session; killing the group takes Xvnc, dbus and Xfce with it.
     try:
@@ -401,4 +413,5 @@ def _stop_locked(sd: Path) -> bool:
             pass
     (sd / "launcher.pid").unlink(missing_ok=True)
     (sd / "env").unlink(missing_ok=True)
+    _release_lease_for_stopped_screen()
     return True

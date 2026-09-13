@@ -22,7 +22,7 @@ import { openBotScreen } from './screen-open'
 import { $screenState, screenStateFor, setScreenLease, setScreenStatus, setScreenUnavailable } from './screen-state'
 import type { BotMeta, RosterRow } from './types'
 
-export type PortalTone = 'live' | 'human' | 'other' | 'off' | 'missing' | 'unsupported' | 'unavailable' | 'unknown'
+export type PortalTone = 'live' | 'handoff' | 'human' | 'other' | 'off' | 'missing' | 'unsupported' | 'unavailable' | 'unknown'
 
 /** Pure: map cached status + lease (+ this window's minted viewer, if attached) to what the portal says. */
 export function portalTone(status: DisplayStatus | null, lease: DisplayLease | null, viewer: ScreenViewer | null = null, unavailable = false): PortalTone {
@@ -50,11 +50,16 @@ export function portalTone(status: DisplayStatus | null, lease: DisplayLease | n
     return leaseHeldBy(lease, viewer) ? 'human' : 'other'
   }
 
+  if (lease?.pending_handoff) {
+    return 'handoff'
+  }
+
   return 'live'
 }
 
 const TONE_ICON: Record<PortalTone, string> = {
   live: 'device-desktop',
+  handoff: 'bell',
   human: 'record-keys',
   other: 'eye',
   off: 'debug-stop',
@@ -66,6 +71,7 @@ const TONE_ICON: Record<PortalTone, string> = {
 
 const TONE_DOT: Record<PortalTone, string> = {
   live: 'bg-emerald-500',
+  handoff: 'bg-amber-500',
   human: 'bg-red-500',
   other: 'bg-amber-500',
   off: 'bg-(--ui-text-quaternary)',
@@ -142,6 +148,7 @@ export function ScreenPortal({ bot, meta, compact = false }: { bot: RosterRow; m
 
   const subtitle = {
     live: t.screen.portalWatching,
+    handoff: t.screen.handoffRequested,
     human: t.screen.portalYouControl,
     other: t.screen.portalOtherControls,
     off: t.screen.portalStopped,

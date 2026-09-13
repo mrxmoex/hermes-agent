@@ -46,6 +46,22 @@ def test_recycled_pid_is_not_our_launcher(tmp_path, monkeypatch):
     assert runtime._launcher_pid() == os.getpid()
 
 
+def test_stop_releases_a_human_lease_when_the_launcher_is_already_dead(tmp_path, monkeypatch):
+    """A crashed screen leaves lease.json on disk. Without a release, computer_use
+    stays on human_has_control and the stopped Desktop pane had no Hand back."""
+    from tools.bot_desktop import lease
+
+    monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path)
+    monkeypatch.setattr(runtime, "is_supported_host", lambda: True)
+    monkeypatch.setattr(runtime, "_ALLOC_LOCK", tmp_path / "alloc.lock")
+    lease._reset_for_tests()
+    lease.acquire("ghost-viewer")
+    assert lease.get().holder == lease.HUMAN
+    assert runtime.stop() is False
+    assert lease.get().holder == lease.AGENT
+    lease._reset_for_tests()
+
+
 def test_alloc_lock_is_not_a_fixed_name_in_world_writable_tmp(tmp_path, monkeypatch):
     """A predictable ``/tmp/.hermes-bot-desktop-alloc.lock`` can be chmod-000 by a
     co-tenant and wedge every profile's start(). Prefer XDG_RUNTIME_DIR, else a

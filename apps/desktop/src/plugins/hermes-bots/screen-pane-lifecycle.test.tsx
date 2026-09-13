@@ -46,10 +46,16 @@ vi.mock('./i18n', () => ({
       title: 'Screen',
       controlTaken: 'Another viewer took control',
       youControl: 'You control',
+      otherControls: 'Other controls',
       handBack: 'Hand back',
+      handBackForce: 'Hand back (force)',
+      handBackForceHint: 'Force',
       takeOver: 'Take over',
       reconnect: 'Reconnect',
-      streamLost: 'Stream lost'
+      streamLost: 'Stream lost',
+      stoppedTitle: 'Screen is off',
+      stoppedBody: 'Start this bot’s desktop.',
+      start: 'Start screen'
     }
   })
 }))
@@ -187,6 +193,47 @@ it('does not hand back while replacing a stream to reconnect the same viewer', a
   view.unmount()
 })
 
+it('transfers the lease onto the reminted viewer id when reconnecting while holding', async () => {
+  let observes = 0
+  vi.mocked(displayRequest).mockImplementation(async (_bot, method, params = {}) => {
+    if (method === 'display.observe') {
+      observes += 1
+
+      return { ...status, ticket: `t${observes}`, viewer_id: observes === 1 ? 'this-viewer' : 'this-viewer-2' }
+    }
+
+    if (method === 'display.lease.acquire') {
+      return { lease: { ...status.lease, holder: 'human', viewer_id: String(params.viewer_id) } }
+    }
+
+    return { ...status }
+  })
+
+  const view = render(<BotScreenPane bot={bot} />)
+  await waitFor(() => expect(sockets).toHaveLength(1))
+  await act(async () => {})
+  fireEvent.click(view.getByTitle('Reconnect'))
+  await waitFor(() => expect(sockets).toHaveLength(2))
+  expect(vi.mocked(displayRequest)).toHaveBeenCalledWith(bot, 'display.lease.acquire', { viewer_id: 'this-viewer-2' })
+  view.unmount()
+})
+
+it('offers force hand-back on the stopped pane when a human lease survived the crash', async () => {
+  vi.mocked(displayRequest).mockResolvedValue({
+    ...status,
+    running: false,
+    pid: null,
+    lease: { ...status.lease, holder: 'human', viewer_id: 'ghost-viewer' }
+  })
+  const view = render(<BotScreenPane bot={bot} />)
+  await waitFor(() => expect(view.getByText('Screen is off')).toBeTruthy())
+  fireEvent.click(view.getByText('Hand back (force)'))
+  await waitFor(() =>
+    expect(vi.mocked(displayRequest)).toHaveBeenCalledWith(bot, 'display.lease.release', { force: true })
+  )
+  view.unmount()
+})
+
 it('shows the control-taken overlay from the bridge close code, which noVNC does not forward', async () => {
   const view = render(<BotScreenPane bot={bot} />)
   await waitFor(() => expect(sockets).toHaveLength(1))
@@ -199,5 +246,6 @@ it('shows the control-taken overlay from the bridge close code, which noVNC does
   expect(view.getByText('Another viewer took control')).toBeTruthy()
   await waitFor(() => expect(sockets).toHaveLength(2))
   expect(sockets[1].closed).toBe(false)
+  expect(vi.mocked(displayRequest)).not.toHaveBeenCalledWith(bot, 'display.lease.acquire', expect.anything())
   view.unmount()
 })

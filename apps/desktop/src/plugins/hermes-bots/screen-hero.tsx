@@ -101,6 +101,7 @@ function useLiveThumbnail(bot: RosterRow, running: boolean) {
 }
 
 const TONE_RING: Partial<Record<PortalTone, string>> = {
+  handoff: 'ring-2 ring-amber-500/70',
   human: 'ring-2 ring-red-500/80',
   other: 'ring-2 ring-amber-500/70'
 }
@@ -113,7 +114,7 @@ export function ScreenHero({ bot, meta }: { bot: RosterRow; meta?: BotMeta | nul
 function ScreenHeroContent({ bot, meta }: { bot: RosterRow; meta?: BotMeta | null }) {
   const t = useBots()
   const { tone } = useScreenPortalState(bot)
-  const running = tone === 'live' || tone === 'human' || tone === 'other'
+  const running = tone === 'live' || tone === 'handoff' || tone === 'human' || tone === 'other'
   const { dataUrl, boxRef, stale, suppressed } = useLiveThumbnail(bot, running)
 
   if (tone === 'unsupported' || tone === 'unavailable') {
@@ -122,6 +123,7 @@ function ScreenHeroContent({ bot, meta }: { bot: RosterRow; meta?: BotMeta | nul
 
   const caption = suppressed ? t.screen.heroSuppressed : stale ? t.screen.heroStale : {
     live: t.screen.portalWatching,
+    handoff: t.screen.handoffRequested,
     human: t.screen.portalYouControl,
     other: t.screen.portalOtherControls,
     off: t.screen.heroStopped,

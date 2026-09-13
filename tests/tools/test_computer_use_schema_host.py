@@ -16,6 +16,9 @@ def test_schema_for_host_strips_handoff_on_unsupported_hosts_and_leaves_the_cata
     assert "request_handoff" not in actions and "wait_for_human" not in actions
     assert "capture" in actions and "click" in actions
     assert "take over this screen" not in live["parameters"]["properties"]["action"]["description"]
+    assert "reason" not in live["parameters"]["properties"]
+    assert "grace" not in live["parameters"]["properties"]
+    assert "wait_for_human" not in live["parameters"]["properties"]["seconds"]["description"]
     # The catalog itself is not mutated — Linux conversations keep the full schema.
     assert {"request_handoff", "wait_for_human"} <= set(
         COMPUTER_USE_SCHEMA["parameters"]["properties"]["action"]["enum"]

@@ -113,6 +113,12 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
       return
     }
 
+    // Reconnect remints viewer_id. If this window held the lease, transfer it
+    // onto the new id or input dies and the agent stays on human_has_control.
+    // resumeWatch (close 4000) is the opposite: someone else just took over.
+    const prior = screenStateFor($screenState.get(), bot)
+    const heldBefore = !opts?.resumeWatch && leaseHeldBy(prior?.lease ?? null, prior?.viewer ?? null)
+
     detach()
     const generation = attachGeneration.current
     if (!opts?.resumeWatch) {
@@ -134,8 +140,23 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
 
       retention.current = retain
       const observe = await displayRequest<DisplayObserveResult>(bot, 'display.observe')
+      if (generation !== attachGeneration.current) {
+        return
+      }
+
       const minted = { id: observe.viewer_id, hash: await viewerHash(observe.viewer_id) }
       setScreenStatus(bot, observe)
+      if (heldBefore && observe.viewer_id) {
+        const transferred = await displayRequest<{ lease: DisplayLease }>(bot, 'display.lease.acquire', {
+          viewer_id: observe.viewer_id
+        })
+
+        if (generation !== attachGeneration.current) {
+          return
+        }
+
+        setScreenLease(bot, transferred.lease)
+      }
       const url = await resolveScreenWsUrl(bot, observe.ticket)
 
       if (generation !== attachGeneration.current || !canvasHost.current) {
@@ -287,11 +308,18 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
   }
 
   if (status && !status.running) {
+    const leftoverHuman = (state?.lease ?? status.lease)?.holder === 'human'
+
     return (
       <div className="grid min-h-48 place-items-center p-6 text-center">
         <div className="flex flex-col items-center gap-2">
           <div className="text-sm font-medium">{t.screen.stoppedTitle}</div>
           <div className="text-xs text-muted-foreground">{t.screen.stoppedBody}</div>
+          {leftoverHuman ? (
+            <Button disabled={busy} onClick={() => void handBack(true)} size="sm" title={t.screen.handBackForceHint} variant="secondary">
+              <Codicon name="debug-continue" /> {t.screen.handBackForce}
+            </Button>
+          ) : null}
           <Button disabled={busy} onClick={() => void start()} size="sm">
             {busy ? <GlyphSpinner /> : <Codicon name="play" />}
             {t.screen.start}
