@@ -463,6 +463,25 @@ class TestHermesBotDesktopWriteProtection:
             "socat -u OPEN:/tmp/e OPEN:~/.hermes/bot-desktop/lease.json,creat,trunc",
             "cpio -id -D ~/.hermes/bot-desktop < /tmp/e.cpio",
             "cpio -id --directory $HERMES_HOME/bot-desktop",
+            # Homebrew GNU coreutils (`g*` argv0). Same class as gdd:
+            # basename projection does not fold the prefix, so dest-last
+            # `\bcp\b` / dest-first `\btar\b` / `sed -i` miss them.
+            "gcp /tmp/evil.json ~/.hermes/bot-desktop/lease.json",
+            "gmv /tmp/evil.json $HERMES_HOME/bot-desktop/lease.json",
+            "gln -sf /tmp/evil.json ~/.hermes/bot-desktop/lease.json",
+            "ginstall /tmp/evil.json ~/.hermes/bot-desktop/lease.json",
+            "ginstall -t ~/.hermes/bot-desktop /tmp/evil.json",
+            "gcp -t $HERMES_HOME/bot-desktop /tmp/evil.json",
+            "gtar -xf /tmp/e.tar -C ~/.hermes/bot-desktop",
+            "gtar -C $HERMES_HOME/bot-desktop -zxf /tmp/e.tgz",
+            "gsed -i 's/human/agent/' ~/.hermes/bot-desktop/lease.json",
+            "gsed --in-place s/human/agent/ $HERMES_HOME/bot-desktop/lease.json",
+            # dest-last xxd revert + dest-first pv/mbuffer -o
+            "xxd -r /tmp/e ~/.hermes/bot-desktop/lease.json",
+            "xxd -r -p /tmp/e $HERMES_HOME/bot-desktop/dock-cdp-port",
+            "pv -o ~/.hermes/bot-desktop/lease.json /tmp/e",
+            "pv --output $HERMES_HOME/bot-desktop/dock-cdp-port /tmp/e",
+            "mbuffer -o ~/.hermes/bot-desktop/lease.json /tmp/e",
             # Named-profile spelling. Active-home fold only rewrites
             # <root>/profiles/<active>/, so `~/.hermes/profiles/coder/...`
             # would otherwise auto-approve a sibling (or the active home
@@ -526,6 +545,14 @@ class TestHermesBotDesktopWriteProtection:
             "socat -u OPEN:/tmp/e OPEN:/tmp/out,creat",
             "socat -u OPEN:~/.hermes/bot-desktop/lease.json OPEN:/tmp/out",
             "cpio -id -D /tmp/out < /tmp/e.cpio",
+            "gcp /tmp/e /tmp/out",
+            "gtar -xf /tmp/e.tar -C /tmp/out",
+            "gsed -i 's/a/b/' /tmp/out",
+            "xxd -r /tmp/e /tmp/out",
+            "xxd -r ~/.hermes/bot-desktop/lease.json /tmp/out",
+            "pv -o /tmp/out /tmp/e",
+            "mbuffer -o /tmp/out /tmp/e",
+            "gcp ~/.hermes/bot-desktop/lease.json /tmp/out",
         ):
             dangerous, key, desc = detect_dangerous_command(cmd)
             assert dangerous is False, cmd
@@ -545,6 +572,8 @@ class TestHermesBotDesktopWriteProtection:
             "trash ~/.hermes/bot-desktop/lease.json",
             "rm ~/.hermes/profiles/coder/bot-desktop/lease.json",
             "mv $HOME/.hermes/profiles/coder/bot-desktop /tmp/stolen-screen",
+            "grm ~/.hermes/bot-desktop/lease.json",
+            "gmv $HERMES_HOME/bot-desktop /tmp/stolen-screen",
         ):
             dangerous, key, desc = detect_dangerous_command(command)
             assert dangerous is True, command

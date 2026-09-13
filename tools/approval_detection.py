@@ -369,8 +369,8 @@ DANGEROUS_PATTERNS = [
     # launchctl bootout "$label"`) never has "hermes" after the verb, and that slipped past and restarted 4 gateways
     # with zero approval. Erring broad is correct for an approval gate: an extra prompt is cheap.
     (r'(?=[\s\S]*\blaunchctl\s+(?:stop|kickstart|bootout|unload|kill|disable|remove)\b)(?=[\s\S]*\b(?:hermes|ai\.hermes)\b)', "stop/restart hermes launchd service (kills running agents)"),
-    (rf'\b(cp|mv|install)\b.*\s{_SYSTEM_CONFIG_PATH}', "copy/move file into system config path"),
-    (rf'\b(cp|mv|install)\b.*\s["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_COMMAND_TAIL}', "overwrite project env/config file"),
+    (rf'\b(?:g?cp|g?mv|g?install)\b.*\s{_SYSTEM_CONFIG_PATH}', "copy/move file into system config path"),
+    (rf'\b(?:g?cp|g?mv|g?install)\b.*\s["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_COMMAND_TAIL}', "overwrite project env/config file"),
     # cp/mv/install OVERWRITING a credential/SSH/shell-rc/Hermes file (key implant, login-time
     # injection) — pairs the tee/redirection coverage. Anchored to the command tail so only the
     # DESTINATION fires; reading OUT of a sensitive path (`cp ~/.ssh/config /tmp/x`) stays safe.
@@ -384,13 +384,15 @@ DANGEROUS_PATTERNS = [
     # Dest-LAST only. GNU `-t` / `--target-directory` (and curl -o / tar -C /
     # unzip -d) put dest earlier — those run on the case-preserved variant via
     # DEST_FIRST_SENSITIVE_PATTERNS so `-t` is not collapsed into `-T`.
-    (rf'\b(cp|mv|install)\b.*\s["\']?{_SENSITIVE_WRITE_TARGET}[^\s"\']*["\']?{_COMMAND_TAIL}', "copy/move file into sensitive credential/SSH/shell-rc path"),
+    (rf'\b(?:g?cp|g?mv|g?install)\b.*\s["\']?{_SENSITIVE_WRITE_TARGET}[^\s"\']*["\']?{_COMMAND_TAIL}', "copy/move file into sensitive credential/SSH/shell-rc path"),
     # ln/rsync DEST is the same unpaired overwrite as cp: `ln -sf /tmp/evil
     # ~/.hermes/bot-desktop/lease.json` replaces a live human lease with a
     # symlink whose target says holder=agent (``path.read_text`` follows it).
     # ``rsync --delete`` into the tree is the drop. Source-only copies
     # (``ln jar /tmp`` / ``rsync jar /tmp``) stay unflagged — same-UID read.
-    (rf'\bln\b.*\s["\']?{_SENSITIVE_WRITE_TARGET}[^\s"\']*["\']?{_COMMAND_TAIL}', "link into sensitive credential/SSH/shell-rc path"),
+    # Homebrew GNU coreutils (`gcp`/`gmv`/`gln`/`ginstall`) are the same
+    # argv0 class as finding 37's `gdd` — basename projection does not fold them.
+    (rf'\b(?:g?ln)\b.*\s["\']?{_SENSITIVE_WRITE_TARGET}[^\s"\']*["\']?{_COMMAND_TAIL}', "link into sensitive credential/SSH/shell-rc path"),
     (rf'\brsync\b.*\s["\']?{_SENSITIVE_WRITE_TARGET}[^\s"\']*["\']?{_COMMAND_TAIL}', "rsync into sensitive credential/SSH/shell-rc path"),
     # dest-last extract/copy siblings of dest-first 7z/curl: unrar/rar put dest
     # last; lz4 -d SRC DEST; rclone copy/sync/move DEST last.
@@ -398,6 +400,10 @@ DANGEROUS_PATTERNS = [
      "extract archive into sensitive path"),
     (rf'\blz4\b[^\n]*\s(?:-d|--decompress)\b.*\s["\']?{_SENSITIVE_WRITE_TARGET}[^\s"\']*["\']?{_COMMAND_TAIL}',
      "overwrite system file via lz4"),
+    # dest-last `xxd -r [infile [outfile]]`. `-o` on xxd is a seek offset,
+    # not an output path — do not treat it as dest-first.
+    (rf'\bxxd\b[^\n]*\s(?:-r|--revert)\b.*\s["\']?{_SENSITIVE_WRITE_TARGET}[^\s"\']*["\']?{_COMMAND_TAIL}',
+     "overwrite system file via xxd"),
     (rf'\brclone\b\s+(?:copy|copyto|sync|move|moveto)\b.*\s["\']?{_SENSITIVE_WRITE_TARGET}[^\s"\']*["\']?{_COMMAND_TAIL}',
      "rclone into sensitive path"),
     # last OPEN: address is dest (`socat -u SRC OPEN:lease.json`). Source-only
@@ -407,17 +413,17 @@ DANGEROUS_PATTERNS = [
      "overwrite system file via socat"),
     # In-place edits mutate the file directly, bypassing redirection/tee/cp coverage; gate the same
     # startup/credential files.
-    (rf'\bsed\s+-[^\s]*i.*(?:{_USER_SENSITIVE_WRITE_TARGET})[^\s"\']*', "in-place edit of sensitive credential/SSH/shell-rc path"),
-    (rf'\bsed\s+--in-place\b.*(?:{_USER_SENSITIVE_WRITE_TARGET})[^\s"\']*', "in-place edit of sensitive credential/SSH/shell-rc path (long flag)"),
+    (rf'\bg?sed\s+-[^\s]*i.*(?:{_USER_SENSITIVE_WRITE_TARGET})[^\s"\']*', "in-place edit of sensitive credential/SSH/shell-rc path"),
+    (rf'\bg?sed\s+--in-place\b.*(?:{_USER_SENSITIVE_WRITE_TARGET})[^\s"\']*', "in-place edit of sensitive credential/SSH/shell-rc path (long flag)"),
     (rf'\b(?:perl|ruby)\b.*(?:^|\s)-[^\s]*i\b.*(?:{_USER_SENSITIVE_WRITE_TARGET})[^\s"\']*', "in-place edit of sensitive credential/SSH/shell-rc path (perl/ruby)"),
-    (rf'\bsed\s+-[^\s]*i.*\s{_SYSTEM_CONFIG_PATH}', "in-place edit of system config"),
-    (rf'\bsed\s+--in-place\b.*\s{_SYSTEM_CONFIG_PATH}', "in-place edit of system config (long flag)"),
+    (rf'\bg?sed\s+-[^\s]*i.*\s{_SYSTEM_CONFIG_PATH}', "in-place edit of system config"),
+    (rf'\bg?sed\s+--in-place\b.*\s{_SYSTEM_CONFIG_PATH}', "in-place edit of system config (long flag)"),
     # sed -i on Hermes config/.env bypasses the redirection/tee rules; pairs the file_tools
     # write_file/patch deny so the terminal side is not an open door.
     # In-place edit of a Hermes-managed security file (~/.hermes/config.yaml or .env). sed -i bypasses the
     # redirection/tee patterns above because it mutates the file directly. See #14639.
-    (rf'\bsed\s+-[^\s]*i.*(?:{_HERMES_SECURITY_PATH})', "in-place edit of Hermes config/env/bot-desktop"),
-    (rf'\bsed\s+--in-place\b.*(?:{_HERMES_SECURITY_PATH})', "in-place edit of Hermes config/env/bot-desktop (long flag)"),
+    (rf'\bg?sed\s+-[^\s]*i.*(?:{_HERMES_SECURITY_PATH})', "in-place edit of Hermes config/env/bot-desktop"),
+    (rf'\bg?sed\s+--in-place\b.*(?:{_HERMES_SECURITY_PATH})', "in-place edit of Hermes config/env/bot-desktop (long flag)"),
     # perl/ruby -i: the flag may be its own token after other flags (`-p -i -e`), combined (`-pi`), or carry a backup
     # suffix (`-i.bak`), so match any flag token containing `i` anywhere; `perl -e '...'` (no -i) does not trip.
     # perl -i and ruby -i perform the same in-place mutation as sed -i but are not caught by the -e/-c
@@ -429,8 +435,8 @@ DANGEROUS_PATTERNS = [
     # and missing dock-cdp-port fail-opens leftover CDP classification. mv of
     # the tree as SOURCE is the same drop. ``cat`` stays unflagged (same-UID
     # read). Recursive ``rm -rf`` is already a generic dangerous command.
-    (rf'\b(?:rm|unlink|shred)\b.*["\']?{_HERMES_BOT_DESKTOP_PATH}', "delete Bot Screen lease/cookie jar"),
-    (rf'\bmv\b.*["\']?{_HERMES_BOT_DESKTOP_PATH}', "move Bot Screen lease/cookie jar"),
+    (rf'\b(?:g?rm|unlink|shred)\b.*["\']?{_HERMES_BOT_DESKTOP_PATH}', "delete Bot Screen lease/cookie jar"),
+    (rf'\bg?mv\b.*["\']?{_HERMES_BOT_DESKTOP_PATH}', "move Bot Screen lease/cookie jar"),
     # Desktop trash CLIs are the unpaired alias of rm: missing lease.json
     # fail-opens to holder=agent. Electron hermes:fs:trash is already gated.
     (rf'\b(?:gio\s+trash|trash-put|trash)\b.*["\']?{_HERMES_BOT_DESKTOP_PATH}', "trash Bot Screen lease/cookie jar"),
@@ -496,7 +502,7 @@ _DEST_FIRST_WRITE_TARGET = rf'(?:{_SENSITIVE_WRITE_TARGET}|{_DEST_FIRST_DIR})'
 DEST_FIRST_SENSITIVE_PATTERNS = [
     # `cp -t ~/.hermes/bot-desktop /tmp/evil.json` forges lease.json;
     # `cp -t ~/.ssh /tmp/k` is the dest-tail key-implant sibling.
-    (rf'\b(?:cp|mv|install|ln)\b[^\n]*\s{_DEST_FIRST_TARGET_DIR}[=\s]*["\']?{_DEST_FIRST_WRITE_TARGET}',
+    (rf'\b(?:g?cp|g?mv|g?install|g?ln)\b[^\n]*\s{_DEST_FIRST_TARGET_DIR}[=\s]*["\']?{_DEST_FIRST_WRITE_TARGET}',
      "copy/move/link into sensitive path via --target-directory"),
     (rf'\bcurl\b[^\n]*\s(?:(?-i:-o|-O)|--output-dir|--output)[=\s]*["\']?{_DEST_FIRST_WRITE_TARGET}',
      "overwrite system file via curl --output"),
@@ -506,9 +512,9 @@ DEST_FIRST_SENSITIVE_PATTERNS = [
      "overwrite system file via wget --output"),
     (rf'\baria2c\b[^\n]*\s(?:(?-i:-d)|--dir)[=\s]*["\']?{_DEST_FIRST_WRITE_TARGET}',
      "overwrite system file via aria2c --dir"),
-    (rf'\b(?:bsd)?tar\b[^\n]*\s{_DEST_FIRST_TAR_EXTRACT}\b[^\n]*\s{_DEST_FIRST_TAR_DIR}[=\s]*["\']?{_DEST_FIRST_WRITE_TARGET}',
+    (rf'\b(?:(?:bsd|g)?tar)\b[^\n]*\s{_DEST_FIRST_TAR_EXTRACT}\b[^\n]*\s{_DEST_FIRST_TAR_DIR}[=\s]*["\']?{_DEST_FIRST_WRITE_TARGET}',
      "extract archive into sensitive path"),
-    (rf'\b(?:bsd)?tar\b[^\n]*\s{_DEST_FIRST_TAR_DIR}[=\s]*["\']?{_DEST_FIRST_WRITE_TARGET}[^\n]*\s{_DEST_FIRST_TAR_EXTRACT}\b',
+    (rf'\b(?:(?:bsd|g)?tar)\b[^\n]*\s{_DEST_FIRST_TAR_DIR}[=\s]*["\']?{_DEST_FIRST_WRITE_TARGET}[^\n]*\s{_DEST_FIRST_TAR_EXTRACT}\b',
      "extract archive into sensitive path"),
     (rf'\b(?:unzip|cabextract)\b[^\n]*\s(?-i:-d)[=\s]*["\']?{_DEST_FIRST_WRITE_TARGET}',
      "extract archive into sensitive path"),
@@ -516,6 +522,10 @@ DEST_FIRST_SENSITIVE_PATTERNS = [
      "extract archive into sensitive path"),
     (rf'\blz4\b[^\n]*\s(?-i:-o)[=\s]*["\']?{_DEST_FIRST_WRITE_TARGET}',
      "overwrite system file via lz4"),
+    # dest-first pipe dumps. `pv FILE > dest` is already gated by `>>?`;
+    # `pv -o DEST` / `mbuffer -o DEST` name dest earlier.
+    (rf'\b(?:pv|mbuffer)\b[^\n]*\s(?:(?-i:-o)|--output)[=\s]*["\']?{_DEST_FIRST_WRITE_TARGET}',
+     "overwrite system file via pv/mbuffer"),
     (rf'\bcpio\b[^\n]*\s(?:(?-i:-D)|--directory)[=\s]*["\']?{_DEST_FIRST_WRITE_TARGET}',
      "extract archive into sensitive path"),
     # 7-Zip `-o{dir}` is glued (`-oDEST`) or spaced. Extract only (`x`/`e`);
