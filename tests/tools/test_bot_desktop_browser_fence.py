@@ -2259,6 +2259,42 @@ def test_ensure_supervisor_does_not_probe_leftover_override_on_cached_cloud(monk
     assert started == [cloud]
 
 
+def test_ensure_supervisor_does_not_probe_leftover_dock_on_cached_cloud(monkeypatch):
+    """Same skip when leftover ``/browser connect`` is the live dock, not a copy."""
+    from tools import browser_tool as browser
+    from tools import browser_tool_cdp as cdp
+
+    cloud = "wss://cloud.example/devtools/browser/x"
+    prior = browser._active_sessions.get("review")
+    browser._active_sessions["review"] = {
+        "session_name": "cloud", "cdp_url": cloud, "features": {"local": False},
+    }
+    monkeypatch.setattr(cdp, "_get_cdp_override_raw", lambda: _DOCK_CDP)
+    monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", _is_dock_cdp)
+    probed: list = []
+
+    def probe(*_a, **_k):
+        probed.append("get")
+        raise AssertionError("leftover dock must not be probed while human holds")
+
+    started: list = []
+    monkeypatch.setattr("requests.get", probe)
+    monkeypatch.setattr(
+        "tools.browser_supervisor.SUPERVISOR_REGISTRY",
+        type("R", (), {"get_or_start": staticmethod(lambda **kw: started.append(kw.get("cdp_url")))})(),
+    )
+    lease.acquire("human-viewer")
+    try:
+        cdp._ensure_cdp_supervisor("review")
+    finally:
+        if prior is None:
+            browser._active_sessions.pop("review", None)
+        else:
+            browser._active_sessions["review"] = prior
+    assert probed == [], f"human holds the lease, yet leftover dock was probed: {probed}"
+    assert started == [cloud]
+
+
 def test_browser_click_cached_cloud_does_not_probe_leftover_override(monkeypatch):
     """Cloud click must run; leftover ``/browser connect`` must not be discovered."""
     from tools import browser_tool as browser
