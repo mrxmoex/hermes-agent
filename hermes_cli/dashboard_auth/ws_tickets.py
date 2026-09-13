@@ -46,6 +46,29 @@ def mint_ticket(*, user_id: str, provider: str, extra: Optional[Dict[str, Any]] 
     return ticket
 
 
+def revoke_unused_tickets(*, viewer_id: str, hermes_home: str) -> int:
+    """Drop unused Bot Desktop tickets for this viewer on this profile.
+
+    ``display.observe`` remints a 30 s ticket for the same ``viewer_id`` on
+    reconnect. Leaving the previous unused ticket alive lets a second
+    ``/api/display/ws`` share the lease input gate (keyed by viewer_id, not
+    socket). Already-consumed tickets are not in the store — the live-stream
+    registry evicts that socket.
+    """
+    if not viewer_id or not hermes_home:
+        return 0
+    dropped = 0
+    with _lock:
+        for ticket, (_expires_at, info) in list(_tickets.items()):
+            if (info.get("provider") == "bot-desktop"
+                    and str(info.get("viewer_id") or "") == viewer_id
+                    and str(info.get("hermes_home") or "") == hermes_home):
+                _tickets.pop(ticket, None)
+                dropped += 1
+        _gc_expired_locked()
+    return dropped
+
+
 def consume_ticket(ticket: str) -> Dict[str, Any]:
     """Validate and consume (single-use). Raises :class:`TicketInvalid` on missing/expired/used."""
     now = int(time.time())

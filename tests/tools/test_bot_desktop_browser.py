@@ -31,6 +31,43 @@ def test_user_pinned_profile_wins(tmp_path, monkeypatch):
     assert browser.profile_dir() == tmp_path / "mine"
 
 
+def test_multiplex_override_does_not_inherit_the_launch_browser_pin(tmp_path, monkeypatch):
+    """os.environ holds the launch profile's pin. A secondary bot under
+    get_hermes_home_override must not share that cookie jar — the human may
+    have typed a login into it."""
+    from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
+
+    launch = tmp_path / "launch"
+    bot_b = tmp_path / "bot-b"
+    launch.mkdir()
+    bot_b.mkdir()
+    pin = launch / "shared-jar"
+    pin.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(launch))
+    monkeypatch.setenv("AGENT_BROWSER_PROFILE", str(pin))
+
+    assert browser.profile_dir() == pin
+
+    token = set_hermes_home_override(str(bot_b))
+    try:
+        assert get_hermes_home() == bot_b
+        scoped = bot_b / "bot-desktop" / "browser-profile"
+        assert browser.profile_dir() == scoped
+        env = browser.env_for_agent({"AGENT_BROWSER_PROFILE": str(pin)})
+        assert env["AGENT_BROWSER_PROFILE"] == str(scoped)
+    finally:
+        reset_hermes_home_override(token)
+
+    scoped_pin = bot_b / "custom-jar"
+    scoped_pin.mkdir()
+    monkeypatch.setenv("AGENT_BROWSER_PROFILE", str(scoped_pin))
+    token = set_hermes_home_override(str(bot_b))
+    try:
+        assert browser.profile_dir() == scoped_pin
+    finally:
+        reset_hermes_home_override(token)
+
+
 def test_dock_browser_advertises_a_devtools_port():
     """A human-started instance must be attachable, or the agent can never drive it afterwards."""
     assert "--remote-debugging-port=" in browser.dock_command("/opt/chrome", "/p/dir").split()[2]

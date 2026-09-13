@@ -200,6 +200,53 @@ def test_acquire_refuses_a_viewer_id_minted_for_another_profile(monkeypatch, tmp
     assert minted_b not in json.dumps(taken)
 
 
+def test_observe_remint_revokes_the_unused_ticket_for_that_viewer(monkeypatch, tmp_path, _fresh_lease):
+    """Two unused tickets for one viewer_id would open two RFB streams that share
+    the lease input gate. Reminting must kill the previous unused ticket."""
+    from tools.bot_desktop import runtime
+    import tui_gateway.server as server
+
+    monkeypatch.setattr(runtime, "rfb_socket_path", lambda: tmp_path / "rfb.sock")
+    first = _rpc(server, "display.observe", {})["result"]
+    second = _rpc(server, "display.observe", {"viewer_id": first["viewer_id"]})["result"]
+    assert second["viewer_id"] == first["viewer_id"]
+    assert first["ticket"] != second["ticket"]
+    with pytest.raises(ws_tickets.TicketInvalid):
+        ws_tickets.consume_ticket(first["ticket"])
+    assert ws_tickets.consume_ticket(second["ticket"])["viewer_id"] == first["viewer_id"]
+
+
+def test_minted_viewer_id_survives_a_loopback_token_transport_replace(monkeypatch, tmp_path, _fresh_lease):
+    """Local hermes serve authenticates /api/ws with ?token= and never stamps
+    auth_identity (that would make the token a dashboard controller). mint_identity
+    is the reconnect key: a new WSTransport after sleep/wake must still release."""
+    from tools.bot_desktop import runtime
+    import tui_gateway.server as server
+
+    class _TokenPeer:
+        def __init__(self):
+            self.mint_identity = {"user_id": "loopback-session", "provider": "token"}
+
+        def write(self, obj):
+            return True
+
+    monkeypatch.setattr(runtime, "rfb_socket_path", lambda: tmp_path / "rfb.sock")
+    first, second, stranger = _TokenPeer(), _TokenPeer(), _Peer()
+    minted = server.dispatch({"jsonrpc": "2.0", "id": 8, "method": "display.observe", "params": {}}, first)["result"]["viewer_id"]
+    reused = server.dispatch({"jsonrpc": "2.0", "id": 9, "method": "display.observe",
+                              "params": {"viewer_id": minted}}, second)["result"]["viewer_id"]
+    assert reused == minted
+    stolen = server.dispatch({"jsonrpc": "2.0", "id": 10, "method": "display.observe",
+                              "params": {"viewer_id": minted}}, stranger)["result"]["viewer_id"]
+    assert stolen != minted
+    taken = server.dispatch({"jsonrpc": "2.0", "id": 11, "method": "display.lease.acquire",
+                             "params": {"viewer_id": minted}}, second)
+    assert taken["result"]["lease"]["holder"] == _fresh_lease.HUMAN
+    released = server.dispatch({"jsonrpc": "2.0", "id": 12, "method": "display.lease.release",
+                                "params": {"viewer_id": minted}}, second)
+    assert released["result"]["lease"]["holder"] == _fresh_lease.AGENT
+
+
 def test_minted_viewer_id_survives_a_new_transport_with_the_same_auth(monkeypatch, tmp_path, _fresh_lease):
     """A Desktop /api/ws reconnect is a new WSTransport. The holder still has the minted
     id in the pane; acquire/release on the replacement socket must recognise it."""

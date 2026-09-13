@@ -110,8 +110,9 @@ def _(rid, params: dict) -> dict:
 
 # viewer ids minted per (caller, profile). A multiplexed client must not take over
 # bot B with an id observe minted for bot A on the same socket. The caller's
-# identity is the WS-upgrade auth when present (survives /api/ws reconnect —
-# a new WSTransport object is not a new person) and the transport object otherwise.
+# identity is mint_identity (loopback token) or WS-upgrade auth when present
+# (survives /api/ws reconnect — a new WSTransport object is not a new person)
+# and the transport object otherwise.
 _minted_viewer_ids: "weakref.WeakKeyDictionary[object, dict[str, set[str]]]" = weakref.WeakKeyDictionary()
 # Transports that cannot be weak-referenced (stdio / slotted / handle_request with no
 # transport) still need a durable bucket: otherwise observe returns an id that acquire
@@ -122,16 +123,30 @@ _minted_fallback: dict[int, dict[str, set[str]]] = {}
 _minted_by_auth: dict[tuple[str, str], dict[str, set[str]]] = {}
 
 
+def _caller_mint_key(identity) -> tuple[str, str] | None:
+    """Stable mint bucket from a server-stamped identity. ``server-internal`` is a
+    process credential shared by every spawned child — keying on it would merge
+    every unauthed caller into one set. Leave those on the per-transport bucket."""
+    if not isinstance(identity, dict):
+        return None
+    user_id = str(identity.get("user_id") or "").strip()
+    provider = str(identity.get("provider") or "").strip()
+    if not user_id or not provider or user_id == "server-internal" or provider == "server-internal":
+        return None
+    return (provider, user_id)
+
+
 def _caller_minted_ids() -> set[str]:
     # get_hermes_home is on server.py; _profile_scoped has already bound the requested profile.
     profile = str(get_hermes_home())
     transport = current_transport()
-    identity = getattr(transport, "auth_identity", None) if transport is not None else None
-    if isinstance(identity, dict):
-        user_id = str(identity.get("user_id") or "").strip()
-        provider = str(identity.get("provider") or "").strip()
-        if user_id and provider:
-            return _minted_by_auth.setdefault((provider, user_id), {}).setdefault(profile, set())
+    mint = getattr(transport, "mint_identity", None) if transport is not None else None
+    key = _caller_mint_key(mint)
+    if key is None:
+        identity = getattr(transport, "auth_identity", None) if transport is not None else None
+        key = _caller_mint_key(identity)
+    if key is not None:
+        return _minted_by_auth.setdefault(key, {}).setdefault(profile, set())
     try:
         by_profile = _minted_viewer_ids.setdefault(transport, {})
     except TypeError:
@@ -169,14 +184,19 @@ def _(rid, params: dict) -> dict:
     the bridge dials THIS profile's RFB socket, and a server-minted viewer id (returned to the caller,
     who passes it to ``display.lease.acquire`` / ``release``) so the lease can name the holder."""
     from hermes_constants import get_hermes_home
-    from hermes_cli.dashboard_auth.ws_tickets import mint_ticket
+    from hermes_cli.dashboard_auth.ws_tickets import mint_ticket, revoke_unused_tickets
     from tools.bot_desktop import runtime as _bd_runtime
     try:
         if _bd_runtime.rfb_socket_path() is None:
             return _err(rid, _DISPLAY_ERR, "this profile's Bot Desktop is not running; call display.start first")
         viewer_id = _mint_viewer_id(str(params.get("viewer_id") or "").strip())
+        hermes_home = str(get_hermes_home())
+        # A remint for the same viewer must kill unused tickets. Two live
+        # tickets for one viewer_id meant two RFB sockets sharing the lease
+        # input gate (the bridge keys input by viewer_id, not by socket).
+        revoke_unused_tickets(viewer_id=viewer_id, hermes_home=hermes_home)
         ticket = mint_ticket(user_id=f"display:{viewer_id}", provider="bot-desktop",
-                             extra={"hermes_home": str(get_hermes_home()), "viewer_id": viewer_id})
+                             extra={"hermes_home": hermes_home, "viewer_id": viewer_id})
         return _ok(rid, {"ticket": ticket, "path": "/api/display/ws", "viewer_id": viewer_id,
                          **_display_snapshot()})
     except Exception as e:

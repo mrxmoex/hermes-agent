@@ -143,3 +143,46 @@ def test_a_takeover_made_by_another_process_stops_input_within_the_refresh_inter
     assert elapsed < 0.5, elapsed
     assert close_code == display._CLOSE_CONTROL_TAKEN, (close_code, close_reason)
     assert "control-taken" in close_reason
+
+
+def test_a_second_stream_for_the_same_viewer_evicts_the_first_without_releasing(monkeypatch):
+    """Two /api/display/ws accepts for one viewer_id shared the lease input gate.
+    The new accept replaces the old socket with 4002 (keep the lease — this is
+    the same viewer reconnecting, not another human taking control)."""
+
+    async def _run(home: str):
+        display._reset_live_streams_for_tests()
+        sock_dir = os.path.join(home, "bot-desktop")
+        os.makedirs(sock_dir, exist_ok=True)
+        server = await asyncio.start_unix_server(lambda r, w: None, path=os.path.join(sock_dir, "rfb.sock"))
+        info = {"hermes_home": home, "viewer_id": "desk-1"}
+        first, second = _OpenWs(), _OpenWs()
+        t1 = asyncio.create_task(display._bridge(first, info))
+        try:
+            t0 = asyncio.get_running_loop().time()
+            while display._live_stream_key(home, "desk-1") not in display._live_streams:
+                if asyncio.get_running_loop().time() - t0 > 2.0:
+                    raise AssertionError("first stream never registered")
+                await asyncio.sleep(0.01)
+            t2 = asyncio.create_task(display._bridge(second, info))
+            t0 = asyncio.get_running_loop().time()
+            while first.close_code is None and asyncio.get_running_loop().time() - t0 < 2.0:
+                await asyncio.sleep(0.02)
+            try:
+                return first.close_code, first.close_reason, lease.get(profile_key=home).holder
+            finally:
+                second.finish.set()
+                first.finish.set()
+                await asyncio.gather(t1, t2, return_exceptions=True)
+        finally:
+            server.close()
+            display._reset_live_streams_for_tests()
+
+    lease._reset_for_tests()
+    with tempfile.TemporaryDirectory() as home:
+        lease.acquire("desk-1", profile_key=home)
+        close_code, close_reason, holder = asyncio.run(_run(home))
+    lease._reset_for_tests()
+    assert close_code == display._CLOSE_STREAM_REPLACE, (close_code, close_reason)
+    assert "stream-replaced" in close_reason
+    assert holder == lease.HUMAN

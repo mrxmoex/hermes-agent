@@ -57,3 +57,23 @@ def test_custom_root_basename_target_fails_closed_when_unavailable(tmp_path, mon
     with pytest.raises(FileNotFoundError):
         with server._profile_db({"profile": "customer-data"}):
             pass
+
+
+def test_profile_home_rejects_path_segments_that_escape_the_profiles_root(tmp_path, monkeypatch):
+    """get_profile_dir joins the id onto the profiles root. An absolute or ``..``
+    segment would resolve outside it (Path(root) / '/tmp' == /tmp) and
+    display.start would write bot-desktop/ there. Fail closed; do not bind
+    the launch profile (return None) — that is fail-open for the wrong home."""
+    from tui_gateway import server
+
+    home = tmp_path / ".hermes"
+    bot = home / "profiles" / "bot"
+    bot.mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(server, "_hermes_home", home)
+
+    for bad in ("/tmp", "../..", "..", "foo/bar", ".hidden"):
+        with pytest.raises(FileNotFoundError):
+            server._profile_home(bad)
+    assert server._profile_home("bot") == bot

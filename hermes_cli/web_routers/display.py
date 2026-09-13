@@ -36,6 +36,36 @@ _CLOSE_BAD_TICKET = 4401
 _CLOSE_NOT_ALLOWED = 4403
 _CLOSE_PROTOCOL = 1003
 _LEASE_REFRESH_S = 0.25
+# One live RFB socket per (profile home, viewer_id). observe remints a ticket
+# for the same viewer; without this a second accept shares the lease input gate.
+_live_streams: dict[tuple[str, str], object] = {}
+
+
+def _live_stream_key(hermes_home: str, viewer_id: str) -> tuple[str, str]:
+    return (hermes_home, viewer_id)
+
+
+async def _replace_live_stream(ws, hermes_home: str, viewer_id: str) -> tuple[str, str]:
+    """Register *ws* as the live stream for this viewer; evict a previous one with 4002
+    (same viewer replacing itself — keep the lease; 4000 would paint control-taken)."""
+    key = _live_stream_key(hermes_home, viewer_id)
+    previous = _live_streams.get(key)
+    _live_streams[key] = ws
+    if previous is not None and previous is not ws:
+        try:
+            await previous.close(code=_CLOSE_STREAM_REPLACE, reason="stream-replaced")
+        except Exception:
+            pass
+    return key
+
+
+def _forget_live_stream(key: tuple[str, str], ws) -> None:
+    if _live_streams.get(key) is ws:
+        del _live_streams[key]
+
+
+def _reset_live_streams_for_tests() -> None:
+    _live_streams.clear()
 
 
 def _should_evict(held: dict, lease, viewer_id: str) -> bool:
@@ -101,6 +131,7 @@ async def _bridge(ws: WebSocket, info: dict) -> None:
         return
 
     await ws.accept()
+    live_key = await _replace_live_stream(ws, profile_home, viewer_id)
     loop = asyncio.get_running_loop()
     evicted = asyncio.Event()
     held = {"ever": _lease.viewer_may_send_input(viewer_id, profile_key=profile_home)}
@@ -188,6 +219,7 @@ async def _bridge(ws: WebSocket, info: dict) -> None:
             if exc and not isinstance(exc, (WebSocketDisconnect, ConnectionError)):
                 _log.debug("display ws ended: %r", exc)
     finally:
+        _forget_live_stream(live_key, ws)
         unsubscribe()
         writer.close()
         # Closing the viewer window hands control back. A DROPPED link (laptop lid, Wi-Fi, 1006)

@@ -23,11 +23,29 @@ from tools.bot_desktop import runtime
 _SYSTEM_BROWSERS = ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser")
 
 
+def _path_is_under(child: Path, parent: Path) -> bool:
+    try:
+        child.resolve().relative_to(parent.resolve())
+        return True
+    except (OSError, ValueError):
+        return False
+
+
 def profile_dir() -> Path:
-    """User-data-dir the bot's browser uses on this profile's screen (``AGENT_BROWSER_PROFILE`` wins)."""
-    override = os.environ.get("AGENT_BROWSER_PROFILE", "").strip()
-    if override and os.path.isabs(override):
-        return Path(override)
+    """User-data-dir the bot's browser uses on this profile's screen.
+
+    A process-wide ``AGENT_BROWSER_PROFILE`` is the launch profile's jar. Honor
+    it only when this call is unscoped, or when the pin already lives under
+    the active ``get_hermes_home()``. Under multiplex the override is a
+    different home — using the launch pin would share the cookie jar the
+    human typed into on another bot.
+    """
+    pinned = os.environ.get("AGENT_BROWSER_PROFILE", "").strip()
+    if pinned and os.path.isabs(pinned):
+        pin = Path(pinned)
+        from hermes_constants import get_hermes_home, get_hermes_home_override
+        if get_hermes_home_override() is None or _path_is_under(pin, Path(get_hermes_home())):
+            return pin
     return runtime.state_dir() / "browser-profile"
 
 
@@ -116,8 +134,12 @@ def _pid_alive(pid: int) -> bool:
 
 
 def env_for_agent(env: dict) -> dict:
-    """Pin agent-browser to the screen's browser identity unless the user pinned their own."""
-    env.setdefault("AGENT_BROWSER_PROFILE", str(profile_dir()))
+    """Pin agent-browser to THIS profile's browser identity.
+
+    Always set ``AGENT_BROWSER_PROFILE`` — ``setdefault`` would keep a launch
+    pin copied from ``os.environ`` after ``profile_dir()`` already refused it.
+    """
+    env["AGENT_BROWSER_PROFILE"] = str(profile_dir())
     exe = executable()
     if exe:
         env.setdefault("AGENT_BROWSER_EXECUTABLE_PATH", exe)
