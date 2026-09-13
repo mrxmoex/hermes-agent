@@ -364,6 +364,13 @@ DANGEROUS_PATTERNS = [
     # with auto-approve. Same unpaired-door rationale as #14639 / the sed-tee-redirect pairing on these
     # targets. `authorized_keys` after the `~/.ssh/` fragment).
     (rf'\b(cp|mv|install)\b.*\s["\']?{_SENSITIVE_WRITE_TARGET}[^\s"\']*["\']?{_COMMAND_TAIL}', "copy/move file into sensitive credential/SSH/shell-rc path"),
+    # ln/rsync DEST is the same unpaired overwrite as cp: `ln -sf /tmp/evil
+    # ~/.hermes/bot-desktop/lease.json` replaces a live human lease with a
+    # symlink whose target says holder=agent (``path.read_text`` follows it).
+    # ``rsync --delete`` into the tree is the drop. Source-only copies
+    # (``ln jar /tmp`` / ``rsync jar /tmp``) stay unflagged — same-UID read.
+    (rf'\bln\b.*\s["\']?{_SENSITIVE_WRITE_TARGET}[^\s"\']*["\']?{_COMMAND_TAIL}', "link into sensitive credential/SSH/shell-rc path"),
+    (rf'\brsync\b.*\s["\']?{_SENSITIVE_WRITE_TARGET}[^\s"\']*["\']?{_COMMAND_TAIL}', "rsync into sensitive credential/SSH/shell-rc path"),
     # In-place edits mutate the file directly, bypassing redirection/tee/cp coverage; gate the same
     # startup/credential files.
     (rf'\bsed\s+-[^\s]*i.*(?:{_USER_SENSITIVE_WRITE_TARGET})[^\s"\']*', "in-place edit of sensitive credential/SSH/shell-rc path"),
@@ -390,6 +397,9 @@ DANGEROUS_PATTERNS = [
     # read). Recursive ``rm -rf`` is already a generic dangerous command.
     (rf'\b(?:rm|unlink|shred)\b.*["\']?{_HERMES_BOT_DESKTOP_PATH}', "delete Bot Screen lease/cookie jar"),
     (rf'\bmv\b.*["\']?{_HERMES_BOT_DESKTOP_PATH}', "move Bot Screen lease/cookie jar"),
+    # Desktop trash CLIs are the unpaired alias of rm: missing lease.json
+    # fail-opens to holder=agent. Electron hermes:fs:trash is already gated.
+    (rf'\b(?:gio\s+trash|trash-put|trash)\b.*["\']?{_HERMES_BOT_DESKTOP_PATH}', "trash Bot Screen lease/cookie jar"),
     # Interpreter heredocs are handled by _execution_flag_findings(); only shell heredocs stay
     # regex-based. `bash <<'EOF'` runs arbitrary commands without triggering the `bash -c` path.
     (r'\b(bash|sh|zsh|ksh)\s+<<', "shell execution via heredoc"),

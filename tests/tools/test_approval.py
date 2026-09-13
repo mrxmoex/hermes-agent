@@ -352,6 +352,8 @@ class TestHermesConfigWriteProtection:
             "echo x | tee ~/.hermes/config.yaml",
             "echo x | tee $HERMES_HOME/config.yaml",
             "cp /tmp/evil.yaml ~/.hermes/config.yaml",
+            "ln -sf /tmp/evil.yaml ~/.hermes/config.yaml",
+            "rsync /tmp/evil.yaml $HERMES_HOME/config.yaml",
         ):
             dangerous, key, desc = detect_dangerous_command(command)
             assert dangerous is True, command
@@ -387,6 +389,10 @@ class TestHermesBotDesktopWriteProtection:
             "cp /tmp/evil.json ~/.hermes/bot-desktop/lease.json",
             "sed -i 's/human/agent/' ~/.hermes/bot-desktop/lease.json",
             "perl -i -pe 's/human/agent/' $HERMES_HOME/bot-desktop/lease.json",
+            "ln -sf /tmp/evil.json ~/.hermes/bot-desktop/lease.json",
+            "ln -s /tmp/evil $HERMES_HOME/bot-desktop/lease.json",
+            "rsync /tmp/e ~/.hermes/bot-desktop/lease.json",
+            "rsync -a --delete /tmp/empty/ $HERMES_HOME/bot-desktop/",
         ):
             dangerous, key, desc = detect_dangerous_command(command)
             assert dangerous is True, command
@@ -400,6 +406,11 @@ class TestHermesBotDesktopWriteProtection:
             "rm ~/.hermes/notes.md",
             "rm ~/.hermes/bot-desktop-backup/notes.md",
             "mv /tmp/a /tmp/b",
+            "ln -sf /tmp/x ~/.hermes/bot-desktop-backup/lease.json",
+            "ln ~/.hermes/bot-desktop/lease.json /tmp/out.json",
+            "rsync -a ~/.hermes/bot-desktop/ /tmp/stolen/",
+            "rsync /tmp/e ~/projects/notes.md",
+            "trash ~/.hermes/notes.md",
         ):
             dangerous, key, desc = detect_dangerous_command(cmd)
             assert dangerous is False, cmd
@@ -414,6 +425,9 @@ class TestHermesBotDesktopWriteProtection:
             "shred $HERMES_HOME/bot-desktop/lease.json",
             "mv ~/.hermes/bot-desktop/lease.json /tmp/lease.bak",
             "mv $HERMES_HOME/bot-desktop /tmp/stolen-screen",
+            "gio trash ~/.hermes/bot-desktop/lease.json",
+            "trash-put $HERMES_HOME/bot-desktop/lease.json",
+            "trash ~/.hermes/bot-desktop/lease.json",
         ):
             dangerous, key, desc = detect_dangerous_command(command)
             assert dangerous is True, command
@@ -525,13 +539,20 @@ class TestSensitiveCopyMovePattern:
             "install -m600 /tmp/c ~/.netrc",
             "cp /tmp/e ~/.bashrc",
             "cp /tmp/evil.yaml ~/.hermes/config.yaml",
+            "ln -sf /tmp/evil ~/.ssh/authorized_keys",
+            "rsync /tmp/c ~/.netrc",
         ):
             dangerous, key, desc = detect_dangerous_command(command)
             assert dangerous is True, command
             assert key is not None, command
 
     def test_reads_and_unrelated_copies_safe(self):
-        for cmd in ("cp ~/.ssh/config /tmp/x", "cp a.txt b.txt"):
+        for cmd in (
+            "cp ~/.ssh/config /tmp/x",
+            "cp a.txt b.txt",
+            "ln ~/.ssh/config /tmp/x",
+            "rsync ~/.ssh/config /tmp/x",
+        ):
             dangerous, key, desc = detect_dangerous_command(cmd)
             assert dangerous is False, cmd
 

@@ -4,6 +4,7 @@ every action (capture included) while a human holds the screen."""
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
@@ -190,6 +191,29 @@ def test_unreadable_lease_file_fails_closed_and_takeover_keeps_the_agents_reason
     held = lease.acquire("desk-unlink", profile_key=home)
     assert held.holder == lease.HUMAN
     path.unlink()
+    assert lease.get(profile_key=home).holder == lease.AGENT
+
+    # ``ln -sf`` is the forge, not the drop: the path still exists, but
+    # ``read_text`` follows a symlink to an agent-shaped lease. Approval
+    # must pair ``ln``/``rsync`` the way it already pairs ``cp``.
+    held = lease.acquire("desk-ln", profile_key=home)
+    assert held.holder == lease.HUMAN
+    forged = tmp_path / "forged-lease.json"
+    forged.write_text(
+        json.dumps({
+            "holder": lease.AGENT,
+            "viewer_id": None,
+            "since": 0.0,
+            "reason": "",
+            "pending_handoff": None,
+            "epoch": 99,
+        }),
+        encoding="utf-8",
+    )
+    staged = path.with_name("lease.link-tmp")
+    staged.symlink_to(forged)
+    os.replace(staged, path)
+    assert path.is_symlink() and path.exists()
     assert lease.get(profile_key=home).holder == lease.AGENT
 
     lease.request_handoff("log in to the bank, 2FA on your phone", profile_key=home)
