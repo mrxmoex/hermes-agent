@@ -385,6 +385,76 @@ def test_missing_devtools_port_still_stops_stamped_dock_supervisor(monkeypatch):
     assert stopped == ["review"]
 
 
+def test_stop_reserved_stops_stamped_dock_leftover_when_session_is_cloud(monkeypatch):
+    """A leftover dock WS is the human's jar even if this task's session is Browserbase."""
+    import tools.bot_desktop.browser as bdb
+    from tools import browser_tool as bt
+    from tools.browser_supervisor import CDPSupervisor
+    from tools.browser_tool_supervisor_lease import stop_reserved_supervisors
+
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: 9333)
+    sup = CDPSupervisor(task_id="review", cdp_url="ws://127.0.0.1:9333/devtools/browser/x")
+    assert sup.targets_bot_desktop is True
+    stopped = []
+    import tools.browser_supervisor as bs
+    registry = MagicMock()
+    registry._lock = __import__("threading").Lock()
+    registry._by_task = {"review": sup}
+    registry.stop.side_effect = lambda tid: stopped.append(tid)
+    monkeypatch.setattr(bs, "SUPERVISOR_REGISTRY", registry)
+    monkeypatch.setitem(
+        bt._active_sessions,
+        "review",
+        {"cdp_url": "wss://browserbase.example/cdp", "features": {}},
+    )
+    lease.acquire("human-viewer")
+    stop_reserved_supervisors()
+    assert stopped == ["review"]
+
+
+def test_run_does_not_attach_when_human_takes_over_during_connect(monkeypatch):
+    """Pre-connect admit is not enough — Target.createTarget after a 10s connect
+    is leftover action on the page the human is now typing into."""
+    import sys
+    import types
+
+    import tools.bot_desktop.browser as bdb
+    from tools.browser_supervisor import CDPSupervisor
+
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: 9333)
+    attached = []
+
+    class _WS:
+        def __init__(self):
+            self._closed = asyncio.Event()
+
+        async def close(self):
+            self._closed.set()
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            await self._closed.wait()
+            raise StopAsyncIteration
+
+    async def _connect(*_a, **_k):
+        lease.acquire("human-viewer")
+        return _WS()
+
+    monkeypatch.setitem(sys.modules, "websockets", types.SimpleNamespace(connect=_connect))
+    sup = CDPSupervisor(task_id="review", cdp_url="ws://127.0.0.1:9333/devtools/browser/x")
+
+    async def _attach():
+        attached.append(True)
+
+    sup._attach_initial_page = _attach
+    asyncio.run(sup._run())
+    assert attached == []
+    assert sup._stop_requested is True
+    assert sup._ws is None
+
+
 def test_supervisor_may_touch_page_fails_closed_when_admit_raises(monkeypatch):
     """Leftover I/O must stop if the lease helper cannot decide, not keep talking."""
     from tools.browser_tool_supervisor_lease import request_leftover_stop, supervisor_may_touch_page

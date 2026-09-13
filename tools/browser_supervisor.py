@@ -361,6 +361,23 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
             with contextlib.suppress(Exception):
                 await ws.close()
 
+    def _lease_forbids_touch(self) -> bool:
+        """True when leftover I/O must not talk to this Chromium.
+
+        ``supervisor_may_touch_page`` already fail-closes on ``HumanHasControl``.
+        An unexpected admit error fail-closes only for a stamped dock leftover —
+        unrelated CDP is another browser.
+        """
+        try:
+            from tools.browser_tool_supervisor_lease import supervisor_may_touch_page
+            return not supervisor_may_touch_page(
+                self.cdp_url,
+                home=getattr(self, "hermes_home", None),
+                targets_bot_desktop=getattr(self, "targets_bot_desktop", None),
+            )
+        except Exception:
+            return getattr(self, "targets_bot_desktop", None) is True
+
     async def _run(self) -> None:
         """Top-level reconnecting supervisor coroutine. Browserbase tears down the CDP
         socket whenever a short-lived client (agent-browser's per-command CDP client)
@@ -372,27 +389,13 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
             # sockets. Reconnect would Target.attach / Target.createTarget on
             # the page the human is typing into; stop instead of racing the 1s
             # leftover-supervisor watch.
-            try:
-                from tools.browser_tool_supervisor_lease import supervisor_may_touch_page
-                if not supervisor_may_touch_page(
-                    self.cdp_url,
-                    home=getattr(self, "hermes_home", None),
-                    targets_bot_desktop=getattr(self, "targets_bot_desktop", None),
-                ):
-                    logger.info(
-                        "CDP supervisor %s: not (re)connecting; a human holds the Bot Desktop lease",
-                        self.task_id,
-                    )
-                    self._stop_requested = True
-                    return
-            except Exception:
-                if getattr(self, "targets_bot_desktop", None) is True:
-                    logger.info(
-                        "CDP supervisor %s: not (re)connecting; dock lease check failed closed",
-                        self.task_id,
-                    )
-                    self._stop_requested = True
-                    return
+            if self._lease_forbids_touch():
+                logger.info(
+                    "CDP supervisor %s: not (re)connecting; a human holds the Bot Desktop lease",
+                    self.task_id,
+                )
+                self._stop_requested = True
+                return
             try:
                 import websockets  # deferred: only supervisors that connect pay the import
                 self._ws = await asyncio.wait_for(websockets.connect(self.cdp_url, max_size=50 * 1024 * 1024), timeout=10.0)
@@ -405,6 +408,18 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
                 await asyncio.sleep(min(backoff, 10.0))
                 backoff = min(backoff * 2, 10.0)
                 continue
+
+            # Take over (or stop()) can land during the 10s connect. Re-admit
+            # before Target.getTargets / Target.createTarget / attach — those
+            # are leftover action on the jar the human is typing into.
+            if self._stop_requested or self._lease_forbids_touch():
+                logger.info(
+                    "CDP supervisor %s: dropping fresh socket; a human holds the Bot Desktop lease",
+                    self.task_id,
+                )
+                self._stop_requested = True
+                await self._close_ws()
+                return
 
             reader_task = asyncio.create_task(self._read_loop(), name="cdp-reader")
             try:

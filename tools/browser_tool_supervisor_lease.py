@@ -202,13 +202,15 @@ def stop_reserved_supervisors(home: Optional[str] = None) -> None:
                 session_info = _bt._active_sessions.get(task_id)
                 cdp_url = str(getattr(sup, "cdp_url", "") or "")
                 stamped_dock = getattr(sup, "targets_bot_desktop", None) is True
-                if session_info is not None and not _session._is_shared_bot_desktop_session(session_info):
-                    continue
-                if (
-                    session_info is None
-                    and not stamped_dock
-                    and not _session._cdp_url_is_bot_desktop_browser(cdp_url)
-                ):
+                leftover_is_dock = stamped_dock or _session._cdp_url_is_bot_desktop_browser(cdp_url)
+                session_is_dock = (
+                    session_info is not None
+                    and _session._is_shared_bot_desktop_session(session_info)
+                )
+                # A leftover dock WS is the jar the human is typing into even
+                # when the current session row is another browser (cloud /
+                # /browser connect). Session-is-cloud must not keep that WS.
+                if not leftover_is_dock and not session_is_dock:
                     continue
                 # Re-enter the minting home so stop() pops THIS profile's row,
                 # not a launch-home collision on the same task_id.
