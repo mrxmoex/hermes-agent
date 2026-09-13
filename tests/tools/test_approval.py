@@ -393,6 +393,15 @@ class TestHermesBotDesktopWriteProtection:
             "ln -s /tmp/evil $HERMES_HOME/bot-desktop/lease.json",
             "rsync /tmp/e ~/.hermes/bot-desktop/lease.json",
             "rsync -a --delete /tmp/empty/ $HERMES_HOME/bot-desktop/",
+            # stdin / of=-only dd — the existing "disk copy" rule requires if=
+            'printf \'{"holder":"agent"}\' | dd of=~/.hermes/bot-desktop/lease.json',
+            "echo 9333 | dd of=~/.hermes/bot-desktop/dock-cdp-port",
+            "dd of=$HERMES_HOME/bot-desktop/dock-cdp-port",
+            'dd of="$HOME/.hermes/bot-desktop/lease.json" status=none',
+            "busybox dd of=~/.hermes/bot-desktop/lease.json",
+            "gdd of=~/.hermes/bot-desktop/lease.json",
+            "cat /tmp/e | dd of=~/.hermes/bot-desktop/lease.json conv=notrunc",
+            "/bin/dd of=~/.hermes/bot-desktop/lease.json",
         ):
             dangerous, key, desc = detect_dangerous_command(command)
             assert dangerous is True, command
@@ -411,6 +420,8 @@ class TestHermesBotDesktopWriteProtection:
             "rsync -a ~/.hermes/bot-desktop/ /tmp/stolen/",
             "rsync /tmp/e ~/projects/notes.md",
             "trash ~/.hermes/notes.md",
+            "dd of=/tmp/scratch.img",
+            "printf x | dd of=/tmp/scratch.img",
         ):
             dangerous, key, desc = detect_dangerous_command(cmd)
             assert dangerous is False, cmd
