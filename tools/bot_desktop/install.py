@@ -101,7 +101,11 @@ def _kill_install_tree(proc: subprocess.Popen) -> None:
     with contextlib.suppress(ProcessLookupError, OSError):
         pgid = os.getpgid(proc.pid)
     if pgid is not None:
-        with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+        # Best-effort: any failure (EPERM, a test live-system guard, a
+        # vanished leader) must still reach the sudo reaper and the
+        # stdout close. Skipping those is how a root apt child held
+        # the install slot open.
+        with contextlib.suppress(Exception):
             os.killpg(pgid, signal.SIGKILL)  # windows-footgun: ok — Linux-only (is_supported_host)
         with contextlib.suppress(Exception):
             subprocess.run(
