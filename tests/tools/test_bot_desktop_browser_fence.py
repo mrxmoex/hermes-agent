@@ -713,6 +713,78 @@ def test_predicted_cloud_backend_is_not_treated_as_shared(monkeypatch):
     assert admitted is None
 
 
+_DOCK_CDP = "ws://127.0.0.1:45555/devtools/browser/dock"
+_FOREIGN_CDP = "ws://127.0.0.1:9222/devtools/browser/x"
+
+
+def _is_dock_cdp(url, **_k):
+    return "45555" in (url or "")
+
+
+def test_predicted_dock_cdp_override_is_shared(monkeypatch):
+    """``/browser connect`` to the live dock port is this screen, not 'another browser'."""
+    monkeypatch.setattr(session_mod._cdp, "_get_cdp_override_raw", lambda: _DOCK_CDP)
+    monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", _is_dock_cdp)
+    assert session_mod._predicted_local_shared_browser("review") is True
+    lease.acquire("human-viewer")
+    _admitted, refuse = session_mod._shared_browser_fence("review")
+    assert refuse is not None
+    assert refuse.get("code") == "human_has_control"
+
+
+def test_predicted_foreign_cdp_override_is_not_shared(monkeypatch):
+    """Default ``/browser connect`` to 9222 stays another browser while the dock is elsewhere."""
+    monkeypatch.setattr(session_mod._cdp, "_get_cdp_override_raw", lambda: _FOREIGN_CDP)
+    monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", lambda url, **k: False)
+    assert session_mod._predicted_local_shared_browser("review") is False
+    lease.acquire("human-viewer")
+    admitted, refuse = session_mod._shared_browser_fence("review")
+    assert refuse is None
+    assert admitted is None
+
+
+def test_cdp_override_session_is_fenced_when_url_is_dock(monkeypatch):
+    """Session label is ``cdp_override``; identity is the dock port."""
+    commands: list = []
+    browser, session = _wire(monkeypatch, commands)
+    monkeypatch.setattr(session._cdp, "_get_cdp_override_raw", lambda: _DOCK_CDP)
+    monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", _is_dock_cdp)
+    monkeypatch.setattr(session, "_get_session_info", lambda *a: {
+        "session_name": "cdp_1", "cdp_url": _DOCK_CDP, "features": {"cdp_override": True}})
+    lease.acquire("human-viewer")
+    result = json.loads(browser.browser_click("e1", task_id="review"))
+    assert commands == [], f"human holds the lease, yet dock CDP was dispatched: {commands}"
+    assert result.get("code") == "human_has_control"
+
+
+def test_cdp_override_session_is_not_fenced_when_url_is_foreign(monkeypatch):
+    commands: list = []
+    browser, session = _wire(monkeypatch, commands)
+    monkeypatch.setattr(session._cdp, "_get_cdp_override_raw", lambda: _FOREIGN_CDP)
+    monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", lambda url, **k: False)
+    monkeypatch.setattr(session, "_get_session_info", lambda *a: {
+        "session_name": "cdp_1", "cdp_url": _FOREIGN_CDP, "features": {"cdp_override": True}})
+    lease.acquire("human-viewer")
+    result = json.loads(browser.browser_click("e1", task_id="review"))
+    assert commands, f"foreign CDP was refused as if it were the dock: {result}"
+    assert result.get("success") is True
+
+
+def test_create_cdp_session_refuses_dock_while_human_holds(monkeypatch):
+    monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", lambda url, **k: True)
+    lease.acquire("human-viewer")
+    with pytest.raises(lease.HumanHasControl, match="human holds"):
+        session_mod._create_cdp_session("review", _DOCK_CDP)
+
+
+def test_create_cdp_session_allows_foreign_endpoint_while_human_holds(monkeypatch):
+    monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", lambda url, **k: False)
+    lease.acquire("human-viewer")
+    info = session_mod._create_cdp_session("review", _FOREIGN_CDP)
+    assert info["cdp_url"] == _FOREIGN_CDP
+    assert info["features"]["cdp_override"] is True
+
+
 def _cloud_provider_that_fails():
     class Boom:
         name = "browserbase"
@@ -944,6 +1016,37 @@ def test_janitor_does_not_reap_shared_browser_while_human_holds(monkeypatch):
         browser._session_last_activity.update(prior_activity)
 
 
+def test_janitor_does_not_reap_dock_cdp_session_while_human_holds(monkeypatch):
+    """A ``cdp_override`` session whose URL is the live dock is the same Chromium."""
+    from tools import browser_tool as browser
+    from tools import browser_tool_lifecycle as life
+
+    reaped: list = []
+    prior_sessions = dict(browser._active_sessions)
+    prior_activity = dict(browser._session_last_activity)
+    browser._active_sessions.clear()
+    browser._session_last_activity.clear()
+    browser._active_sessions["review"] = {
+        "session_name": "cdp_1", "cdp_url": _DOCK_CDP, "features": {"cdp_override": True}}
+    browser._session_last_activity["review"] = 0
+    monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", _is_dock_cdp)
+    monkeypatch.setattr(life, "_release_session_resources", lambda *a, **k: reaped.append("release"))
+    monkeypatch.setattr(life._cdp, "_stop_cdp_supervisor", lambda *_a, **_k: reaped.append("stop-sup"))
+    monkeypatch.setattr(session_mod, "_run_browser_command", lambda *a, **k: reaped.append("close"))
+    lease.acquire("human-viewer")
+    try:
+        life._cleanup_single_browser_session("review")
+        life._force_reap_browser_session("review")
+        life._cleanup_inactive_browser_sessions()
+        assert reaped == [], f"dock CDP session was torn down while human holds: {reaped}"
+        assert "review" in browser._active_sessions
+    finally:
+        browser._active_sessions.clear()
+        browser._active_sessions.update(prior_sessions)
+        browser._session_last_activity.clear()
+        browser._session_last_activity.update(prior_activity)
+
+
 def test_browser_cdp_supervisor_is_fenced_while_human_controls(monkeypatch):
     """Supervisor CDP (frame_id) talks to the same Chromium as browser_eval."""
     ran: list = []
@@ -973,6 +1076,60 @@ def test_browser_cdp_supervisor_result_crossing_a_takeover_is_discarded(monkeypa
     monkeypatch.setattr(browser_cdp_tool, "_browser_cdp_private_guard", lambda **_k: None)
     result = json.loads(browser_cdp_tool.browser_cdp(
         method="Page.captureScreenshot", frame_id="oopif", task_id="review",
+    ))
+    assert "WHAT-THE-HUMAN-TYPED" not in json.dumps(result)
+    assert result.get("code") == "human_has_control"
+
+
+def test_browser_cdp_stateless_dock_endpoint_is_fenced(monkeypatch):
+    """Stateless browser_cdp talks the same DevTools port as the dock when connected there."""
+    ran: list = []
+    monkeypatch.setattr(browser_cdp_tool, "_resolve_cdp_endpoint", lambda: _DOCK_CDP)
+    monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", _is_dock_cdp)
+    monkeypatch.setattr(browser_cdp_tool, "cdp_url_is_running_instance", _is_dock_cdp)
+    monkeypatch.setattr(
+        browser_cdp_tool, "_run_async",
+        lambda *_a, **_k: ran.append("cdp") or {"secret": "WHAT-THE-HUMAN-TYPED"},
+    )
+    monkeypatch.setattr(browser_cdp_tool, "_browser_cdp_private_guard", lambda **_k: None)
+    lease.acquire("human-viewer")
+    result = json.loads(browser_cdp_tool.browser_cdp(method="Target.getTargets", task_id="review"))
+    assert ran == [], f"human holds the lease, yet stateless dock CDP ran: {ran}"
+    assert result.get("code") == "human_has_control"
+
+
+def test_browser_cdp_stateless_foreign_endpoint_is_not_fenced(monkeypatch):
+    ran: list = []
+    monkeypatch.setattr(browser_cdp_tool, "_resolve_cdp_endpoint", lambda: _FOREIGN_CDP)
+    monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", lambda url, **k: False)
+    monkeypatch.setattr(browser_cdp_tool, "cdp_url_is_running_instance", lambda url, **k: False)
+
+    async def fake_call(*_a, **_k):
+        ran.append("cdp")
+        return {"targetInfos": []}
+
+    monkeypatch.setattr(browser_cdp_tool, "_cdp_call", fake_call)
+    monkeypatch.setattr(browser_cdp_tool, "_browser_cdp_private_guard", lambda **_k: None)
+    lease.acquire("human-viewer")
+    result = json.loads(browser_cdp_tool.browser_cdp(method="Target.getTargets", task_id="review"))
+    assert ran == ["cdp"], f"foreign CDP was refused as if it were the dock: {result}"
+    assert result.get("success") is True
+
+
+def test_browser_cdp_stateless_dock_result_crossing_a_takeover_is_discarded(monkeypatch):
+    monkeypatch.setattr(browser_cdp_tool, "_resolve_cdp_endpoint", lambda: _DOCK_CDP)
+    monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", _is_dock_cdp)
+    monkeypatch.setattr(browser_cdp_tool, "cdp_url_is_running_instance", _is_dock_cdp)
+
+    def run(*_a, **_k):
+        lease.acquire("human-viewer")
+        lease.release("human-viewer")
+        return {"secret": "WHAT-THE-HUMAN-TYPED"}
+
+    monkeypatch.setattr(browser_cdp_tool, "_run_async", run)
+    monkeypatch.setattr(browser_cdp_tool, "_browser_cdp_private_guard", lambda **_k: None)
+    result = json.loads(browser_cdp_tool.browser_cdp(
+        method="Page.captureScreenshot", task_id="review",
     ))
     assert "WHAT-THE-HUMAN-TYPED" not in json.dumps(result)
     assert result.get("code") == "human_has_control"

@@ -15,7 +15,12 @@ from typing import Any, Dict, Optional
 
 from tools.registry import registry, tool_error
 from tools.browser_extension_router import routed_browser_handler
-from tools.browser_tool_session import _discard_if_lease_moved, _shared_browser_fence
+from tools.bot_desktop.browser import cdp_url_is_running_instance
+from tools.browser_tool_session import (
+    _admit_bot_desktop_browser,
+    _discard_if_lease_moved,
+    _shared_browser_fence,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -311,6 +316,14 @@ def browser_cdp(method: str, params: Optional[Dict[str, Any]] = None, target_id:
     if blocked:
         return blocked
 
+    # Stateless CDP is usually another browser (user Chrome on 9222, cloud).
+    # Fence only when the endpoint IS this profile's live dock Chromium.
+    admitted = None
+    if cdp_url_is_running_instance(endpoint):
+        admitted, refuse = _admit_bot_desktop_browser({"cdp_url": endpoint})
+        if refuse:
+            return json.dumps(refuse)
+
     try:
         safe_timeout = float(timeout) if timeout else 30.0
     except (TypeError, ValueError):
@@ -328,6 +341,10 @@ def browser_cdp(method: str, params: Optional[Dict[str, Any]] = None, target_id:
     except Exception as exc:  # pragma: no cover — unexpected
         logger.exception("browser_cdp unexpected error")
         return tool_error(f"Unexpected error: {type(exc).__name__}: {exc}", method=method)
+
+    stole = _discard_if_lease_moved(admitted)
+    if stole:
+        return json.dumps(stole)
 
     payload: Dict[str, Any] = {"success": True, "method": method, "result": _redact_cdp_output(
         result, always_paths=_CDP_ALWAYS_BINARY_PATHS.get(method, ()),

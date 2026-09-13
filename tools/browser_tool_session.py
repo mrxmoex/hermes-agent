@@ -216,6 +216,13 @@ def _local_backend_process_dead(session_info: Dict[str, Any]) -> bool:
 
 def _create_cdp_session(task_id: str, cdp_url: str) -> Dict[str, str]:
     """Session connecting to a user-supplied CDP endpoint."""
+    from tools.bot_desktop import lease as _bd_lease
+    from tools.bot_desktop.browser import cdp_url_is_running_instance
+
+    if cdp_url_is_running_instance(cdp_url) and _bd_lease.human_holds():
+        raise _bd_lease.HumanHasControl(
+            "A human holds the bot's screen; refusing to attach to the shared dock Chromium."
+        )
     info = _session_record("cdp", cdp_url, {"cdp_override": True})
     _bt.logger.info("Created CDP browser session %s → %s for task %s",
                 info["session_name"], _bt._sanitize_url_for_logs(cdp_url), task_id)
@@ -630,14 +637,18 @@ def _predicted_local_shared_browser(task_id: str) -> bool:
     """True when a *new* session for ``task_id`` would be the Bot Desktop Chromium.
 
     Mirrors ``_create_session_for_key`` precedence without launching: a CDP
-    override or a configured cloud provider is another browser; everything else
+    override is another browser unless the URL is this profile's live dock
+    instance; a configured cloud provider is another browser; everything else
     (including a sidecar ``::local`` key) lands on this profile's DISPLAY.
     """
     force_local = _bt._is_local_sidecar_key(task_id)
-    if not force_local and _cdp._get_cdp_override_raw():
-        return False
-    if not force_local and _cloud._get_cloud_provider() is not None:
-        return False
+    if not force_local:
+        override = _cdp._get_cdp_override_raw()
+        if override:
+            from tools.bot_desktop.browser import cdp_url_is_running_instance
+            return cdp_url_is_running_instance(override)
+        if _cloud._get_cloud_provider() is not None:
+            return False
     return True
 
 
@@ -734,14 +745,23 @@ def _defer_shared_browser_teardown(session_info: Optional[Dict[str, Any]]) -> bo
 
 
 def _shares_bot_desktop_browser(session_info: Dict[str, Any]) -> bool:
-    """Decided by provenance, not transport: every LOCAL session (plain ``--session``, real-profile CDP
-    attach, Lightpanda) is a browser Hermes launched with this profile's Bot Desktop DISPLAY, so it is the
-    screen a human who took over is typing into. Cloud / user-supplied CDP sessions are another browser.
-    A human lease with the screen already gone (dead Xvnc) still fences — computer_use does the same."""
-    if not (session_info.get("features") or {}).get("local"):
-        return False
+    """The shared Bot Desktop Chromium — by local provenance OR by endpoint identity.
+
+    Every LOCAL session (plain ``--session``, real-profile CDP attach, Lightpanda)
+    is a browser Hermes launched with this profile's DISPLAY. Cloud and a
+    user-supplied CDP session are another browser — unless that CDP URL is this
+    profile's live dock instance (``/browser connect`` / ``browser.cdp_url``
+    still label that attach ``cdp_override``). A human lease with the screen
+    already gone (dead Xvnc) still fences local sessions — computer_use does
+    the same.
+    """
     from tools.bot_desktop import lease as _bd_lease, runtime as _bd_runtime
-    return bool(_bd_runtime.published_env().get("DISPLAY")) or _bd_lease.human_holds()
+    from tools.bot_desktop.browser import cdp_url_is_running_instance
+
+    if (session_info.get("features") or {}).get("local"):
+        return bool(_bd_runtime.published_env().get("DISPLAY")) or _bd_lease.human_holds()
+    cdp_url = session_info.get("cdp_url")
+    return isinstance(cdp_url, str) and cdp_url_is_running_instance(cdp_url)
 
 
 def _bot_desktop_attach_port(session_info: Dict[str, Any]) -> Optional[int]:
