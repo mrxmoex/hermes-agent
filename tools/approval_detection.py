@@ -1623,6 +1623,7 @@ _PWD_WRITE_DEST = (
     r'/'
     r'(?:["\']?)'
     r'[^\s;&|<>"\']+'
+    r'(?:["\']?)'
 )
 # `$OLDPWD/…` is the screen only after a same-command chdir *into* it
 # (`cd ~/.hermes/bot-desktop && cd /tmp && > $OLDPWD/lease.json`). Session
@@ -1634,6 +1635,7 @@ _OLDPWD_WRITE_DEST = (
     r'/'
     r'(?:["\']?)'
     r'[^\s;&|<>"\']+'
+    r'(?:["\']?)'
 )
 _CHDIR_BOT_DESKTOP_RE = re.compile(
     rf'(?:(?:\bcd\b|\bpushd\b)\s+|\benv\b[^\n]*\s(?:-C|--chdir)[=\s]*)["\']?{_HERMES_BOT_DESKTOP_PATH}',
