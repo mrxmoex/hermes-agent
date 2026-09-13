@@ -14,8 +14,8 @@ import { Button, Codicon, EmptyState, GlyphSpinner, useValue } from '@hermes/plu
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { useBots } from './i18n'
-import { type DisplayObserveResult, displayRequest, type DisplayStatus, isDisplayUnavailable, leaseHeldBy, resolveScreenWsUrl, retainBotScreen, viewerHash } from './screen-connection'
-import { useScreenBackendEvents } from './screen-events'
+import { type DisplayLease, type DisplayObserveResult, displayRequest, type DisplayStatus, isDisplayUnavailable, leaseHeldBy, resolveScreenWsUrl, retainBotScreen, viewerHash } from './screen-connection'
+import { useOnGatewayOpen, useScreenBackendEvents } from './screen-events'
 import { ScreenInstallCard } from './screen-install'
 import { $screenState, screenStateFor, setScreenLease, setScreenStatus, setScreenUnavailable, setScreenViewer } from './screen-state'
 import type { RosterRow } from './types'
@@ -82,6 +82,15 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
   useEffect(() => {
     void refresh()
   }, [refresh])
+
+  // Portal already resyncs on this edge. An open pane must too: after serve
+  // restart / SSH / sleep-wake the RFB socket is dead and a warm cache lies.
+  useOnGatewayOpen(
+    useCallback(() => {
+      setConn('idle')
+      void refresh()
+    }, [refresh])
+  )
 
   useScreenBackendEvents(bot)
 
@@ -238,6 +247,16 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
       void attach()
     }
   }, [attach, conn, status?.running])
+
+  // Switching to the stopped UI unmounts the canvas but not this component, so
+  // the RFB socket and profile retention would otherwise leak until unmount.
+  // Do not send 1000: a leftover human lease must keep fencing computer_use.
+  useEffect(() => {
+    if (status?.running === false) {
+      detach(false)
+      setConn('idle')
+    }
+  }, [detach, status?.running])
 
   useEffect(() => {
     if (rfb.current) {

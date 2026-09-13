@@ -13,6 +13,12 @@ import type { DisplayStatus } from './screen-connection'
 import type * as ScreenConnection from './screen-connection'
 import type { RosterRow } from './types'
 
+const $testGateway = vi.hoisted(() => {
+  const { atom } = require('nanostores') as typeof import('nanostores')
+
+  return atom('open')
+})
+
 vi.mock('@hermes/plugin-sdk', async () => {
   const { useStore } = await import('@nanostores/react')
   const { onGatewayEvent } = await import('../../contrib/events')
@@ -23,7 +29,7 @@ vi.mock('@hermes/plugin-sdk', async () => {
     GlyphSpinner: () => null,
     EmptyState: () => null,
     useValue: useStore,
-    host: { onEvent: onGatewayEvent }
+    host: { onEvent: onGatewayEvent, state: { gateway: $testGateway } }
   }
 })
 vi.mock('./data', () => ({ botSelectionKey: (bot: RosterRow) => bot.name }))
@@ -85,6 +91,7 @@ const status: DisplayStatus = {
 
 beforeEach(() => {
   $screenState.set({})
+  $testGateway.set('open')
   vi.mocked(displayRequest)
     .mockReset()
     .mockImplementation(async (_bot, method) =>

@@ -5,6 +5,12 @@ import type { DisplayStatus } from './screen-connection'
 import type * as ScreenConnection from './screen-connection'
 import type { RosterRow } from './types'
 
+const $testGateway = vi.hoisted(() => {
+  const { atom } = require('nanostores') as typeof import('nanostores')
+
+  return atom('open')
+})
+
 const sockets = vi.hoisted(
   () => [] as Array<{ closeCodes: number[]; closed: boolean; close: (code?: number) => void; serverClose: (code: number) => void }>
 )
@@ -32,7 +38,8 @@ vi.mock('@hermes/plugin-sdk', async () => {
         return () => {
           retention.held -= 1
         }
-      }
+      },
+      state: { gateway: $testGateway }
     }
   }
 })
@@ -97,7 +104,7 @@ vi.mock('@novnc/novnc', () => ({
 
 import { displayRequest } from './screen-connection'
 import { BotScreenPane } from './screen-pane'
-import { $screenState } from './screen-state'
+import { $screenState, setScreenStatus } from './screen-state'
 
 const bot: RosterRow = { name: 'default' }
 
@@ -118,6 +125,7 @@ const status: DisplayStatus = {
 
 beforeEach(() => {
   $screenState.set({})
+  $testGateway.set('open')
   sockets.length = 0
   rfbs.length = 0
   retention.held = 0
@@ -282,6 +290,41 @@ it('offers force hand-back on the stopped pane when a human lease survived the c
   await waitFor(() =>
     expect(vi.mocked(displayRequest)).toHaveBeenCalledWith(bot, 'display.lease.release', { force: true })
   )
+  view.unmount()
+})
+
+it('re-pulls display.status and re-attaches when the gateway reconnects while the pane is already open', async () => {
+  const view = render(<BotScreenPane bot={bot} />)
+  await waitFor(() => expect(sockets).toHaveLength(1))
+  await act(async () => {})
+  const statusCalls = vi.mocked(displayRequest).mock.calls.filter(([, method]) => method === 'display.status').length
+
+  await act(async () => {
+    $testGateway.set('idle')
+  })
+  await act(async () => {
+    $testGateway.set('open')
+  })
+  await waitFor(() => {
+    const after = vi.mocked(displayRequest).mock.calls.filter(([, method]) => method === 'display.status').length
+    expect(after).toBeGreaterThan(statusCalls)
+  })
+  await waitFor(() => expect(sockets).toHaveLength(2))
+  expect(sockets[1].closed).toBe(false)
+  view.unmount()
+})
+
+it('releases the RFB socket when the screen stops while the pane stays mounted', async () => {
+  const view = render(<BotScreenPane bot={bot} />)
+  await waitFor(() => expect(sockets).toHaveLength(1))
+  await act(async () => {})
+  expect(retention.held).toBe(1)
+
+  act(() => setScreenStatus(bot, { ...status, running: false, pid: null, display: null, socket: null }))
+  await waitFor(() => expect(view.getByText('Screen is off')).toBeTruthy())
+  expect(retention.held).toBe(0)
+  expect(sockets[0].closed).toBe(true)
+  expect(sockets[0].closeCodes).not.toContain(1000)
   view.unmount()
 })
 
