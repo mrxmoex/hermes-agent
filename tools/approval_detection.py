@@ -478,8 +478,12 @@ DEST_FIRST_SENSITIVE_PATTERNS = [
      "copy/move/link into sensitive path via --target-directory"),
     (rf'\bcurl\b[^\n]*\s(?:(?-i:-o|-O)|--output-dir|--output)[=\s]*["\']?{_DEST_FIRST_WRITE_TARGET}',
      "overwrite system file via curl --output"),
-    (rf'\bwget\b[^\n]*\s(?:(?-i:-o|-O)|--output-document|--directory-prefix)[=\s]*["\']?{_DEST_FIRST_WRITE_TARGET}',
+    # `-P` is `--directory-prefix` (dest dir). `-p` is `--page-requisites`
+    # and must stay out, so the short prefix flag is case-preserved.
+    (rf'\bwget\b[^\n]*\s(?:(?-i:-o|-O|-P)|--output-document|--directory-prefix)[=\s]*["\']?{_DEST_FIRST_WRITE_TARGET}',
      "overwrite system file via wget --output"),
+    (rf'\baria2c\b[^\n]*\s(?:(?-i:-d)|--dir)[=\s]*["\']?{_DEST_FIRST_WRITE_TARGET}',
+     "overwrite system file via aria2c --dir"),
     (rf'\b(?:bsd)?tar\b[^\n]*\s{_DEST_FIRST_TAR_EXTRACT}\b[^\n]*\s{_DEST_FIRST_TAR_DIR}[=\s]*["\']?{_DEST_FIRST_WRITE_TARGET}',
      "extract archive into sensitive path"),
     (rf'\b(?:bsd)?tar\b[^\n]*\s{_DEST_FIRST_TAR_DIR}[=\s]*["\']?{_DEST_FIRST_WRITE_TARGET}[^\n]*\s{_DEST_FIRST_TAR_EXTRACT}\b',
