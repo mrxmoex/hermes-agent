@@ -712,6 +712,71 @@ def test_predicted_cloud_backend_is_not_treated_as_shared(monkeypatch):
     assert admitted is None
 
 
+def _cloud_provider_that_fails():
+    class Boom:
+        name = "browserbase"
+
+        def create_session(self, _task_id):
+            raise RuntimeError("cloud down")
+
+    return Boom()
+
+
+def test_cloud_fallback_does_not_spawn_shared_browser_while_human_holds(monkeypatch):
+    """Predicted-cloud is unfenced, but a failed cloud create must not fall back to this screen."""
+    created: list = []
+    monkeypatch.setattr(session_mod, "_browser_command_preflight", lambda: {"browser_cmd": "agent-browser"})
+    monkeypatch.setattr(session_mod._cdp, "_get_cdp_override_raw", lambda: "")
+    monkeypatch.setattr(session_mod._cdp, "_get_cdp_override", lambda: "")
+    monkeypatch.setattr(session_mod._cloud, "_get_cloud_provider", _cloud_provider_that_fails)
+    monkeypatch.setattr(
+        session_mod, "_create_local_session",
+        lambda *a, **k: created.append(a) or {"session_name": "spawned", "features": {"local": True}})
+    lease.acquire("human-viewer")
+    result = session_mod._run_browser_command("cloud-task", "snapshot", [])
+    assert created == [], f"cloud fallback launched the shared browser: {created}"
+    assert result.get("code") == "human_has_control"
+
+
+def test_navigate_cloud_fallback_does_not_create_while_human_holds(monkeypatch):
+    created: list = []
+    from tools import browser_tool as browser
+
+    monkeypatch.setattr(browser, "_is_camofox_mode", lambda: False)
+    monkeypatch.setattr(session_mod, "_browser_command_preflight", lambda: {"browser_cmd": "agent-browser"})
+    monkeypatch.setattr(session_mod._cdp, "_get_cdp_override_raw", lambda: "")
+    monkeypatch.setattr(session_mod._cdp, "_get_cdp_override", lambda: "")
+    monkeypatch.setattr(session_mod._cloud, "_get_cloud_provider", _cloud_provider_that_fails)
+    monkeypatch.setattr(
+        session_mod, "_create_local_session",
+        lambda *a, **k: created.append(a) or {"session_name": "spawned", "features": {"local": True}})
+    lease.acquire("human-viewer")
+    result = json.loads(browser.browser_navigate("https://example.com", task_id="cloud-task"))
+    assert created == [], f"navigate cloud fallback launched the shared browser: {created}"
+    assert result.get("code") == "human_has_control"
+
+
+def test_browser_exec_cloud_fallback_does_not_spawn_while_human_holds(monkeypatch):
+    created: list = []
+    ran: list = []
+    monkeypatch.setattr(session_mod._cdp, "_get_cdp_override_raw", lambda: "")
+    monkeypatch.setattr(session_mod._cdp, "_get_cdp_override", lambda: "")
+    monkeypatch.setattr(session_mod._cloud, "_get_cloud_provider", _cloud_provider_that_fails)
+    monkeypatch.setattr("tools.browser_tool_cloud._get_cloud_provider", _cloud_provider_that_fails)
+    monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "")
+    monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override_raw", lambda: "")
+    monkeypatch.setattr(
+        session_mod, "_create_local_session",
+        lambda *a, **k: created.append(a) or {"session_name": "spawned", "features": {"local": True}})
+    monkeypatch.setattr(bu_cli, "_find_cli", lambda: ["/usr/bin/browser-use"])
+    monkeypatch.setattr(bu_cli, "_run_cli_killing_process_group", lambda *a, **k: ran.append("cli"))
+    lease.acquire("human-viewer")
+    result = json.loads(bu_cli.browser_exec("print(1)", task_id="cloud-task"))
+    assert created == [], f"browser_exec cloud fallback launched the shared browser: {created}"
+    assert ran == [], f"harness ran after a refused fallback: {ran}"
+    assert result.get("code") == "human_has_control"
+
+
 def test_local_sidecar_is_predicted_shared_even_with_cloud_provider(monkeypatch):
     monkeypatch.setattr(session_mod._cloud, "_get_cloud_provider", lambda: object())
     monkeypatch.setattr(session_mod._cdp, "_get_cdp_override_raw", lambda: "http://127.0.0.1:9222")

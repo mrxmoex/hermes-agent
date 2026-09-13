@@ -739,7 +739,9 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     admitted, refuse = _session._shared_browser_fence(nav_session_key)
     if refuse:
         return _dumps(refuse)
-    session_info = _session._get_session_info(nav_session_key)
+    admitted, session_info, refuse = _session._session_after_shared_fence(nav_session_key, admitted)
+    if refuse:
+        return _dumps(refuse)
     is_first_nav = session_info.get("_first_nav", True)
     if is_first_nav:
         session_info["_first_nav"] = False

@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from hermes_constants import get_hermes_home
+from tools.bot_desktop.lease import HumanHasControl
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -122,6 +123,8 @@ def _export_session_cdp(env: dict, get_session_info: Callable[[str], Any], cache
     """Export the CDP endpoint from ``get_session_info(cache_key)``; error string on failure / no CDP."""
     try:
         cdp = str((get_session_info(cache_key) or {}).get("cdp_url") or "")
+    except HumanHasControl:
+        raise
     except Exception as e:
         return fail_msg(e)
     if not cdp:
@@ -626,7 +629,10 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
             code=discarded.get("code") or "human_has_control",
         )
 
-    route_err = _route_backend(env, session, task_id, bool(local))
+    try:
+        route_err = _route_backend(env, session, task_id, bool(local))
+    except HumanHasControl as e:
+        return tool_error(str(e), code="human_has_control")
     moved = _lease_moved_error()
     if moved:
         return moved

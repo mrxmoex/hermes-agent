@@ -169,7 +169,7 @@ def _create_local_session(task_id: str, allow_real_profile: bool = True) -> Dict
     from tools.bot_desktop import lease as _bd_lease
 
     if _bd_lease.human_holds():
-        raise RuntimeError(
+        raise _bd_lease.HumanHasControl(
             "A human holds the bot's screen; refusing to launch the shared local browser."
         )
     if allow_real_profile:
@@ -237,6 +237,11 @@ def _create_cloud_session_or_fallback(task_id: str, provider) -> Dict[str, Any]:
         provider_name = type(provider).__name__
         _bt.logger.warning("Cloud provider %s failed (%s); attempting fallback to local Chromium for task %s",
                            provider_name, e, task_id, exc_info=True)
+        from tools.bot_desktop import lease as _bd_lease
+        if _bd_lease.human_holds():
+            raise _bd_lease.HumanHasControl(
+                "A human holds the bot's screen; refusing to fall back to the shared local browser."
+            ) from e
         try:
             session_info = _create_local_session(task_id)
         except Exception as local_error:
@@ -581,18 +586,9 @@ def _run_browser_command(
     admitted, refuse = _shared_browser_fence(task_id)
     if refuse:
         return refuse
-
-    try:
-        session_info = _get_session_info(task_id)
-    except Exception as e:
-        _bt.logger.warning("Failed to create browser session for task=%s: %s", task_id, e)
-        return {"success": False, "error": f"Failed to create browser session: {str(e)}"}
-    # Predicted-cloud can still fall back to local Chromium. Re-admit on that
-    # provenance without reminting a ticket we already hold.
-    if admitted is None and _shares_bot_desktop_browser(session_info):
-        admitted, refuse = _admit_bot_desktop_browser(session_info)
-        if refuse:
-            return refuse
+    admitted, session_info, refuse = _session_after_shared_fence(task_id, admitted)
+    if refuse:
+        return refuse
     result = _run_browser_command_unfenced(
         task_id, command, args, timeout, _engine_override, browser_cmd, session_info
     )
@@ -663,6 +659,29 @@ def _admit_bot_desktop_browser(session_info: Dict[str, Any]):
 def _shared_browser_fence(task_id: str):
     """Admit the shared Bot Desktop browser for ``task_id`` (same pair as ``_admit``)."""
     return _admit_bot_desktop_browser(_session_info_for_shared_browser_fence(task_id))
+
+
+def _session_after_shared_fence(task_id: str, admitted):
+    """Create/reuse the session after a fence admit. Never remints a ticket already held.
+
+    Predicted-cloud can still fall back to local Chromium; re-admit on that provenance.
+    A human hold during create/fallback is ``code: human_has_control``, not a generic
+    session-create failure — the agent must call ``wait_for_human``.
+    """
+    from tools.bot_desktop.lease import HumanHasControl
+
+    try:
+        session_info = _get_session_info(task_id)
+    except HumanHasControl as e:
+        return admitted, None, {"success": False, "error": str(e), "code": "human_has_control"}
+    except Exception as e:
+        _bt.logger.warning("Failed to create browser session for task=%s: %s", task_id, e)
+        return admitted, None, {"success": False, "error": f"Failed to create browser session: {str(e)}"}
+    if admitted is None and _shares_bot_desktop_browser(session_info):
+        admitted, refuse = _admit_bot_desktop_browser(session_info)
+        if refuse:
+            return admitted, None, refuse
+    return admitted, session_info, None
 
 
 def _discard_if_lease_moved(admitted) -> Optional[Dict[str, Any]]:
