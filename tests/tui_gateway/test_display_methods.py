@@ -56,7 +56,10 @@ def test_thumbnail_is_suppressed_while_a_human_holds_the_lease(monkeypatch, _fre
     from tools.bot_desktop import thumbnail
 
     grabs = []
-    monkeypatch.setattr(thumbnail, "thumbnail_data_url", lambda: grabs.append(1) or "data:image/jpeg;base64,SECRET")
+    monkeypatch.setattr(
+        thumbnail, "thumbnail_data_url",
+        lambda **_: grabs.append(1) or "data:image/jpeg;base64,SECRET",
+    )
     _fresh_lease.acquire("viewer-1")
     result = _call(server, "display.thumbnail", {})["result"]
     assert result["data_url"] is None and result["suppressed"] == "human_has_control"
@@ -112,6 +115,17 @@ def test_observe_mints_the_viewer_id_and_status_never_discloses_the_holder(monke
         stolen = server.dispatch({"jsonrpc": "2.0", "id": 10, "method": "display.observe",
                                   "params": {"viewer_id": with_mine["viewer_id"]}}, other)["result"]
         assert stolen["viewer_id"] != with_mine["viewer_id"]
+
+        # Acquire is the other half of the capability: a made-up id on this socket must not
+        # evict the holder. Only an id this connection minted (via observe) may take over.
+        refused = server.dispatch({"jsonrpc": "2.0", "id": 11, "method": "display.lease.acquire",
+                                   "params": {"viewer_id": "made-up"}}, mine)
+        assert refused["error"]["data"]["code"] == "viewer_unminted"
+        assert lease.get().holder == lease.AGENT
+        taken = server.dispatch({"jsonrpc": "2.0", "id": 12, "method": "display.lease.acquire",
+                                 "params": {"viewer_id": with_mine["viewer_id"]}}, mine)["result"]
+        assert taken["lease"]["holder"] == lease.HUMAN
+        assert with_mine["viewer_id"] not in json.dumps(taken)
 
         _rpc(server, "display.status", {})  # installs the broadcast listener
         lease.acquire(holder)

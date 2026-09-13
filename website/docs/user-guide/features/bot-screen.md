@@ -119,7 +119,7 @@ hermes -p research computer-use screen start   # another bot's screen
 ```yaml
 bot_desktop:
   geometry: "1440x900"   # screen size; the viewer scales to fit the pane
-  auto_start: true       # start on the first computer_use call when the host has no display
+  auto_start: false      # set true to start on the first computer_use call when the host has no display
 ```
 
 State lives under `<HERMES_HOME>/bot-desktop/` per profile (RFB Unix socket,

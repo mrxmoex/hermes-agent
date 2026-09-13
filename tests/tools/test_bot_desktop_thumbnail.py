@@ -8,7 +8,49 @@ import threading
 
 from PIL import Image, ImageGrab
 
-from tools.bot_desktop import runtime, thumbnail
+import pytest
+
+from tools.bot_desktop import lease, runtime, thumbnail
+
+
+@pytest.fixture(autouse=True)
+def _fresh_lease():
+    lease._reset_for_tests()
+    yield
+    lease._reset_for_tests()
+
+
+def test_client_thumbnail_discards_a_frame_that_crossed_takeover(monkeypatch):
+    """Same fence class as computer_use capture: a grab admitted before takeover must not
+    ship the human's pixels, including a finished take-over / hand-back cycle."""
+    monkeypatch.setattr(runtime, "published_env", lambda: {"DISPLAY": ":91", "XAUTHORITY": "/tmp/xauth-a"})
+    monkeypatch.setattr(runtime, "_launcher_pid", lambda: 4242)
+
+    def grab_during_takeover(**_):
+        lease.acquire("human")
+        return Image.new("RGB", (8, 8), color=(9, 0, 0))
+
+    monkeypatch.setattr(ImageGrab, "grab", grab_during_takeover)
+    result = thumbnail.thumbnail_for_clients()
+    assert result["data_url"] is None and result["suppressed"] == "human_has_control"
+    lease.release("human")
+
+    def grab_across_cycle(**_):
+        lease.acquire("human")
+        lease.release("human")
+        return Image.new("RGB", (8, 8), color=(9, 0, 0))
+
+    monkeypatch.setattr(ImageGrab, "grab", grab_across_cycle)
+    result = thumbnail.thumbnail_for_clients()
+    assert result["data_url"] is None and result["suppressed"] == "human_has_control"
+
+    def grab_during_handoff_ask(**_):
+        lease.request_handoff("log in")
+        return Image.new("RGB", (8, 8), color=(1, 2, 3))
+
+    monkeypatch.setattr(ImageGrab, "grab", grab_during_handoff_ask)
+    result = thumbnail.thumbnail_for_clients()
+    assert result.get("data_url", "").startswith("data:image/jpeg")
 
 
 def test_concurrent_grabs_each_see_their_own_xauthority(monkeypatch):
