@@ -455,6 +455,86 @@ def test_run_does_not_attach_when_human_takes_over_during_connect(monkeypatch):
     assert sup._ws is None
 
 
+def _record_cdp_until_takeover(supervisor, *, flip_on: str, replies: dict):
+    """Real ``_cdp`` send path: flip the lease on ``flip_on``, record methods."""
+    import json
+
+    sent = []
+
+    class _WS:
+        async def send(self, payload):
+            msg = json.loads(payload)
+            method = msg["method"]
+            sent.append(method)
+            if method == flip_on:
+                lease.acquire("human-viewer")
+            reply = replies.get(method, {})
+            fut = supervisor._pending_calls.get(msg["id"])
+            if fut is not None and not fut.done():
+                fut.set_result({"id": msg["id"], "result": reply})
+
+    supervisor._ws = _WS()
+    return sent
+
+
+def test_attach_initial_page_does_not_write_after_human_takes_over_mid_attach(monkeypatch):
+    """Post-connect admit is not enough — Target.getTargets / Page.enable can
+    sit on the wire for seconds. Target.createTarget / Fetch.enable /
+    Runtime.evaluate after that are leftover action on the jar the human
+    is now typing into."""
+    import tools.bot_desktop.browser as bdb
+    from tools.browser_supervisor import CDPSupervisor
+
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: 9333)
+    sup = CDPSupervisor(task_id="review", cdp_url="ws://127.0.0.1:9333/devtools/browser/x")
+    sent = _record_cdp_until_takeover(
+        sup,
+        flip_on="Target.getTargets",
+        replies={
+            "Target.getTargets": {"targetInfos": []},
+            "Target.createTarget": {"targetId": "t1"},
+            "Target.attachToTarget": {"sessionId": "s1"},
+        },
+    )
+
+    async def _go():
+        try:
+            await sup._attach_initial_page()
+        except Exception:
+            pass
+
+    asyncio.run(_go())
+    assert "Target.createTarget" not in sent
+    assert "Fetch.enable" not in sent
+    assert "Runtime.evaluate" not in sent
+    assert sent == ["Target.getTargets"]
+    assert sup._stop_requested is True
+
+
+def test_child_domain_install_does_not_write_after_human_takes_over(monkeypatch):
+    """Target.attachedToTarget schedules leftover Page.enable + dialog-bridge
+    inject. Those writes must stop once a human holds, not finish the chain."""
+    import tools.bot_desktop.browser as bdb
+    from tools.browser_supervisor import CDPSupervisor
+
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: 9333)
+    sup = CDPSupervisor(task_id="review", cdp_url="ws://127.0.0.1:9333/devtools/browser/x")
+    sent = _record_cdp_until_takeover(
+        sup,
+        flip_on="Page.enable",
+        replies={},
+    )
+
+    async def _go():
+        await sup._enable_child_domains("sid-child")
+
+    asyncio.run(_go())
+    assert "Fetch.enable" not in sent
+    assert "Runtime.evaluate" not in sent
+    assert sent == ["Page.enable"]
+    assert sup._stop_requested is True
+
+
 def test_supervisor_may_touch_page_fails_closed_when_admit_raises(monkeypatch):
     """Leftover I/O must stop if the lease helper cannot decide, not keep talking."""
     from tools.browser_tool_supervisor_lease import request_leftover_stop, supervisor_may_touch_page

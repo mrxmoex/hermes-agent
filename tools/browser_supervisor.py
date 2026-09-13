@@ -471,6 +471,19 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         """Send a CDP command and await its response."""
         if self._ws is None:
             raise RuntimeError("supervisor WebSocket is not connected")
+        # Post-connect admit is not enough: Target.getTargets / Page.enable can
+        # sit on the wire for seconds, then Target.createTarget / Fetch.enable /
+        # Runtime.evaluate would be leftover action on the jar a human holds.
+        # Child-session install (_enable_child_domains) never saw that admit.
+        try:
+            from tools.browser_tool_supervisor_lease import request_leftover_stop
+            forbidden = request_leftover_stop(self)
+        except Exception:
+            forbidden = getattr(self, "targets_bot_desktop", None) is True
+            if forbidden:
+                self._stop_requested = True
+        if forbidden:
+            raise RuntimeError("CDP supervisor: a human holds the Bot Desktop lease")
         call_id, self._next_call_id = self._next_call_id, self._next_call_id + 1
         payload: Dict[str, Any] = {"id": call_id, "method": method}
         payload.update({k: v for k, v in (("params", params), ("sessionId", session_id)) if v})
