@@ -140,16 +140,65 @@ def _proc_hex_ip(ip_hex: str, *, ipv6: bool = False):
     return ipaddress.IPv6Address(packed)
 
 
-def _parse_proc_tcp_listen_ports(text: str, *, ipv6: bool = False) -> Set[int]:
+def _proc_socket_inodes(pid: int) -> Set[int]:
+    """Inodes of sockets this *pid* currently holds (``/proc/<pid>/fd``).
+
+    ``/proc/<pid>/net/tcp`` is the *network namespace* table, not this
+    process's sockets. Unique-listen recover must intersect that table
+    with these inodes or it sees every loopback LISTEN on the machine
+    (VNC, other Chromes, the dashboard) and refuses — or, if the table
+    happens to look unique, stamps a sibling Chrome's port as the dock.
+    """
+    found: Set[int] = set()
+    fd_dir = f"/proc/{int(pid)}/fd"
+    try:
+        names = os.listdir(fd_dir)
+    except OSError:
+        return found
+    for name in names:
+        try:
+            target = os.readlink(os.path.join(fd_dir, name))
+        except OSError:
+            continue
+        if not (target.startswith("socket:[") and target.endswith("]")):
+            continue
+        raw = target[8:-1]
+        if not raw.isdigit():
+            continue
+        inode = int(raw)
+        if inode > 0:
+            found.add(inode)
+    return found
+
+
+def _parse_proc_tcp_listen_ports(
+    text: str,
+    *,
+    ipv6: bool = False,
+    inodes: Optional[Set[int]] = None,
+) -> Set[int]:
     """Loopback / unspecified LISTEN ports from one ``/proc/net/tcp{,6}`` table.
 
     LAN / remote listeners stay out. No connect, no HTTP.
+
+    When *inodes* is set, keep a LISTEN only if its inode (column 10)
+    belongs to that set. *inodes=None* keeps the unfiltered parse for
+    hex-layout unit tests that use truncated lines without an inode.
     """
     ports: Set[int] = set()
     for line in (text or "").splitlines()[1:]:
         parts = line.split()
         if len(parts) < 4 or parts[3] != "0A":
             continue
+        if inodes is not None:
+            if len(parts) < 10:
+                continue
+            try:
+                inode = int(parts[9])
+            except ValueError:
+                continue
+            if inode not in inodes:
+                continue
         local = parts[1]
         if ":" not in local:
             continue
@@ -171,14 +220,21 @@ def _parse_proc_tcp_listen_ports(text: str, *, ipv6: bool = False) -> Set[int]:
 
 
 def _loopback_listen_ports_for_pid(pid: int) -> Set[int]:
-    """This pid's loopback / unspecified TCP listen ports, or empty."""
+    """Loopback / unspecified TCP listens whose sockets *pid* holds.
+
+    Empty inode set → empty result (fail closed). Falling back to the
+    unfiltered netns table would re-open the sibling-Chrome stamp.
+    """
+    inodes = _proc_socket_inodes(pid)
+    if not inodes:
+        return set()
     ports: Set[int] = set()
     for name, ipv6 in (("tcp", False), ("tcp6", True)):
         try:
             text = Path(f"/proc/{pid}/net/{name}").read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        ports |= _parse_proc_tcp_listen_ports(text, ipv6=ipv6)
+        ports |= _parse_proc_tcp_listen_ports(text, ipv6=ipv6, inodes=inodes)
     return ports
 
 

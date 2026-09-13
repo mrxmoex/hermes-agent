@@ -128,6 +128,54 @@ def test_parse_proc_tcp_listen_ports_keeps_loopback_only():
     assert browser._parse_proc_tcp_listen_ports(text) == {9333, 8080}
 
 
+def test_parse_proc_tcp_listen_ports_filters_to_pid_socket_inodes():
+    """Two loopback LISTENs in the netns table; only this pid's inode is kept.
+
+    Column 10 is inode (proc(5)). A sibling Chrome's 9222 must not count as
+    this jar's unique listen.
+    """
+    text = (
+        "  sl  local_address rem_address   st tx_queue rx_queue tr tm retrnsmt uid timeout inode\n"
+        "   0: 0100007F:23FB 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 111 1 0000000000000000 100 0 0 10 0\n"
+        "   1: 0100007F:2406 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 222 1 0000000000000000 100 0 0 10 0\n"
+    )
+    assert browser._parse_proc_tcp_listen_ports(text) == {9211, 9222}
+    assert browser._parse_proc_tcp_listen_ports(text, inodes={111}) == {9211}
+    assert browser._parse_proc_tcp_listen_ports(text, inodes={222}) == {9222}
+    assert browser._parse_proc_tcp_listen_ports(text, inodes={999}) == set()
+    assert browser._parse_proc_tcp_listen_ports(text, inodes=set()) == set()
+
+
+def test_loopback_listen_ports_fail_closed_without_fd_inodes(monkeypatch):
+    """No /proc/pid/fd sockets → empty, even when the netns table looks unique."""
+    monkeypatch.setattr(browser, "_proc_socket_inodes", lambda pid: set())
+    assert browser._loopback_listen_ports_for_pid(os.getpid()) == set()
+
+
+def test_loopback_listen_ports_are_pid_sockets_not_netns_table():
+    """``/proc/<pid>/net/tcp`` is the netns table. Recover must not stamp VNC."""
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+    try:
+        found = browser._loopback_listen_ports_for_pid(os.getpid())
+        assert port in found
+        unfiltered: set[int] = set()
+        for name, ipv6 in (("tcp", False), ("tcp6", True)):
+            path = f"/proc/{os.getpid()}/net/{name}"
+            try:
+                text = open(path, encoding="utf-8").read()
+            except OSError:
+                continue
+            unfiltered |= browser._parse_proc_tcp_listen_ports(text, ipv6=ipv6)
+        assert found <= unfiltered
+        if len(unfiltered) > 1:
+            assert found != unfiltered
+    finally:
+        listener.close()
+
+
 def test_parse_proc_tcp6_listen_ports_keeps_loopback_only():
     # ::1:9333 and ::ffff:127.0.0.1:9222 LISTEN; a global LISTEN stays out.
     text = (
