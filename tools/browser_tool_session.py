@@ -735,7 +735,11 @@ def _supervisor_belongs_to_session(supervisor, session_info: Dict[str, Any]) -> 
 
     Both sides empty (local ``--session`` / test doubles) belong together.
     A CDP session matches only the same loopback/endpoint. A local session
-    with no ``cdp_url`` belongs to a supervisor on this screen.
+    with no ``cdp_url`` talks leftover only when leftover is the dock
+    instance this session would ``--cdp``-attach. Leftover
+    ``/browser connect`` to this profile's real-profile Chrome is a
+    different browser — do not let eval/dialog/snapshot merge talk leftover
+    RP while the CLI talks the throwaway packaged Chromium.
     """
     if supervisor is None:
         return False
@@ -750,7 +754,9 @@ def _supervisor_belongs_to_session(supervisor, session_info: Dict[str, Any]) -> 
     if sup_cdp and sess_cdp:
         return _cdp_endpoints_match(sup_cdp, sess_cdp)
     if not sess_cdp:
-        return _shares_bot_desktop_browser({"cdp_url": sup_cdp})
+        attach = _bot_desktop_attach_port(session_info or {})
+        leftover_port = _cdp_loopback_port(sup_cdp)
+        return attach is not None and leftover_port is not None and attach == leftover_port
     return False
 
 
@@ -1095,8 +1101,10 @@ def _bot_desktop_attach_port(session_info: Dict[str, Any]) -> Optional[int]:
     if not _shares_bot_desktop_browser(session_info):
         return None
     from tools.bot_desktop import browser as _bd_browser
-    return _bd_browser.running_instance_cdp_port(str(_bd_browser.profile_dir()),
-                                                 exclude_session=session_info["session_name"])
+    return _bd_browser.running_instance_cdp_port(
+        str(_bd_browser.profile_dir()),
+        exclude_session=session_info.get("session_name"),
+    )
 
 
 def _run_browser_command_unfenced(task_id: str, command: str, args: List[str], timeout: int,

@@ -2233,6 +2233,7 @@ def test_predicted_cloud_backend_is_not_treated_as_shared(monkeypatch):
 
 
 _DOCK_CDP = "ws://127.0.0.1:45555/devtools/browser/dock"
+_RP_CDP = "ws://127.0.0.1:9334/devtools/browser/rp"
 _FOREIGN_CDP = "ws://127.0.0.1:9222/devtools/browser/x"
 
 
@@ -3360,10 +3361,262 @@ def test_supervisor_belongs_to_session_is_endpoint_identity(monkeypatch):
     ) is True
     assert session_mod._supervisor_belongs_to_session(
         dock, {"session_name": "local", "features": {"local": True}},
-    ) is True
+    ) is False
     assert session_mod._supervisor_belongs_to_session(
         type("S", (), {"cdp_url": object()})(), {},
     ) is True
+
+
+def test_local_session_belongs_to_leftover_only_when_it_would_cdp_attach(monkeypatch):
+    """A throwaway ``--session`` talks leftover only when leftover is the dock attach port."""
+    from tools import browser_tool as browser
+
+    monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", _is_dock_cdp)
+    dock = type("S", (), {"cdp_url": _DOCK_CDP})()
+    leftover_rp = type("S", (), {"cdp_url": _RP_CDP})()
+    local = {"session_name": "local", "features": {"local": True}}
+    prior = browser._real_profile_cdp_cache.get("cdp")
+    browser._real_profile_cdp_cache["cdp"] = "http://127.0.0.1:9334"
+    try:
+        monkeypatch.setattr("tools.bot_desktop.browser.running_instance_cdp_port", lambda *_a, **_k: None)
+        assert session_mod._supervisor_belongs_to_session(dock, local) is False
+        assert session_mod._supervisor_belongs_to_session(leftover_rp, local) is False
+
+        monkeypatch.setattr("tools.bot_desktop.browser.running_instance_cdp_port", lambda *_a, **_k: 45555)
+        assert session_mod._supervisor_belongs_to_session(dock, local) is True
+        assert session_mod._supervisor_belongs_to_session(leftover_rp, local) is False
+    finally:
+        if prior is None:
+            browser._real_profile_cdp_cache.pop("cdp", None)
+        else:
+            browser._real_profile_cdp_cache["cdp"] = prior
+
+
+def test_eval_does_not_run_leftover_real_profile_on_throwaway_session(monkeypatch):
+    """Leftover ``/browser connect`` to this profile's RP is not a throwaway ``--session``."""
+    from tools import browser_tool as browser
+    from tools import browser_tool_session as session
+
+    monkeypatch.setattr(browser, "_is_camofox_mode", lambda: False)
+    monkeypatch.setattr(browser, "_blocked_private_page_content", lambda *_a: None)
+    monkeypatch.setattr(browser._eval_policy, "_eval_ssrf_guard_active", lambda *_a: False)
+    monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", _is_dock_cdp)
+    monkeypatch.setattr("tools.bot_desktop.browser.running_instance_cdp_port", lambda *_a, **_k: 45555)
+    prior = browser._active_sessions.get("review")
+    prior_cache = browser._real_profile_cdp_cache.get("cdp")
+    browser._active_sessions["review"] = {
+        "session_name": "review", "cdp_url": None, "features": {"local": True},
+    }
+    browser._real_profile_cdp_cache["cdp"] = "http://127.0.0.1:9334"
+    ran: list = []
+
+    class _Sup:
+        cdp_url = _RP_CDP
+
+        def evaluate_runtime(self, expr):
+            ran.append(expr)
+            return {"ok": True, "result": "WHAT-THE-HUMAN-TYPED"}
+
+    monkeypatch.setattr(
+        "tools.browser_supervisor.SUPERVISOR_REGISTRY",
+        type("R", (), {"get": staticmethod(lambda _tid: _Sup())})(),
+    )
+    monkeypatch.setattr(session, "_run_browser_command", lambda *_a, **_k: {
+        "success": True, "data": {"result": "from-cli"},
+    })
+    try:
+        parsed = json.loads(browser._browser_eval("1+1", task_id="review"))
+    finally:
+        if prior is None:
+            browser._active_sessions.pop("review", None)
+        else:
+            browser._active_sessions["review"] = prior
+        if prior_cache is None:
+            browser._real_profile_cdp_cache.pop("cdp", None)
+        else:
+            browser._real_profile_cdp_cache["cdp"] = prior_cache
+    assert ran == [], f"leftover real-profile evaluate_runtime ran on a throwaway session: {ran}"
+    assert parsed.get("success") is True
+    assert parsed.get("result") == "from-cli"
+    assert "WHAT-THE-HUMAN-TYPED" not in json.dumps(parsed)
+
+
+def test_eval_does_not_run_leftover_dock_on_throwaway_session_without_attach(monkeypatch):
+    """Leftover dock I/O must not run while a local ``--session`` launches throwaway Chromium."""
+    from tools import browser_tool as browser
+    from tools import browser_tool_session as session
+
+    monkeypatch.setattr(browser, "_is_camofox_mode", lambda: False)
+    monkeypatch.setattr(browser, "_blocked_private_page_content", lambda *_a: None)
+    monkeypatch.setattr(browser._eval_policy, "_eval_ssrf_guard_active", lambda *_a: False)
+    monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", _is_dock_cdp)
+    monkeypatch.setattr("tools.bot_desktop.browser.running_instance_cdp_port", lambda *_a, **_k: None)
+    prior = browser._active_sessions.get("review")
+    browser._active_sessions["review"] = {
+        "session_name": "review", "cdp_url": None, "features": {"local": True},
+    }
+    ran: list = []
+
+    class _Sup:
+        cdp_url = _DOCK_CDP
+
+        def evaluate_runtime(self, expr):
+            ran.append(expr)
+            return {"ok": True, "result": "WHAT-THE-HUMAN-TYPED"}
+
+    monkeypatch.setattr(
+        "tools.browser_supervisor.SUPERVISOR_REGISTRY",
+        type("R", (), {"get": staticmethod(lambda _tid: _Sup())})(),
+    )
+    monkeypatch.setattr(session, "_run_browser_command", lambda *_a, **_k: {
+        "success": True, "data": {"result": "from-cli"},
+    })
+    try:
+        parsed = json.loads(browser._browser_eval("1+1", task_id="review"))
+    finally:
+        if prior is None:
+            browser._active_sessions.pop("review", None)
+        else:
+            browser._active_sessions["review"] = prior
+    assert ran == [], f"leftover dock evaluate_runtime ran on a throwaway session: {ran}"
+    assert parsed.get("success") is True
+    assert parsed.get("result") == "from-cli"
+    assert "WHAT-THE-HUMAN-TYPED" not in json.dumps(parsed)
+
+
+def test_eval_still_uses_leftover_dock_when_local_session_would_cdp_attach(monkeypatch):
+    """Same-browser leftover connect still evaluates when ``--session`` would ``--cdp`` the dock."""
+    from tools import browser_tool as browser
+
+    monkeypatch.setattr(browser, "_is_camofox_mode", lambda: False)
+    monkeypatch.setattr(browser, "_blocked_private_page_content", lambda *_a: None)
+    monkeypatch.setattr(browser._eval_policy, "_eval_ssrf_guard_active", lambda *_a: False)
+    monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", _is_dock_cdp)
+    monkeypatch.setattr("tools.bot_desktop.browser.running_instance_cdp_port", lambda *_a, **_k: 45555)
+    prior = browser._active_sessions.get("review")
+    browser._active_sessions["review"] = {
+        "session_name": "review", "cdp_url": None, "features": {"local": True},
+    }
+    ran: list = []
+
+    class _Sup:
+        cdp_url = _DOCK_CDP
+
+        def evaluate_runtime(self, expr):
+            ran.append(expr)
+            return {"ok": True, "result": 7}
+
+    monkeypatch.setattr(
+        "tools.browser_supervisor.SUPERVISOR_REGISTRY",
+        type("R", (), {"get": staticmethod(lambda _tid: _Sup())})(),
+    )
+    try:
+        parsed = json.loads(browser._browser_eval("1+1", task_id="review"))
+    finally:
+        if prior is None:
+            browser._active_sessions.pop("review", None)
+        else:
+            browser._active_sessions["review"] = prior
+    assert ran == ["1+1"]
+    assert parsed.get("success") is True
+    assert parsed.get("result") == 7
+
+
+def test_snapshot_does_not_merge_leftover_real_profile_into_throwaway_session(monkeypatch):
+    """CLI snapshot talks throwaway Chromium; leftover RP dialogs are another browser."""
+    from tools import browser_tool as browser
+    from tools import browser_tool_session as session
+
+    monkeypatch.setattr(browser, "_is_camofox_mode", lambda: False)
+    monkeypatch.setattr(browser, "_blocked_private_page_content", lambda *_a: None)
+    monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", _is_dock_cdp)
+    monkeypatch.setattr("tools.bot_desktop.browser.running_instance_cdp_port", lambda *_a, **_k: 45555)
+    prior = browser._active_sessions.get("review")
+    prior_cache = browser._real_profile_cdp_cache.get("cdp")
+    browser._active_sessions["review"] = {
+        "session_name": "review", "cdp_url": None, "features": {"local": True},
+    }
+    browser._real_profile_cdp_cache["cdp"] = "http://127.0.0.1:9334"
+    monkeypatch.setattr(session, "_run_browser_command", lambda *_a, **_k: {
+        "success": True, "data": {"snapshot": "THROW_TREE", "refs": {}},
+    })
+    merged: list = []
+
+    class _Snap:
+        active = True
+
+        def to_dict(self):
+            merged.append("dialogs")
+            return {"pending_dialogs": [{"message": "WHAT-THE-HUMAN-TYPED"}]}
+
+    class _Sup:
+        cdp_url = _RP_CDP
+
+        def snapshot(self):
+            return _Snap()
+
+    monkeypatch.setattr(
+        "tools.browser_supervisor.SUPERVISOR_REGISTRY",
+        type("R", (), {"get": staticmethod(lambda _tid: _Sup())})(),
+    )
+    try:
+        parsed = json.loads(browser.browser_snapshot(task_id="review"))
+    finally:
+        if prior is None:
+            browser._active_sessions.pop("review", None)
+        else:
+            browser._active_sessions["review"] = prior
+        if prior_cache is None:
+            browser._real_profile_cdp_cache.pop("cdp", None)
+        else:
+            browser._real_profile_cdp_cache["cdp"] = prior_cache
+    assert parsed.get("success") is True
+    assert parsed.get("snapshot") == "THROW_TREE"
+    assert merged == [], f"leftover real-profile dialogs were merged into the throwaway tree: {merged}"
+    assert "WHAT-THE-HUMAN-TYPED" not in json.dumps(parsed)
+    assert not parsed.get("pending_dialogs")
+
+
+def test_dialog_does_not_accept_leftover_real_profile_on_throwaway_session(monkeypatch):
+    """Leftover RP ``respond_to_dialog`` must not accept a prompt for a throwaway ``--session``."""
+    from tools import browser_dialog_tool as dialog
+    from tools import browser_tool as browser
+
+    monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", _is_dock_cdp)
+    monkeypatch.setattr("tools.bot_desktop.browser.running_instance_cdp_port", lambda *_a, **_k: 45555)
+    prior = browser._active_sessions.get("review")
+    prior_cache = browser._real_profile_cdp_cache.get("cdp")
+    browser._active_sessions["review"] = {
+        "session_name": "review", "cdp_url": None, "features": {"local": True},
+    }
+    browser._real_profile_cdp_cache["cdp"] = "http://127.0.0.1:9334"
+    ran: list = []
+
+    class _Sup:
+        cdp_url = _RP_CDP
+
+        def respond_to_dialog(self, **_k):
+            ran.append("dialog")
+            return {"ok": True, "dialog": {"message": "WHAT-THE-HUMAN-TYPED"}}
+
+    monkeypatch.setattr(
+        "tools.browser_supervisor.SUPERVISOR_REGISTRY",
+        type("R", (), {"get": staticmethod(lambda _tid: _Sup())})(),
+    )
+    try:
+        parsed = json.loads(dialog.browser_dialog("accept", task_id="review"))
+    finally:
+        if prior is None:
+            browser._active_sessions.pop("review", None)
+        else:
+            browser._active_sessions["review"] = prior
+        if prior_cache is None:
+            browser._real_profile_cdp_cache.pop("cdp", None)
+        else:
+            browser._real_profile_cdp_cache["cdp"] = prior_cache
+    assert ran == [], f"leftover real-profile respond_to_dialog ran on a throwaway session: {ran}"
+    assert parsed.get("success") is not True
+    assert "WHAT-THE-HUMAN-TYPED" not in json.dumps(parsed)
 
 
 def test_live_supervisor_for_session_skips_leftover_on_another_browser(monkeypatch):
