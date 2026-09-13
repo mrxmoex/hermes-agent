@@ -397,6 +397,13 @@ def _resolve_managed_chromium_cdp(env: dict, task_id: Optional[str], session_nam
         return None
     res = _run_browser_command(_backend_cache_key(task_id, session_name), "get", ["cdp-url"],
                                timeout=_get_open_command_timeout(first_open=True))
+    # Independently-fenced get remints. ``browser_exec`` only recovers via
+    # ``_lease_moved_error`` when the outer fence admitted; a predicted-cloud
+    # skip leaves that inert. Raise so the caller keeps ``human_has_control``.
+    if (res or {}).get("code") == "human_has_control":
+        raise HumanHasControl(
+            (res or {}).get("error") or "A human has control of this bot's screen."
+        )
     cdp = str(((res or {}).get("data") or {}).get("cdpUrl") or "") if (res or {}).get("success") else ""
     if not cdp:
         return (f"The local browser could not be started: {(res or {}).get('error') or 'agent-browser returned no CDP endpoint'} "

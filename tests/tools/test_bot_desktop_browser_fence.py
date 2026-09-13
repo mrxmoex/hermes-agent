@@ -369,6 +369,44 @@ def test_browser_exec_without_screen_skips_session_lookup(monkeypatch):
     assert result.get("success") is True
 
 
+def test_managed_chromium_cdp_remint_is_not_a_startup_failure(monkeypatch):
+    """Independently-fenced get cdp-url remints; do not rewrite as a launch error."""
+    monkeypatch.setattr(session_mod, "_run_browser_command", lambda *a, **k: {
+        "success": False, "code": "human_has_control",
+        "error": "A human has control of this bot's screen.",
+    })
+    with pytest.raises(lease.HumanHasControl, match="human has control"):
+        err = bu_cli._resolve_managed_chromium_cdp({}, "review")
+        raise AssertionError(f"remint was rewritten as a startup error: {err}")
+
+
+def test_browser_exec_keeps_human_has_control_when_unadmitted_cdp_resolve_remints(monkeypatch):
+    """Predicted-other-browser skip leaves admitted=None, so ``_lease_moved_error``
+    cannot recover a reminted get. The resolve must raise, not stringify."""
+    ran: list = []
+    monkeypatch.setattr(session_mod, "_session_info_for_shared_browser_fence", lambda *_a, **_k: {})
+    monkeypatch.setattr(bu_cli, "_find_cli", lambda: ["/usr/bin/browser-use"])
+    monkeypatch.setattr(bu_cli, "_attach_vault_supervisor", lambda *a, **k: None)
+    monkeypatch.setattr(bu_cli, "_resolve_real_profile_cdp", lambda *a, **k: None)
+    monkeypatch.setattr(bu_cli, "_resolve_lightpanda_cdp", lambda *a, **k: None)
+    monkeypatch.setattr(bu_cli, "_has_cdp_env", lambda _env: False)
+    monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "")
+    monkeypatch.setattr("tools.browser_tool_cloud._get_cloud_provider", lambda: None)
+    monkeypatch.setattr(session_mod, "_run_browser_command", lambda *a, **k: {
+        "success": False, "code": "human_has_control",
+        "error": "A human has control of this bot's screen.",
+    })
+    monkeypatch.setattr(
+        bu_cli, "_run_cli_killing_process_group",
+        lambda *a, **k: ran.append(a) or subprocess.CompletedProcess(["browser-use"], 0, "ok\n", ""),
+    )
+    result = json.loads(bu_cli.browser_exec("print(1)", task_id="review"))
+    assert ran == [], f"reminted CDP resolve still launched the harness: {ran}"
+    assert result.get("code") == "human_has_control"
+    assert result.get("success") is not True
+    assert "could not be started" not in (result.get("error") or "").lower()
+
+
 def test_browser_exec_cloud_session_is_not_fenced(monkeypatch):
     """Cloud / user CDP is another browser; a lease on this screen must not block it."""
     from tools import browser_tool as browser
