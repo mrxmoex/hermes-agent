@@ -360,6 +360,10 @@ class TestHermesConfigWriteProtection:
             "sed -n '1w ~/.hermes/config.yaml' /tmp/p",
             "ex -sc 'w! ~/.hermes/config.yaml|q' /tmp/p",
             "curl -T /tmp/e file://$HOME/.hermes/config.yaml",
+            "objcopy -I binary -O binary /tmp/e ~/.hermes/config.yaml",
+            "iconv -o ~/.hermes/config.yaml /tmp/e",
+            "patch -o $HERMES_HOME/config.yaml /tmp/old",
+            "awk -v dest=~/.hermes/config.yaml 'BEGIN{printf \"x\" > dest}'",
         ):
             dangerous, key, desc = detect_dangerous_command(command)
             assert dangerous is True, command
@@ -521,6 +525,24 @@ class TestHermesBotDesktopWriteProtection:
             "ex -sc 'w! ~/.hermes/bot-desktop/lease.json|q' /tmp/payload",
             "vim -es '+w! $HERMES_HOME/bot-desktop/lease.json' '+q!' /tmp/payload",
             "vi -e -c 'w! ~/.hermes/profiles/coder/bot-desktop/lease.json' -c q /tmp/p",
+            # awk `-v dest=PATH` / dest-last `> ARGV[n]`; dest-last
+            # objcopy; dest-first iconv/patch `-o`. Literal awk `> path`
+            # is already the `>>?` rule. json.loads accepts patch's
+            # trailing newline, so holder=agent still forges.
+            "awk -v dest=~/.hermes/bot-desktop/lease.json 'BEGIN{printf \"{\\\"holder\\\":\\\"agent\\\"}\" > dest}'",
+            "awk -vdest=$HERMES_HOME/bot-desktop/dock-cdp-port 'BEGIN{printf \"x\" > dest}'",
+            "awk '{printf \"%s\", $0 > ARGV[2]}' /tmp/src ~/.hermes/bot-desktop/lease.json",
+            "mawk '{printf \"%s\", $0 > ARGV[2]}' /tmp/src $HERMES_HOME/bot-desktop/lease.json",
+            "gawk '{print > ARGV[2]}' /tmp/src ~/.hermes/profiles/coder/bot-desktop/lease.json",
+            "objcopy -I binary -O binary /tmp/src ~/.hermes/bot-desktop/lease.json",
+            "objcopy --input-target binary --output-target binary /tmp/src $HERMES_HOME/bot-desktop/dock-cdp-port",
+            "objcopy -I binary -O binary /tmp/src ~/.hermes/profiles/coder/bot-desktop/lease.json",
+            "iconv -f UTF-8 -t UTF-8 -o ~/.hermes/bot-desktop/lease.json /tmp/src",
+            "iconv -o $HERMES_HOME/bot-desktop/dock-cdp-port /tmp/src",
+            "iconv --output ~/.hermes/bot-desktop/lease.json /tmp/src",
+            "patch -o ~/.hermes/bot-desktop/lease.json /tmp/old",
+            "patch --output=$HERMES_HOME/bot-desktop/lease.json /tmp/old",
+            "patch -o ~/.hermes/profiles/coder/bot-desktop/lease.json /tmp/old",
         ):
             dangerous, key, desc = detect_dangerous_command(command)
             assert dangerous is True, command
@@ -592,6 +614,12 @@ class TestHermesBotDesktopWriteProtection:
             "curl -T /tmp/payload file:///tmp/out",
             "vim ~/.hermes/bot-desktop/lease.json",
             "ex /tmp/out",
+            "awk '{print}' ~/.hermes/bot-desktop/lease.json",
+            "awk -v dest=/tmp/out 'BEGIN{printf \"x\" > dest}'",
+            "awk '{printf \"%s\", $0 > ARGV[2]}' /tmp/src /tmp/out",
+            "objcopy -I binary -O binary ~/.hermes/bot-desktop/lease.json /tmp/out",
+            "iconv -o /tmp/out /tmp/src",
+            "patch -o /tmp/out /tmp/old",
         ):
             dangerous, key, desc = detect_dangerous_command(cmd)
             assert dangerous is False, cmd

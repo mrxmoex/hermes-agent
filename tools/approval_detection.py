@@ -337,6 +337,18 @@ DANGEROUS_PATTERNS = [
     # Opening the path (`vim lease.json`) stays unflagged — no `w` dest.
     (rf'\b(?:ex|n?vim?|view)\b[^\n]*\bw!?\s+["\']?{_SENSITIVE_WRITE_TARGET}',
      "overwrite system file via ex/vim"),
+    # awk `> "path"` is already the `>>?` rule. The unpaired doors are
+    # `-v dest=PATH` then `> dest`, and dest-last `> ARGV[n]` — both
+    # byte-write holder=agent under auto-approve. Reading the path
+    # (`awk '{print}' lease.json`) has no `>` / `-v dest=` write.
+    (rf'\b(?:g?awk|mawk|nawk)\b(?=[^\n]*>)[^\n]*-v\s*\w+=["\']?{_SENSITIVE_WRITE_TARGET}',
+     "overwrite system file via awk"),
+    (rf'\b(?:g?awk|mawk|nawk)\b[^\n]*>\s*ARGV\[[^\n]*["\']?{_SENSITIVE_WRITE_TARGET}[^\s"\']*["\']?{_COMMAND_TAIL}',
+     "overwrite system file via awk"),
+    # dest-last `objcopy [-I binary -O binary] SRC DEST`. `-O` is the
+    # output *target format*, not a dest path — do not treat it as dest-first.
+    (rf'\bobjcopy\b.*\s["\']?{_SENSITIVE_WRITE_TARGET}[^\s"\']*["\']?{_COMMAND_TAIL}',
+     "overwrite system file via objcopy"),
     (rf'>>?\s*["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via redirection"),
     # `dd of=` with no `if=` writes stdin (or zeros) and misses the "disk copy" rule
     # (`dd … if=`). Same pairing as tee/redirect: forges lease.json holder=agent or
@@ -351,6 +363,12 @@ DANGEROUS_PATTERNS = [
      "overwrite project env/config via sed w"),
     (rf'\b(?:ex|n?vim?|view)\b[^\n]*\bw!?\s+["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_WRITE_TARGET_BOUNDARY}',
      "overwrite project env/config via ex/vim"),
+    (rf'\b(?:g?awk|mawk|nawk)\b(?=[^\n]*>)[^\n]*-v\s*\w+=["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_WRITE_TARGET_BOUNDARY}',
+     "overwrite project env/config via awk"),
+    (rf'\b(?:g?awk|mawk|nawk)\b[^\n]*>\s*ARGV\[[^\n]*["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_COMMAND_TAIL}',
+     "overwrite project env/config via awk"),
+    (rf'\bobjcopy\b.*\s["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_COMMAND_TAIL}',
+     "overwrite project env/config via objcopy"),
     (rf'>>?\s*["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_WRITE_TARGET_BOUNDARY}', "overwrite project env/config via redirection"),
     (r'\bxargs\s+.*\brm\b', "xargs with rm"),
     # -execdir has the same semantics as -exec (runs in each match's directory).
@@ -578,6 +596,13 @@ DEST_FIRST_SENSITIVE_PATTERNS = [
      "overwrite system file via age --output"),
     (rf'\b(?:zstd|unzstd)\b[^\n]*\s(?:(?-i:-o)|--output-file)[=\s]*["\']?{_DEST_FIRST_WRITE_TARGET}',
      "overwrite system file via zstd --output"),
+    # dest-first iconv/patch `-o`/`--output`. Literal awk `> path` is
+    # already `>>?`; these name dest earlier and byte-write (patch -o
+    # adds a newline; json.loads still accepts holder=agent).
+    (rf'\biconv\b[^\n]*\s(?:(?-i:-o)|--output)[=\s]*["\']?{_DEST_FIRST_WRITE_TARGET}',
+     "overwrite system file via iconv --output"),
+    (rf'\bpatch\b[^\n]*\s(?:(?-i:-o)|--output)[=\s]*["\']?{_DEST_FIRST_WRITE_TARGET}',
+     "overwrite system file via patch --output"),
 ]
 DEST_FIRST_SENSITIVE_PATTERNS_COMPILED = [
     (re.compile(p, _RE_FLAGS), d) for p, d in DEST_FIRST_SENSITIVE_PATTERNS
