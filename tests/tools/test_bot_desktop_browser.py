@@ -470,6 +470,135 @@ def test_persist_configured_listen_accepts_relative_user_data_dir(tmp_path, monk
         listener.close()
 
 
+def test_proc_env_value_reads_child_environ():
+    """``/proc/<pid>/environ`` is how Chromium's ``CHROME_USER_DATA_DIR`` is found.
+
+    ``os.environ`` mutations do not rewrite ``/proc/self/environ`` — spawn a
+    child that actually received the key.
+    """
+    import subprocess
+
+    child = subprocess.Popen(
+        ["sleep", "30"],
+        env={**os.environ, "CHROME_USER_DATA_DIR": "/tmp/hermes-dock-jar-env"},
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        assert browser._proc_env_value(child.pid, "CHROME_USER_DATA_DIR") == "/tmp/hermes-dock-jar-env"
+        assert browser._proc_env_value(child.pid, "HERMES_BD_TEST_ENV_MISSING") is None
+        assert browser._proc_env_value(-1, "PATH") is None
+    finally:
+        child.kill()
+        child.wait()
+
+
+def test_running_instance_recovers_chrome_user_data_dir_env(tmp_path, monkeypatch):
+    """Chromium's ``CHROME_USER_DATA_DIR`` is the jar when the flag is absent.
+
+    Official override. Recover that only read argv then treated this live
+    dock as another Chrome (admit None → leftover HTTP on a human hold).
+    A conflicting flag still wins. Another env dir must not match.
+    """
+    profile = tmp_path / "jar"
+    profile.mkdir()
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+    os.symlink(f"host-{os.getpid()}", profile / "SingletonLock")
+    monkeypatch.setattr(
+        browser,
+        "_chromium_cmdline_tokens",
+        lambda pid: ["chrome", "--remote-debugging-port=0"],
+    )
+    monkeypatch.setattr(
+        browser,
+        "_proc_env_value",
+        lambda pid, name: str(profile) if name == "CHROME_USER_DATA_DIR" else None,
+    )
+    monkeypatch.setattr(browser, "_loopback_listen_ports_for_pid", lambda pid: {port})
+    try:
+        assert browser.running_instance_cdp_port(str(profile)) == port
+        monkeypatch.setattr(
+            browser,
+            "_proc_env_value",
+            lambda pid, name: str(tmp_path / "other") if name == "CHROME_USER_DATA_DIR" else None,
+        )
+        assert browser.running_instance_cdp_port(str(profile)) is None
+        monkeypatch.setattr(
+            browser,
+            "_chromium_cmdline_tokens",
+            lambda pid: ["chrome", "--user-data-dir=/other/profile", "--remote-debugging-port=0"],
+        )
+        monkeypatch.setattr(
+            browser,
+            "_proc_env_value",
+            lambda pid, name: str(profile) if name == "CHROME_USER_DATA_DIR" else None,
+        )
+        assert browser.running_instance_cdp_port(str(profile)) is None
+    finally:
+        listener.close()
+
+
+def test_running_instance_recovers_relative_chrome_user_data_dir(tmp_path, monkeypatch):
+    """Env override is still resolved against Chromium cwd when relative."""
+    profile = tmp_path / "jar"
+    profile.mkdir()
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+    os.symlink(f"host-{os.getpid()}", profile / "SingletonLock")
+    monkeypatch.setattr(
+        browser,
+        "_chromium_cmdline_tokens",
+        lambda pid: ["chrome", "--remote-debugging-port=0"],
+    )
+    monkeypatch.setattr(
+        browser,
+        "_proc_env_value",
+        lambda pid, name: "jar" if name == "CHROME_USER_DATA_DIR" else None,
+    )
+    monkeypatch.setattr(browser, "_proc_cwd", lambda pid: tmp_path)
+    monkeypatch.setattr(browser, "_loopback_listen_ports_for_pid", lambda pid: {port})
+    try:
+        assert browser.running_instance_cdp_port(str(profile)) == port
+        monkeypatch.setattr(browser, "_proc_cwd", lambda pid: Path("/tmp"))
+        assert browser.running_instance_cdp_port(str(profile)) is None
+    finally:
+        listener.close()
+
+
+def test_persist_configured_listen_accepts_chrome_user_data_dir_env(tmp_path, monkeypatch):
+    """Configured listen must honor ``CHROME_USER_DATA_DIR`` when argv omits the flag."""
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+    profile = tmp_path / "browser-profile"
+    profile.mkdir()
+    os.symlink(f"host-{os.getpid()}", profile / "SingletonLock")
+    monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path)
+    monkeypatch.setattr(browser, "profile_dir", lambda: profile)
+    monkeypatch.setattr(browser, "running_instance_cdp_port", lambda *a, **k: None)
+    monkeypatch.setattr(browser, "_chromium_cmdline_tokens", lambda pid: ["chrome"])
+    monkeypatch.setattr(
+        browser,
+        "_proc_env_value",
+        lambda pid, name: str(profile) if name == "CHROME_USER_DATA_DIR" else None,
+    )
+    monkeypatch.setattr(browser, "_loopback_listen_ports_for_pid", lambda pid: {port})
+    monkeypatch.setattr(
+        browser, "_configured_cdp_override_url", lambda: f"http://127.0.0.1:{port}",
+    )
+    try:
+        assert browser.persist_live_dock_cdp_port() == port
+        assert browser.last_known_dock_cdp_port() == port
+    finally:
+        listener.close()
+
+
 def test_running_instance_recovers_spaced_user_data_dir(tmp_path, monkeypatch):
     """Equals-only parse treated a spaced ``--user-data-dir`` as another Chrome."""
     listener = socket.socket()

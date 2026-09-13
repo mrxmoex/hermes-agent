@@ -129,6 +129,37 @@ def _user_data_dir_from_cmdline(tokens: list[str]) -> Optional[str]:
     return _chromium_switch_value(tokens, "user-data-dir")
 
 
+def _proc_env_value(pid: int, name: str) -> Optional[str]:
+    """One ``KEY=value`` from ``/proc/<pid>/environ``, or ``None``."""
+    try:
+        raw = Path(f"/proc/{pid}/environ").read_bytes()
+    except OSError:
+        return None
+    prefix = f"{name}=".encode()
+    for part in raw.split(b"\0"):
+        if part.startswith(prefix):
+            text = part[len(prefix):].decode("utf-8", "replace").strip()
+            return text or None
+    return None
+
+
+def _listed_user_data_dir(pid: int, tokens: Optional[list[str]] = None) -> Optional[str]:
+    """Jar this Chromium named: cmdline flag, else ``CHROME_USER_DATA_DIR``.
+
+    Chromium documents the env override when ``--user-data-dir`` is absent.
+    Recover / configured-listen that only read argv then treated a live
+    dock launched that way as another Chrome (admit ``None`` → leftover
+    HTTP). The flag still wins when both are set. Do not guess the
+    default ``~/.config/chromium`` jar.
+    """
+    if tokens is None:
+        tokens = _chromium_cmdline_tokens(pid)
+    listed = _user_data_dir_from_cmdline(tokens)
+    if listed:
+        return listed
+    return _proc_env_value(pid, "CHROME_USER_DATA_DIR")
+
+
 def _remote_debugging_port_from_cmdline(tokens: list[str]) -> Optional[int]:
     """Explicit ``--remote-debugging-port`` when the value is a real port.
 
@@ -398,11 +429,12 @@ def _recover_cdp_port_from_singleton(user_data_dir: str, pid: int) -> Optional[i
     or a *unique* loopback listen. Multiple specific loopbacks stay unknown
     — do not stamp an arbitrary port. An unspecified extra
     (``0.0.0.0`` / ``::``) next to one specific loopback is not ambiguity.
-    Cmdline must name this ``user_data_dir`` so a recycled pid is not
-    trusted. No HTTP (tab list is leftover observation).
+    Cmdline ``--user-data-dir`` or ``CHROME_USER_DATA_DIR`` must name this
+    ``user_data_dir`` so a recycled pid is not trusted. No HTTP (tab list
+    is leftover observation).
     """
     tokens = _chromium_cmdline_tokens(pid)
-    listed = _user_data_dir_from_cmdline(tokens)
+    listed = _listed_user_data_dir(pid, tokens)
     if not listed or not _paths_same_user_data_dir(
         listed, user_data_dir, cwd=_proc_cwd(pid),
     ):
@@ -527,7 +559,7 @@ def _configured_listen_port_for_this_jar() -> Optional[int]:
     pid = _lock_pid(user_data_dir)
     if pid is None:
         return None
-    listed = _user_data_dir_from_cmdline(_chromium_cmdline_tokens(pid))
+    listed = _listed_user_data_dir(pid)
     if not listed or not _paths_same_user_data_dir(
         listed, user_data_dir, cwd=_proc_cwd(pid),
     ):
