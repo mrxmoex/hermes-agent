@@ -383,6 +383,47 @@ def test_running_instance_recovers_explicit_cmdline_port(tmp_path, monkeypatch):
         listener.close()
 
 
+def test_persist_stamps_configured_port_when_recover_is_ambiguous(tmp_path, monkeypatch):
+    """Two specific loopbacks hide unique-listen recover. Config still names DevTools."""
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+    profile = tmp_path / "browser-profile"
+    profile.mkdir()
+    os.symlink(f"host-{os.getpid()}", profile / "SingletonLock")
+    monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path)
+    monkeypatch.setattr(browser, "profile_dir", lambda: profile)
+    monkeypatch.setattr(browser, "running_instance_cdp_port", lambda *a, **k: None)
+    monkeypatch.setattr(
+        browser,
+        "_chromium_cmdline_tokens",
+        lambda pid: ["chrome", f"--user-data-dir={profile}"],
+    )
+    monkeypatch.setattr(browser, "_loopback_listen_ports_for_pid", lambda pid: {port, port + 1})
+    monkeypatch.setattr(
+        browser,
+        "_loopback_listen_targets_for_pid",
+        lambda pid: {("127.0.0.1", port), ("::1", port + 1)},
+    )
+    monkeypatch.setattr(
+        browser, "_configured_cdp_override_url", lambda: f"http://127.0.0.1:{port}",
+    )
+    try:
+        assert browser.persist_live_dock_cdp_port() == port
+        assert browser.last_known_dock_cdp_port() == port
+        monkeypatch.setattr(
+            browser, "_configured_cdp_override_url", lambda: "http://127.0.0.1:9222",
+        )
+        (tmp_path / "dock-cdp-port").unlink(missing_ok=True)
+        assert browser.persist_live_dock_cdp_port() is None
+        assert browser.last_known_dock_cdp_port() is None
+        monkeypatch.setattr(browser, "_configured_cdp_override_url", lambda: "")
+        assert browser.persist_live_dock_cdp_port() is None
+    finally:
+        listener.close()
+
+
 def test_agent_attaches_to_human_started_browser(monkeypatch):
     """With a live dock instance on the shared profile the local argv carries ``--cdp <port>``; without one
     it stays a plain ``--session`` launch."""

@@ -435,17 +435,80 @@ def _dock_port_path() -> Path:
     return runtime.state_dir() / _DOCK_PORT_FILE
 
 
+def _lock_pid(user_data_dir: str) -> Optional[int]:
+    """Alive SingletonLock pid for ``user_data_dir``, or ``None``."""
+    try:
+        target = os.readlink(os.path.join(user_data_dir, "SingletonLock"))
+    except OSError:
+        return None
+    _host, _, pid_text = target.rpartition("-")
+    if not pid_text.isdigit():
+        return None
+    pid = int(pid_text)
+    return pid if pid > 1 and _pid_alive(pid) else None
+
+
+def _configured_cdp_override_url() -> str:
+    """``/browser connect`` / ``BROWSER_CDP_URL`` / ``browser.cdp_url``, or empty."""
+    try:
+        from tools.browser_tool_cdp import _get_cdp_override_raw
+        return (_get_cdp_override_raw() or "").strip()
+    except Exception:
+        return ""
+
+
+def _configured_listen_port_for_this_jar() -> Optional[int]:
+    """Override port when this profile's Chromium listens on it.
+
+    Unique-listen recover stays unknown when Chromium has several *specific*
+    loopbacks. The operator override still names the DevTools port. Stamp
+    it only if SingletonLock's pid holds that listen and cmdline names
+    this ``user-data-dir`` — a config pointing at another Chrome on 9222
+    must not become the dock. No HTTP.
+    """
+    raw = _configured_cdp_override_url()
+    if not raw:
+        return None
+    try:
+        from tools.browser_tool_session import _loopback_cdp_port
+        want = _loopback_cdp_port(raw)
+    except Exception:
+        return None
+    if want is None:
+        return None
+    user_data_dir = str(profile_dir())
+    pid = _lock_pid(user_data_dir)
+    if pid is None:
+        return None
+    listed = _user_data_dir_from_cmdline(_chromium_cmdline_tokens(pid))
+    if not listed or not _paths_same_user_data_dir(listed, user_data_dir):
+        return None
+    if want not in _loopback_listen_ports_for_pid(pid):
+        return None
+    if not _cdp_port_reachable(want, _listen_connect_hosts(pid, want)):
+        return None
+    return want
+
+
 def persist_live_dock_cdp_port() -> Optional[int]:
     """Best-effort stamp of the live dock DevTools port for this profile.
 
     Human-first Take over can happen before any agent browser call has
     seen ``DevToolsActivePort``. Persist now, while the probe still
     works, so a later miss cannot treat this jar as another Chrome.
+
+    When unique-listen recover is ambiguous, a loopback override that
+    this jar actually listens on is still this profile's DevTools port.
     """
     try:
         port = running_instance_cdp_port(str(profile_dir()))
     except Exception:
-        return None
+        port = None
+    if port is None:
+        try:
+            port = _configured_listen_port_for_this_jar()
+        except Exception:
+            port = None
     if port is not None:
         remember_dock_cdp_port(port)
     return port
