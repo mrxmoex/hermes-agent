@@ -218,3 +218,241 @@ def test_takeover_kills_inflight_browser_exec_without_delivering_it(monkeypatch)
     assert "human_has_control" in payload
     assert "secret-password" not in payload
     assert "typed secret" not in payload
+
+
+class _FakeProc:
+    """psutil-shaped process for leftover CLI interrupt tests. No live scan."""
+
+    def __init__(self, pid, cmdline, environ=None):
+        self.pid = pid
+        self._cmdline = list(cmdline)
+        self._environ = dict(environ or {})
+        self.killed = 0
+
+    def cmdline(self):
+        return list(self._cmdline)
+
+    def environ(self):
+        return dict(self._environ)
+
+    def kill(self):
+        self.killed += 1
+
+
+def test_agent_browser_invocation_is_token_match_not_substring():
+    from tools.browser_tool_session import _is_agent_browser_invocation
+
+    assert _is_agent_browser_invocation(["/usr/bin/agent-browser", "open"])
+    assert _is_agent_browser_invocation(["agent-browser.exe", "fill", "@e1", "x"])
+    assert _is_agent_browser_invocation(["npx", "--yes", "agent-browser@latest", "fill"])
+    assert _is_agent_browser_invocation(["pnpx", "agent-browser", "open"])
+    assert not _is_agent_browser_invocation(["/usr/bin/cat", "agent-browser.log"])
+    assert not _is_agent_browser_invocation(
+        ["chrome", "--user-data-dir=/tmp/agent-browser"])
+    assert not _is_agent_browser_invocation(["npx", "playwright", "install"])
+    assert not _is_agent_browser_invocation(["agent-browser-mcp", "serve"])
+
+
+def test_unregistered_cdp_dock_cli_killed_on_takeover():
+    """terminal()-spawned agent-browser --cdp <dock> is leftover action."""
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    bdb.remember_dock_cdp_port(9333)
+    leftover = _FakeProc(
+        4242, ["agent-browser", "--cdp", "http://127.0.0.1:9333", "fill", "@e1", "x"])
+    other = _FakeProc(
+        4243, ["agent-browser", "--cdp", "http://127.0.0.1:9222", "fill", "@e1", "x"])
+    lease.acquire("human")
+    n = interrupt_unregistered_dock_cli(
+        processes=[leftover, other], chromium_pid=9999, owner_daemon_pid=9998,
+    )
+    assert n == 1
+    assert leftover.killed == 1
+    assert other.killed == 0
+
+
+def test_unregistered_npx_cdp_equals_form_killed_on_takeover():
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    bdb.remember_dock_cdp_port(9333)
+    leftover = _FakeProc(
+        4250, ["npx", "--yes", "agent-browser", "--cdp=ws://127.0.0.1:9333", "fill"])
+    lease.acquire("human")
+    n = interrupt_unregistered_dock_cli(
+        processes=[leftover], chromium_pid=9999, owner_daemon_pid=9998,
+    )
+    assert n == 1
+    assert leftover.killed == 1
+
+
+def test_unregistered_spares_chromium_and_owner_daemon():
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    bdb.remember_dock_cdp_port(9333)
+    chrome = _FakeProc(7000, ["agent-browser", "--cdp", "http://127.0.0.1:9333"])
+    owner = _FakeProc(7001, ["agent-browser", "--cdp", "http://127.0.0.1:9333", "open"])
+    leftover = _FakeProc(
+        7002, ["npx", "agent-browser", "--cdp", "http://127.0.0.1:9333", "fill"])
+    lease.acquire("human")
+    interrupt_unregistered_dock_cli(
+        processes=[chrome, owner, leftover],
+        chromium_pid=7000,
+        owner_daemon_pid=7001,
+    )
+    assert chrome.killed == 0
+    assert owner.killed == 0
+    assert leftover.killed == 1
+
+
+def test_unregistered_is_noop_while_agent_holds():
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    bdb.remember_dock_cdp_port(9333)
+    leftover = _FakeProc(
+        4260, ["agent-browser", "--cdp", "http://127.0.0.1:9333", "fill"])
+    n = interrupt_unregistered_dock_cli(
+        processes=[leftover], chromium_pid=9999, owner_daemon_pid=9998,
+    )
+    assert n == 0
+    assert leftover.killed == 0
+
+
+def test_unregistered_spares_sibling_profile_cli(tmp_path: Path):
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    home_a = tmp_path / "profile-a"
+    home_a.mkdir()
+    leftover_b = _FakeProc(
+        8001, ["agent-browser", "--cdp", "http://127.0.0.1:9444", "fill"])
+    token = set_hermes_home_override(home_a)
+    try:
+        bdb.remember_dock_cdp_port(9333)
+        lease.acquire("human")
+        interrupt_unregistered_dock_cli(
+            home=str(home_a),
+            processes=[leftover_b],
+            chromium_pid=9999,
+            owner_daemon_pid=9998,
+        )
+    finally:
+        lease.release("human")
+        reset_hermes_home_override(token)
+    assert leftover_b.killed == 0
+
+
+def test_unregistered_kills_env_pinned_profile_without_cdp():
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    profile = bdb.profile_dir()
+    leftover = _FakeProc(
+        8100, ["agent-browser", "fill", "@e1", "x"],
+        {"AGENT_BROWSER_PROFILE": str(profile)},
+    )
+    other = _FakeProc(
+        8101, ["agent-browser", "fill", "@e1", "x"],
+        {"AGENT_BROWSER_PROFILE": "/tmp/other-chrome"},
+    )
+    unknown = _FakeProc(8102, ["agent-browser", "fill", "@e1", "x"], {})
+    lease.acquire("human")
+    interrupt_unregistered_dock_cli(
+        processes=[leftover, other, unknown],
+        chromium_pid=9999,
+        owner_daemon_pid=9998,
+    )
+    assert leftover.killed == 1
+    assert other.killed == 0
+    assert unknown.killed == 0
+
+
+def test_unregistered_spares_lan_cdp_even_when_port_matches():
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    bdb.remember_dock_cdp_port(9333)
+    leftover = _FakeProc(
+        8200, ["agent-browser", "--cdp", "http://10.0.0.5:9333", "fill"])
+    lease.acquire("human")
+    interrupt_unregistered_dock_cli(
+        processes=[leftover], chromium_pid=9999, owner_daemon_pid=9998,
+    )
+    assert leftover.killed == 0
+
+
+def test_unregistered_skips_registered_inflight_pid():
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import (
+        interrupt_unregistered_dock_cli,
+        register_inflight_dock_cli,
+    )
+
+    bdb.remember_dock_cdp_port(9333)
+    lease.acquire("human")
+    inflight = _FakeProc(
+        8300, ["agent-browser", "--cdp", "http://127.0.0.1:9333", "fill"])
+    register_inflight_dock_cli(inflight)
+    # Finding 42 already SIGINT'd registered writers; do not SIGKILL them again.
+    interrupt_unregistered_dock_cli(
+        processes=[inflight], chromium_pid=9999, owner_daemon_pid=9998,
+    )
+    assert inflight.killed == 0
+
+
+def test_unregistered_explicit_other_cdp_wins_over_env_pin():
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    profile = bdb.profile_dir()
+    bdb.remember_dock_cdp_port(9333)
+    leftover = _FakeProc(
+        8500,
+        ["agent-browser", "--cdp", "http://127.0.0.1:9222", "fill"],
+        {"AGENT_BROWSER_PROFILE": str(profile)},
+    )
+    lease.acquire("human")
+    interrupt_unregistered_dock_cli(
+        processes=[leftover], chromium_pid=9999, owner_daemon_pid=9998,
+    )
+    assert leftover.killed == 0
+
+
+def test_unregistered_does_not_use_killpg(monkeypatch):
+    import os
+
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    killed_pg = []
+    monkeypatch.setattr(os, "killpg", lambda *a, **k: killed_pg.append(a))
+    bdb.remember_dock_cdp_port(9333)
+    leftover = _FakeProc(
+        8400, ["agent-browser", "--cdp", "http://127.0.0.1:9333", "fill"])
+    lease.acquire("human")
+    interrupt_unregistered_dock_cli(
+        processes=[leftover], chromium_pid=9999, owner_daemon_pid=9998,
+    )
+    assert leftover.killed == 1
+    assert killed_pg == []
+
+
+def test_stop_reserved_calls_unregistered_interrupt(monkeypatch):
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli as real
+    from tools.browser_tool_supervisor_lease import stop_reserved_supervisors
+
+    called = []
+
+    def _spy(home=None, **kwargs):
+        called.append(home)
+        return real(home=home, processes=[], **kwargs)
+
+    monkeypatch.setattr(
+        "tools.browser_tool_session.interrupt_unregistered_dock_cli", _spy)
+    lease.acquire("human")
+    stop_reserved_supervisors()
+    assert called, "Take over did not interrupt unregistered dock CLIs"

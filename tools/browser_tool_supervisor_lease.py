@@ -217,6 +217,12 @@ def stop_reserved_supervisors(home: Optional[str] = None) -> None:
     Also kills leftover agent-browser / browser_exec CLI writers aimed at
     the dock — waiting those out is leftover keystrokes in the human's field.
 
+    Also PID-kills leftover *terminal-spawned* agent-browser / npx
+    agent-browser aimed at this dock (finding 77). Those never enter
+    ``_inflight_dock_cli``. Not a lease-gated terminal fence: Take over
+    drops a leftover writer; ``terminal()`` still runs the CLI. Never
+    tree-kill the shared Chromium or its owner daemon.
+
     Also drops leftover browser-use harness daemons that stay CDP-connected
     after the CLI returns. Those are a third leftover client; tree-kill is
     refused (the daemon may be a session leader).
@@ -270,6 +276,11 @@ def stop_reserved_supervisors(home: Optional[str] = None) -> None:
     try:
         from tools.browser_tool_session import interrupt_reserved_browser_cli
         interrupt_reserved_browser_cli(home=home)
+    except Exception:
+        pass
+    try:
+        from tools.browser_tool_session import interrupt_unregistered_dock_cli
+        interrupt_unregistered_dock_cli(home=home)
     except Exception:
         pass
     try:

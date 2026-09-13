@@ -970,6 +970,243 @@ def interrupt_reserved_browser_cli(home: Optional[str] = None) -> None:
             _bt.logger.debug("reserved browser CLI interrupt failed", exc_info=True)
 
 
+_NPX_LAUNCHERS = frozenset({"npx", "pnpx", "bunx"})
+
+
+def _token_basename_is_agent_browser(token: str) -> bool:
+    """True when this argv token *is* the agent-browser binary or package.
+
+    Token-match only — never ``\"agent-browser\" in cmdline``. A path
+    substring such as ``cat agent-browser.log`` or
+    ``chrome --user-data-dir=…/agent-browser`` is not an invocation.
+    """
+    raw = (token or "").strip().strip("\"'")
+    if not raw:
+        return False
+    name = Path(raw).name
+    pkg = name.split("@", 1)[0]
+    lower = pkg.lower()
+    if lower.endswith((".exe", ".cmd", ".bat")):
+        lower = Path(lower).stem.lower()
+    return lower == "agent-browser"
+
+
+def _is_agent_browser_invocation(tokens: List[str]) -> bool:
+    """True when argv launches agent-browser (direct binary or npx/pnpx/bunx)."""
+    if not tokens:
+        return False
+    argv0 = tokens[0]
+    if _token_basename_is_agent_browser(argv0):
+        return True
+    name0 = Path((argv0 or "").strip().strip("\"'")).name.lower()
+    if name0.endswith((".exe", ".cmd", ".bat")):
+        name0 = Path(name0).stem.lower()
+    if name0 not in _NPX_LAUNCHERS:
+        return False
+    for tok in tokens[1:]:
+        if not tok or str(tok).startswith("-"):
+            continue
+        return _token_basename_is_agent_browser(str(tok))
+    return False
+
+
+def _cdp_arg_from_argv(tokens: List[str]) -> Optional[str]:
+    """``--cdp VALUE`` / ``--cdp=VALUE``, or None. Does not guess ``--session``."""
+    for i, tok in enumerate(tokens):
+        if tok == "--cdp" and i + 1 < len(tokens):
+            return str(tokens[i + 1])
+        if isinstance(tok, str) and tok.startswith("--cdp="):
+            return tok.split("=", 1)[1]
+    return None
+
+
+def _unregistered_cli_aims_at_dock(
+    tokens: List[str],
+    environ: Optional[Dict[str, str]],
+    profile: Optional[Path],
+    dock_port: Optional[int],
+) -> bool:
+    """True when this leftover CLI is aimed at *this* profile's dock jar.
+
+    Explicit ``--cdp`` wins: another loopback Chrome, a LAN endpoint, or a
+    cloud URL is not the dock even if ``AGENT_BROWSER_PROFILE`` is pinned.
+    ``--session`` without ``--cdp`` and without the env pin stays unknown.
+    """
+    cdp = _cdp_arg_from_argv(tokens)
+    if cdp:
+        if _cdp_url_is_bot_desktop_browser(cdp):
+            return True
+        port = _loopback_cdp_port(cdp)
+        return dock_port is not None and port == dock_port
+    pinned = ((environ or {}).get("AGENT_BROWSER_PROFILE") or "").strip()
+    if not pinned or profile is None:
+        return False
+    try:
+        from tools.bot_desktop.browser import _paths_same_user_data_dir
+        return _paths_same_user_data_dir(pinned, str(profile))
+    except Exception:
+        return False
+
+
+def _singleton_lock_pid(user_data_dir: str) -> Optional[int]:
+    try:
+        target = os.readlink(os.path.join(user_data_dir, "SingletonLock"))
+    except OSError:
+        return None
+    _host, _, pid_text = target.rpartition("-")
+    if not pid_text.isdigit():
+        return None
+    pid = int(pid_text)
+    return pid if pid > 1 else None
+
+
+def _proc_ppid(pid: int) -> Optional[int]:
+    try:
+        with open(f"/proc/{pid}/status", encoding="utf-8") as fh:
+            ppid = next((int(line.split()[1]) for line in fh if line.startswith("PPid:")), 0)
+    except (OSError, ValueError):
+        return None
+    return ppid if ppid > 1 else None
+
+
+def _inflight_dock_cli_pids() -> set:
+    pids: set = set()
+    with _inflight_dock_cli_lock:
+        for entry in _inflight_dock_cli:
+            proc = entry.get("proc")
+            pid = getattr(proc, "pid", None)
+            if type(pid) is int and pid > 1:
+                pids.add(pid)
+    return pids
+
+
+def _live_scan_unregistered_dock_cli_allowed() -> bool:
+    """Pytest must not process_iter the host — tests inject ``processes=``.
+
+    ``lease.acquire(human)`` already runs ``stop_reserved_supervisors``. A
+    remembered dock port of 9333 in a fence test would otherwise SIGKILL a
+    developer's leftover ``agent-browser --cdp …:9333``.
+    """
+    return not os.environ.get("PYTEST_CURRENT_TEST")
+
+
+def interrupt_unregistered_dock_cli(
+    home: Optional[str] = None,
+    *,
+    processes=None,
+    chromium_pid: Optional[int] = None,
+    owner_daemon_pid: Optional[int] = None,
+) -> int:
+    """PID-only SIGKILL leftover terminal-spawned agent-browser aimed at the dock.
+
+    Finding 42 only tracks Hermes-spawned CLIs (``_spawn_and_collect`` /
+    ``browser_exec``). ``terminal()`` ``agent-browser`` / ``npx agent-browser``
+    never enters ``_inflight_dock_cli``, so Take over would wait those
+    writers out — leftover *action* in the field the human is typing into,
+    the same class as leftover ``ws.send``. This is not a lease-gated
+    terminal fence: ``terminal()`` still runs the CLI; Take over drops a
+    dock-aimed leftover.
+
+    Never ``killpg`` / tree-kill. Skip the shared Chromium and the daemon
+    that spawned it (finding 40). Skip already-registered inflight PIDs
+    (they already got the finding-42 SIGINT). Other Chrome ``--cdp 9222``,
+    LAN CDP, and a sibling profile's jar stay up.
+    """
+    from hermes_constants import hermes_home_key, reset_hermes_home_override, set_hermes_home_override
+    from tools.bot_desktop import browser as _bd_browser
+    from tools.bot_desktop import lease as _bd_lease
+
+    token = None
+    killed = 0
+    try:
+        if home:
+            token = set_hermes_home_override(home)
+        try:
+            _bd_browser.persist_live_dock_cdp_port()
+        except Exception:
+            pass
+        if not _bd_lease.human_holds():
+            return 0
+        try:
+            profile = _bd_browser.profile_dir()
+        except Exception:
+            profile = None
+        dock_port = None
+        try:
+            if profile is not None:
+                dock_port = _bd_browser.running_instance_cdp_port(str(profile))
+        except Exception:
+            dock_port = None
+        if dock_port is None:
+            try:
+                dock_port = _bd_browser.last_known_dock_cdp_port()
+            except Exception:
+                dock_port = None
+        if dock_port is None:
+            dock_port = _last_dock_cdp_port.get(hermes_home_key())
+        if chromium_pid is None and profile is not None:
+            chromium_pid = _singleton_lock_pid(str(profile))
+        if owner_daemon_pid is None and type(chromium_pid) is int and chromium_pid > 1:
+            try:
+                if _bd_browser._launched_by_session(chromium_pid):
+                    owner_daemon_pid = _proc_ppid(chromium_pid)
+            except Exception:
+                owner_daemon_pid = None
+        skip = {os.getpid(), os.getppid()}
+        if type(chromium_pid) is int and chromium_pid > 1:
+            skip.add(chromium_pid)
+        if type(owner_daemon_pid) is int and owner_daemon_pid > 1:
+            skip.add(owner_daemon_pid)
+        skip |= _inflight_dock_cli_pids()
+        if processes is None:
+            if not _live_scan_unregistered_dock_cli_allowed():
+                return 0
+            try:
+                import psutil
+                processes = list(psutil.process_iter(attrs=["pid"]))
+            except Exception:
+                return 0
+        for proc in processes:
+            try:
+                pid = int(getattr(proc, "pid", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            if pid <= 1 or pid in skip:
+                continue
+            try:
+                raw_cmd = proc.cmdline() if callable(getattr(proc, "cmdline", None)) else None
+            except Exception:
+                raw_cmd = None
+            if not raw_cmd:
+                continue
+            tokens = [str(t) for t in raw_cmd]
+            if not _is_agent_browser_invocation(tokens):
+                continue
+            try:
+                environ = proc.environ() if callable(getattr(proc, "environ", None)) else {}
+            except Exception:
+                environ = {}
+            if not _unregistered_cli_aims_at_dock(tokens, environ or {}, profile, dock_port):
+                continue
+            try:
+                killer = getattr(proc, "kill", None)
+                if callable(killer):
+                    killer()
+                else:
+                    os.kill(pid, signal.SIGKILL)
+                killed += 1
+            except (ProcessLookupError, PermissionError, OSError):
+                continue
+            except Exception:
+                _bt.logger.debug(
+                    "unregistered dock CLI interrupt failed pid=%s", pid, exc_info=True,
+                )
+        return killed
+    finally:
+        if token is not None:
+            reset_hermes_home_override(token)
+
+
 _HARNESS_NAME_RE = re.compile(r"\A[A-Za-z0-9_-]{1,64}\Z")
 _reserved_dock_harness_lock = threading.Lock()
 _reserved_dock_harness: list[dict] = []
