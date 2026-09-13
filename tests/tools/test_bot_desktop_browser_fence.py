@@ -2221,6 +2221,134 @@ def test_cdp_override_session_is_fenced_when_url_is_scheme_less_surviving_copy(m
     assert result.get("code") == "human_has_control"
 
 
+def test_ensure_supervisor_does_not_probe_leftover_override_on_cached_cloud(monkeypatch):
+    """Cached cloud skips the fence; supervisor attach used to prefer leftover connect."""
+    from tools import browser_tool as browser
+    from tools import browser_tool_cdp as cdp
+
+    token = _without_in_process_real_profile()
+    _live_real_profile_copy(monkeypatch)
+    cloud = "wss://cloud.example/devtools/browser/x"
+    prior = browser._active_sessions.get("review")
+    browser._active_sessions["review"] = {
+        "session_name": "cloud", "cdp_url": cloud, "features": {"local": False},
+    }
+    monkeypatch.setattr(cdp, "_get_cdp_override_raw", lambda: "127.0.0.1:9334")
+    probed: list = []
+
+    def probe(*_a, **_k):
+        probed.append("get")
+        raise AssertionError("leftover Chrome must not be probed while human holds")
+
+    started: list = []
+    monkeypatch.setattr("requests.get", probe)
+    monkeypatch.setattr(
+        "tools.browser_supervisor.SUPERVISOR_REGISTRY",
+        type("R", (), {"get_or_start": staticmethod(lambda **kw: started.append(kw.get("cdp_url")))})(),
+    )
+    lease.acquire("human-viewer")
+    try:
+        cdp._ensure_cdp_supervisor("review")
+    finally:
+        if prior is None:
+            browser._active_sessions.pop("review", None)
+        else:
+            browser._active_sessions["review"] = prior
+        _restore_in_process_real_profile(token)
+    assert probed == [], f"human holds the lease, yet leftover Chrome was probed: {probed}"
+    assert started == [cloud]
+
+
+def test_browser_click_cached_cloud_does_not_probe_leftover_override(monkeypatch):
+    """Cloud click must run; leftover ``/browser connect`` must not be discovered."""
+    from tools import browser_tool as browser
+    from tools import browser_tool_session as session
+
+    token = _without_in_process_real_profile()
+    _live_real_profile_copy(monkeypatch)
+    commands: list = []
+    cloud = "wss://cloud.example/devtools/browser/x"
+    info = {"session_name": "cloud", "cdp_url": cloud, "features": {"local": False}}
+    prior = browser._active_sessions.get("review")
+    browser._active_sessions["review"] = info
+    monkeypatch.setattr(browser, "_is_camofox_mode", lambda: False)
+    monkeypatch.setattr(browser, "_blocked_private_page_action", lambda *a: None)
+    monkeypatch.setattr(session, "_browser_command_preflight", lambda: {"browser_cmd": "agent-browser"})
+    monkeypatch.setattr(session, "_get_session_info", lambda *a: info)
+    monkeypatch.setattr(session._cdp, "_get_cdp_override_raw", lambda: "127.0.0.1:9334")
+    monkeypatch.setattr(session._cloud, "_get_browser_engine", lambda: "chrome")
+    monkeypatch.setattr(session._cloud, "_is_headed_mode", lambda: True)
+    probed: list = []
+
+    def probe(*_a, **_k):
+        probed.append("get")
+        raise AssertionError("leftover Chrome must not be probed while human holds")
+
+    monkeypatch.setattr("requests.get", probe)
+    monkeypatch.setattr("tools.browser_supervisor.SUPERVISOR_REGISTRY",
+                        type("R", (), {"get_or_start": staticmethod(lambda **_k: None)})())
+
+    def spawn(*args):
+        commands.append(args[2])
+        return {"success": True, "data": {}}
+
+    monkeypatch.setattr(session, "_spawn_and_collect", spawn)
+    lease.acquire("human-viewer")
+    try:
+        result = json.loads(browser.browser_click("e1", task_id="review"))
+    finally:
+        if prior is None:
+            browser._active_sessions.pop("review", None)
+        else:
+            browser._active_sessions["review"] = prior
+        _restore_in_process_real_profile(token)
+    assert probed == [], f"human holds the lease, yet leftover Chrome was probed: {probed}"
+    assert commands, f"cached cloud click was refused as if it were leftover Chrome: {result}"
+    assert result.get("success") is True
+
+
+def test_browser_exec_cached_cloud_does_not_discover_leftover_override(monkeypatch):
+    """Post-skip ``_get_cdp_override`` used to ``/json/version`` leftover connect."""
+    from tools import browser_tool as browser
+
+    token = _without_in_process_real_profile()
+    _live_real_profile_copy(monkeypatch)
+    cloud = "wss://cloud.example/devtools/browser/x"
+    key = bu_cli._backend_cache_key("review", "")
+    prior = browser._active_sessions.get(key)
+    browser._active_sessions[key] = {
+        "session_name": "cloud", "cdp_url": cloud, "features": {"local": False},
+    }
+    monkeypatch.setattr(session_mod._cdp, "_get_cdp_override_raw", lambda: "127.0.0.1:9334")
+    monkeypatch.setattr(session_mod._cloud, "_get_cloud_provider", lambda: object())
+    monkeypatch.setattr(bu_cli, "_find_cli", lambda: ["/usr/bin/browser-use"])
+    monkeypatch.setattr(bu_cli, "_attach_vault_supervisor", lambda *a, **k: None)
+    probed: list = []
+
+    def probe(*_a, **_k):
+        probed.append("get")
+        raise AssertionError("leftover Chrome must not be probed while human holds")
+
+    monkeypatch.setattr("requests.get", probe)
+    ran: list = []
+    monkeypatch.setattr(
+        bu_cli, "_run_cli_killing_process_group",
+        lambda *a, **k: ran.append("cli") or subprocess.CompletedProcess(["browser-use"], 0, "ok\n", ""),
+    )
+    lease.acquire("human-viewer")
+    try:
+        result = json.loads(bu_cli.browser_exec("print(1)", task_id="review"))
+    finally:
+        if prior is None:
+            browser._active_sessions.pop(key, None)
+        else:
+            browser._active_sessions[key] = prior
+        _restore_in_process_real_profile(token)
+    assert probed == [], f"human holds the lease, yet leftover Chrome was probed: {probed}"
+    assert ran, f"cached cloud exec was refused as leftover Chrome: {result}"
+    assert result.get("success") is True
+
+
 def _cloud_provider_that_fails():
     class Boom:
         name = "browserbase"

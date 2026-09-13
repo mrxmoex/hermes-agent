@@ -113,7 +113,15 @@ def _ensure_cdp_supervisor(task_id: str) -> None:
     snapshots just lack ``pending_dialogs`` / ``frame_tree``.
     """
     _bt = _origin()
-    cdp_url = _get_cdp_override()
+    # A cached cloud session skips the outer fence. Preferring the leftover
+    # ``/browser connect`` override here used to ``/json/version``-probe and
+    # attach a supervisor to this screen while a human held it.
+    try:
+        from tools.browser_tool_session import _shared_cdp_override_held_by_human
+        skip_override = _shared_cdp_override_held_by_human()
+    except Exception:
+        skip_override = False
+    cdp_url = "" if skip_override else _get_cdp_override()
     if not cdp_url:
         with _bt._cleanup_lock:
             session_info = _bt._active_sessions.get(task_id, {})

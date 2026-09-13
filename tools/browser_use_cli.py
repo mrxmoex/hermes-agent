@@ -436,12 +436,14 @@ def _resolve_backend_cdp(env: dict, task_id: Optional[str], session_name: str = 
         return None
     try:
         from tools.browser_tool_cloud import _get_cloud_provider
-        from tools.browser_tool_session import _get_session_info
+        from tools.browser_tool_session import _get_session_info, _shared_cdp_override_held_by_human
         from tools.browser_tool_cdp import _get_cdp_override
     except Exception as e:  # pragma: no cover — stubbed browser_tool in tests
         logger.debug("browser_tool backend resolution unavailable: %s", e)
         return None
-    override = _quiet(_get_cdp_override, "")
+    # Cached cloud skip + leftover ``/browser connect`` used to discover this
+    # screen's Chrome (``/json/version``) before the post-route re-admit.
+    override = "" if _shared_cdp_override_held_by_human() else _quiet(_get_cdp_override, "")
     if override:
         _set_cdp_env(env, override)
         return None

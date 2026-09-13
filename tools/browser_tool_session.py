@@ -266,9 +266,15 @@ def _create_cloud_session_or_fallback(task_id: str, provider) -> Dict[str, Any]:
 def _create_session_for_key(task_id: str, force_local: bool) -> Dict[str, Any]:
     """Fresh session for ``task_id`` (runs OUTSIDE the lock: cloud mode makes a network call).
     Precedence: CDP override > hybrid local sidecar (never real-profile) > cloud > local."""
-    cdp_override = _cdp._get_cdp_override()
-    if cdp_override and not force_local:
-        return _create_cdp_session(task_id, cdp_override)
+    if not force_local:
+        if _shared_cdp_override_held_by_human():
+            from tools.bot_desktop import lease as _bd_lease
+            raise _bd_lease.HumanHasControl(
+                "A human holds the bot's screen; refusing to attach to the shared local browser."
+            )
+        cdp_override = _cdp._get_cdp_override()
+        if cdp_override:
+            return _create_cdp_session(task_id, cdp_override)
     if force_local:
         return _create_local_session(task_id, allow_real_profile=False)
     provider = _cloud._get_cloud_provider()
@@ -863,6 +869,22 @@ def _shares_bot_desktop_browser(session_info: Dict[str, Any]) -> bool:
     if not isinstance(cdp_url, str) or not cdp_url:
         return False
     return cdp_url_is_running_instance(cdp_url) or _cdp_is_this_profile_real_profile(cdp_url)
+
+
+def _shared_cdp_override_held_by_human() -> bool:
+    """True when ``/browser connect`` points at this screen and a human holds it.
+
+    A cached cloud session makes ``_session_info_for_shared_browser_fence`` skip
+    (another browser). ``_ensure_cdp_supervisor`` / ``_get_cdp_override`` still
+    preferred the leftover override and probed or attached that Chromium.
+    """
+    raw = _cdp._get_cdp_override_raw()
+    if not raw:
+        return False
+    if not _shares_bot_desktop_browser({"cdp_url": raw}):
+        return False
+    from tools.bot_desktop import lease as _bd_lease
+    return _bd_lease.human_holds()
 
 
 def _cdp_loopback_port(url: str) -> Optional[int]:
