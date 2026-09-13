@@ -1620,14 +1620,54 @@ _RELATIVE_WRITE_DEST = r'(?:["\']?)(?!(?:/|~|\$))(?:\./)?[A-Za-z0-9._][^\s;&|<>"
 # are the same cwd. ``${PWD:0}`` / ``${PWD#}`` / ``${PWD-}`` are still
 # ``$PWD``. ``$(dirs)`` / ``$(dirs +0)`` / ``$(dirs -0)`` are ``$PWD`` on
 # a one-entry stack (``cd`` updates ``DIRSTACK[0]``; it does not push).
-# Require a path component — `> $PWD` writes a directory.
-_PWD_CMD = r'(?:(?:builtin|command)\s+)?pwd(?:\s+-[PL]+)*'
+# ``$(echo $PWD)`` / ``$(printf %s "$PWD")`` / ``$(printenv PWD)`` /
+# ``$(realpath $PWD)`` print the same path (finding 63). GNU
+# ``/bin/pwd --physical`` is ``pwd -P``. Require a path component —
+# `> $PWD` writes a directory.
+_PWD_CMD = (
+    r'(?:(?:(?:builtin|command)\s+)|(?:/(?:usr/)?bin/))?'
+    r'pwd(?:\s+(?:-[PL]+|--physical|--logical))*'
+)
+_CWD_RESOLVE_OPERAND_PWD = (
+    r'(?:\.|(?:["\']?)(?:\$PWD\b|\$\{PWD\})(?:["\']?))'
+)
 _CWD_RESOLVE_CMD = (
     r'(?:'
-    r'realpath(?:\s+-[esP]+)?\s+\.'
-    r'|readlink\s+(?:-[fe]+|--canonicalize(?:-existing|-missing)?)\s+\.'
+    r'realpath(?:\s+-[esP]+)?(?:\s+--)?\s+' + _CWD_RESOLVE_OPERAND_PWD +
+    r'|readlink\s+(?:-[fe]+|--canonicalize(?:-existing|-missing)?)(?:\s+--)?\s+'
+    + _CWD_RESOLVE_OPERAND_PWD +
     r')'
 )
+# ``$(echo TOKEN)`` / ``$(printf %s TOKEN)`` / backticks. One wrap is
+# enough — ``$(echo $(echo $PWD))`` is not a field-seen shape.
+_ECHO_BIN = r'(?:(?:builtin|command)\s+)?echo(?:\s+-[neE]+)*(?:\s+--)?'
+_PRINTF_BIN = (
+    r'(?:(?:builtin|command)\s+)?printf(?:\s+--)?\s+'
+    r'(?:["\']?)%s(?:\\n)?(?:["\']?)'
+)
+_PRINTENV_BIN = r'(?:(?:builtin|command)\s+)?printenv(?:\s+--)?'
+
+
+def _echo_printf_subst(inner: str, *, allow_quotes: bool = True) -> str:
+    """Command subst that prints *inner* via ``echo`` / ``printf``.
+
+    Tilde inners must stay unquoted (``$(echo '~+')`` is a literal name).
+    """
+    arg = r'(?:["\']?)' + inner + r'(?:["\']?)' if allow_quotes else inner
+    body = (
+        r'(?:'
+        + _ECHO_BIN + r'\s+' + arg +
+        r'|' + _PRINTF_BIN + r'\s+' + arg +
+        r')'
+    )
+    return r'(?:\$\(\s*' + body + r'\s*\)|`' + body + r'`)'
+
+
+def _token_or_printed(inner: str) -> str:
+    """*inner*, or one ``echo``/``printf`` wrap of *inner*."""
+    return r'(?:' + inner + r'|' + _echo_printf_subst(inner) + r')'
+
+
 # ``dirs -v`` prefixes an index; ``dirs -c`` clears. Separate ``-l``/``-p``
 # only — clustered ``-lp +N`` is ``invalid number`` in bash.
 _DIRS_BIN = r'(?:(?:builtin|command)\s+)?dirs'
@@ -1659,16 +1699,22 @@ _OLDPWD_PARAM = (
     r'|(?:-|:-)[^}]*'
     r')?\}'
 )
-_PWD_TOKEN = (
+_PWD_CORE = (
     r'(?:'
     + _PWD_PARAM +
     r'|\$PWD\b'
-    r'|\$\(\s*(?:' + _PWD_CMD + r'|' + _DIRS_PWD_CMD + r')\s*\)'
-    r'|`(?:' + _PWD_CMD + r'|' + _DIRS_PWD_CMD + r')`'
+    r'|\$\(\s*(?:'
+    + _PWD_CMD + r'|' + _DIRS_PWD_CMD + r'|' + _PRINTENV_BIN + r'\s+PWD\b'
+    r')\s*\)'
+    r'|`(?:'
+    + _PWD_CMD + r'|' + _DIRS_PWD_CMD + r'|' + _PRINTENV_BIN + r'\s+PWD\b'
+    r')`'
     r'|\$\(\s*' + _CWD_RESOLVE_CMD + r'\s*\)'
     r'|`' + _CWD_RESOLVE_CMD + r'`'
     r')'
 )
+_PWD_TOKEN = _token_or_printed(_PWD_CORE)
+_PWD_TILDE = r'~(?:\+0+|0+|-0+|\+)'
 # Unquoted ``~+`` / ``~+0`` / ``~00`` / ``~0`` / ``~-0`` are ``$PWD``
 # (``~+1`` / ``~-1`` are DIRSTACK). A one-entry stack's ``dirs -0`` is
 # PWD — ``echo > ~-0/lease.json`` with cwd in the tree forges the lease
@@ -1678,12 +1724,25 @@ _PWD_TOKEN = (
 _PWD_WRITE_DEST = (
     r'(?:'
     r'(?:["\']?)' + _PWD_TOKEN + r'(?:["\']?)'
-    r'|~(?:\+0+|0+|-0+|\+)'
+    r'|' + _PWD_TILDE +
+    r'|' + _echo_printf_subst(_PWD_TILDE, allow_quotes=False) +
     r')'
     r'/'
     r'(?:["\']?)'
     r'[^\s;&|<>"\']+'
     r'(?:["\']?)'
+)
+# ``> $(echo $PWD/lease.json)`` — the filename lives *inside* the subst,
+# so there is no ``TOKEN/file`` after the ``$()``. Do not take ``../``
+# (tree-root ``$(echo $PWD/../lease.json)`` writes ``~/.hermes``).
+_PWD_PRINTED_FILE = (
+    r'(?:["\']?)(?:\$PWD\b|' + _PWD_PARAM + r')(?:["\']?)'
+    r'(?:/\.)*/'
+    r'(?:["\']?)[A-Za-z0-9._][A-Za-z0-9._-]*'
+    r'(?:["\']?)'
+)
+_PWD_PRINTED_FILE_DEST = (
+    r'(?:["\']?)' + _echo_printf_subst(_PWD_PRINTED_FILE) + r'(?:["\']?)'
 )
 # `$OLDPWD/…` is the screen after a same-command chdir *into* it
 # (`cd ~/.hermes/bot-desktop && cd /tmp && > $OLDPWD/lease.json`), or
@@ -1693,17 +1752,46 @@ _PWD_WRITE_DEST = (
 # not the screen — and stays unflagged. ``~-0`` is ``dirs -0`` (PWD on
 # a one-entry stack; stack bottom after ``pushd``), not OLDPWD — it
 # lives on ``_PWD_WRITE_DEST``.
+_CWD_RESOLVE_OPERAND_OLDPWD = (
+    r'(?:["\']?)(?:\$OLDPWD\b|\$\{OLDPWD\})(?:["\']?)'
+)
+_OLDPWD_RESOLVE_CMD = (
+    r'(?:'
+    r'realpath(?:\s+-[esP]+)?(?:\s+--)?\s+' + _CWD_RESOLVE_OPERAND_OLDPWD +
+    r'|readlink\s+(?:-[fe]+|--canonicalize(?:-existing|-missing)?)(?:\s+--)?\s+'
+    + _CWD_RESOLVE_OPERAND_OLDPWD +
+    r')'
+)
+_OLDPWD_CORE = (
+    r'(?:'
+    + _OLDPWD_PARAM +
+    r'|\$OLDPWD\b'
+    r'|\$\(\s*' + _PRINTENV_BIN + r'\s+OLDPWD\b\s*\)'
+    r'|`' + _PRINTENV_BIN + r'\s+OLDPWD\b`'
+    r'|\$\(\s*' + _OLDPWD_RESOLVE_CMD + r'\s*\)'
+    r'|`' + _OLDPWD_RESOLVE_CMD + r'`'
+    r')'
+)
+_OLDPWD_TOKEN = _token_or_printed(_OLDPWD_CORE)
 _OLDPWD_WRITE_DEST = (
     r'(?:'
-    r'(?:["\']?)'
-    r'(?:' + _OLDPWD_PARAM + r'|\$OLDPWD\b)'
-    r'(?:["\']?)'
+    r'(?:["\']?)' + _OLDPWD_TOKEN + r'(?:["\']?)'
     r'|~-'
+    r'|' + _echo_printf_subst(r'~-', allow_quotes=False) +
     r')'
     r'/'
     r'(?:["\']?)'
     r'[^\s;&|<>"\']+'
     r'(?:["\']?)'
+)
+_OLDPWD_PRINTED_FILE = (
+    r'(?:["\']?)(?:\$OLDPWD\b|' + _OLDPWD_PARAM + r')(?:["\']?)'
+    r'(?:/\.)*/'
+    r'(?:["\']?)[A-Za-z0-9._][A-Za-z0-9._-]*'
+    r'(?:["\']?)'
+)
+_OLDPWD_PRINTED_FILE_DEST = (
+    r'(?:["\']?)' + _echo_printf_subst(_OLDPWD_PRINTED_FILE) + r'(?:["\']?)'
 )
 # Bash ``~N`` / ``~+N`` / ``~-N`` (N ≥ 1) are DIRSTACK (unquoted only).
 # After ``cd ~/.hermes/bot-desktop && pushd /tmp``, ``~1`` / ``~+1`` /
@@ -1711,15 +1799,17 @@ _OLDPWD_WRITE_DEST = (
 # not push DIRSTACK — only ``pushd``/``popd``. Quotes suppress tilde
 # expansion; single quotes also suppress ``$(dirs)``. Leading zeros:
 # ``~01`` == ``~1``. ``~-0`` is PWD, not this class.
-_DIRSTACK_WRITE_DEST = (
-    r'(?:'
-    r'~(?:\+0*[1-9][0-9]*|0*[1-9][0-9]*|-0*[1-9][0-9]*)'
-    r'|(?:["\']?)'
+_DIRSTACK_TILDE = r'~(?:\+0*[1-9][0-9]*|0*[1-9][0-9]*|-0*[1-9][0-9]*)'
+_DIRSTACK_CORE = (
     r'(?:'
     r'\$\(\s*' + _DIRS_STACK_CMD + r'\s*\)'
     r'|`' + _DIRS_STACK_CMD + r'`'
     r')'
-    r'(?:["\']?)'
+)
+_DIRSTACK_WRITE_DEST = (
+    r'(?:'
+    r'(?:' + _DIRSTACK_TILDE + r'|' + _echo_printf_subst(_DIRSTACK_TILDE, allow_quotes=False) + r')'
+    r'|(?:["\']?)' + _token_or_printed(_DIRSTACK_CORE) + r'(?:["\']?)'
     r')'
     r'/'
     r'(?:["\']?)'
@@ -1779,26 +1869,28 @@ def _pwd_parent_token(levels: int) -> str:
     strip = r'\$\{PWD%(?:/\*){' + str(levels) + r'}\}'
     dirname_cmd = _dirname_chain(r'(?:\$PWD\b|\$\{PWD\})', levels)
     body = dirname_cmd + r'|' + _parent_resolve_cmd(levels) + r'|' + _cd_parent_pwd_cmd(levels)
-    return (
+    core = (
         r'(?:'
         + strip +
         r'|\$\(\s*(?:' + body + r')\s*\)'
         r'|`(?:' + body + r')`'
         r')'
     )
+    return _token_or_printed(core)
 
 
 def _oldpwd_parent_token(levels: int) -> str:
     """Dest token that expands to *levels*-up from ``$OLDPWD``."""
     strip = r'\$\{OLDPWD%(?:/\*){' + str(levels) + r'}\}'
     dirname_cmd = _dirname_chain(r'(?:\$OLDPWD\b|\$\{OLDPWD\})', levels)
-    return (
+    core = (
         r'(?:'
         + strip +
         r'|\$\(\s*(?:' + dirname_cmd + r')\s*\)'
         r'|`(?:' + dirname_cmd + r')`'
         r')'
     )
+    return _token_or_printed(core)
 
 
 def _parent_write_dest(token: str) -> str:
@@ -1892,9 +1984,11 @@ def _bot_desktop_cwd_write_re(dest: str) -> re.Pattern:
 
 
 _RELATIVE_BOT_DESKTOP_WRITE_RE = _bot_desktop_cwd_write_re(
-    rf'(?:{_RELATIVE_WRITE_DEST}|{_PWD_WRITE_DEST})'
+    rf'(?:{_RELATIVE_WRITE_DEST}|{_PWD_WRITE_DEST}|{_PWD_PRINTED_FILE_DEST})'
 )
-_OLDPWD_BOT_DESKTOP_WRITE_RE = _bot_desktop_cwd_write_re(_OLDPWD_WRITE_DEST)
+_OLDPWD_BOT_DESKTOP_WRITE_RE = _bot_desktop_cwd_write_re(
+    rf'(?:{_OLDPWD_WRITE_DEST}|{_OLDPWD_PRINTED_FILE_DEST})'
+)
 _DIRSTACK_BOT_DESKTOP_WRITE_RE = _bot_desktop_cwd_write_re(_DIRSTACK_WRITE_DEST)
 _PWD_PARENT_WRITE_RES = [
     _bot_desktop_cwd_write_re(_parent_write_dest(_pwd_parent_token(n)))

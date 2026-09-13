@@ -1335,6 +1335,103 @@ class TestHermesBotDesktopWriteProtection:
             dangerous, key, desc = detect_dangerous_command(command, cwd=cwd)
             assert dangerous is False, (command, cwd)
 
+    def test_echo_printf_wrappers_around_pwd_dest(self):
+        """Finding 54 gated ``$PWD`` / ``$(pwd)`` / ``$(realpath .)``.
+        ``$(echo $PWD)`` / ``$(printf %s "$PWD")`` / ``$(printenv PWD)`` /
+        ``$(realpath $PWD)`` / ``$(echo $PWD/lease.json)`` print the
+        same path and auto-approved. ``$(echo ~+)`` / ``$(echo ~-)`` /
+        ``$(echo ~1)`` and ``$(echo ${PWD%/*})`` from a screen child
+        are the same class.
+        """
+        for command in (
+            "cd ~/.hermes/bot-desktop && echo '{\"holder\":\"agent\"}' > $(echo $PWD)/lease.json",
+            'cd ~/.hermes/bot-desktop && echo x > $(echo "$PWD")/lease.json',
+            "cd ~/.hermes/bot-desktop && echo x > $(echo -n $PWD)/lease.json",
+            "cd ~/.hermes/bot-desktop && echo x > $(echo ${PWD})/lease.json",
+            "cd ~/.hermes/bot-desktop && echo x > $(echo ${PWD:0})/lease.json",
+            "cd ~/.hermes/bot-desktop && echo x > $(printf %s \"$PWD\")/lease.json",
+            "cd ~/.hermes/bot-desktop && echo x > `echo $PWD`/lease.json",
+            "cd ~/.hermes/bot-desktop && echo x > $(printenv PWD)/lease.json",
+            "cd ~/.hermes/bot-desktop && echo x > $(printenv -- PWD)/lease.json",
+            "cd ~/.hermes/bot-desktop && echo x > $(realpath $PWD)/lease.json",
+            'cd ~/.hermes/bot-desktop && echo x > $(realpath -- "$PWD")/lease.json',
+            'cd ~/.hermes/bot-desktop && echo x > $(readlink -f "$PWD")/lease.json',
+            "cd ~/.hermes/bot-desktop && echo x > $(/bin/pwd --physical)/lease.json",
+            "cd ~/.hermes/bot-desktop && echo x > $(echo $PWD/lease.json)",
+            'cd ~/.hermes/bot-desktop && echo x > "$(echo $PWD/lease.json)"',
+            "cd ~/.hermes/bot-desktop && echo x > `echo $PWD/lease.json`",
+            "cd ~/.hermes/bot-desktop && echo x > $(printf %s \"$PWD/lease.json\")",
+            "cd ~/.hermes/bot-desktop && echo x | tee $(echo $PWD)/lease.json",
+            "cd ~/.hermes/bot-desktop && echo x > $(echo ~+)/lease.json",
+            "cd ~/.hermes/bot-desktop && echo x > $(echo ~0)/lease.json",
+            "cd ~/.hermes/bot-desktop && echo x > $(printf %s ~+)/lease.json",
+            "cd ~/.hermes/bot-desktop && cd /tmp && echo x > $(echo $OLDPWD)/lease.json",
+            "cd ~/.hermes/bot-desktop && cd /tmp && echo x > $(printf %s \"$OLDPWD\")/lease.json",
+            "cd ~/.hermes/bot-desktop && cd /tmp && echo x > `echo $OLDPWD`/lease.json",
+            "cd ~/.hermes/bot-desktop && cd /tmp && echo x > $(printenv OLDPWD)/lease.json",
+            "cd ~/.hermes/bot-desktop && cd /tmp && echo x > $(realpath $OLDPWD)/lease.json",
+            "cd ~/.hermes/bot-desktop && cd /tmp && echo x > $(echo $OLDPWD/lease.json)",
+            "cd ~/.hermes/bot-desktop && cd /tmp && echo x > $(echo ~-)/lease.json",
+            "cd ~/.hermes/bot-desktop && pushd /tmp && echo x > $(echo ~1)/lease.json",
+            "cd ~/.hermes/bot-desktop && pushd /tmp && echo x > $(echo ~+1)/lease.json",
+            "cd ~/.hermes/bot-desktop/browser-profile && echo x > $(echo ${PWD%/*})/lease.json",
+            "cd ~/.hermes/bot-desktop/browser-profile && echo x > $(printf %s \"${PWD%/*}\")/lease.json",
+            "cd ~/.hermes/bot-desktop/browser-profile/Default && echo x > $(echo ${PWD%/*/*})/lease.json",
+        ):
+            dangerous, key, desc = detect_dangerous_command(command)
+            assert dangerous is True, command
+            assert key is not None, command
+
+        cwd = os.path.expanduser("~/.hermes/bot-desktop")
+        for command in (
+            'echo \'{"holder":"agent"}\' > $(echo $PWD)/lease.json',
+            "echo x > $(printf %s \"$PWD\")/lease.json",
+            "echo x > $(printenv PWD)/lease.json",
+            "echo x > $(realpath $PWD)/lease.json",
+            "echo x > $(echo $PWD/lease.json)",
+            "echo x > $(echo ~+)/lease.json",
+            "dd of=$(echo $PWD)/lease.json",
+            "cp /tmp/e $(echo $PWD)/lease.json",
+            "cd /tmp && echo x > $(echo $OLDPWD)/lease.json",
+            "cd /tmp && echo x > $(echo ~-)/lease.json",
+            "pushd /tmp && echo x > $(echo ~1)/lease.json",
+        ):
+            dangerous, key, desc = detect_dangerous_command(command, cwd=cwd)
+            assert dangerous is True, command
+            assert key is not None, command
+
+        profile = "~/.hermes/bot-desktop/browser-profile"
+        dangerous, key, desc = detect_dangerous_command(
+            "echo x > $(echo ${PWD%/*})/lease.json", cwd=profile,
+        )
+        assert dangerous is True
+        dangerous, key, desc = detect_dangerous_command(
+            "echo x > $(echo ${PWD%/*/*})/lease.json",
+            cwd="~/.hermes/bot-desktop/browser-profile/Default",
+        )
+        assert dangerous is True
+
+        for cwd, command in (
+            (None, "echo x > $(echo $PWD)/lease.json"),
+            ("/tmp", "echo x > $(echo $PWD)/lease.json"),
+            ("~/.hermes/bot-desktop-backup", "echo x > $(echo $PWD)/lease.json"),
+            ("~/.hermes/bot-desktop", "cat $(echo $PWD)/lease.json"),
+            ("~/.hermes/bot-desktop", "echo x > $(echo $HOME)/lease.json"),
+            ("~/.hermes/bot-desktop", "echo x > $(echo /tmp)/lease.json"),
+            ("~/.hermes/bot-desktop", "echo x > $(echo $PWD/../lease.json)"),
+            ("~/.hermes/bot-desktop", "echo x > $(echo $OLDPWD)/lease.json"),
+            ("~/.hermes/bot-desktop", "echo x > $(echo ~-)/lease.json"),
+            ("~/.hermes/bot-desktop", "echo x > $(echo ~1)/lease.json"),
+            ("~/.hermes/bot-desktop", "echo x > '$(echo ~+)/lease.json'"),
+            ("~/.hermes/bot-desktop", "cd /tmp && echo x > $(echo ~1)/lease.json"),
+            ("~/.hermes/bot-desktop", "env -C /tmp echo x > $(echo $OLDPWD)/lease.json"),
+            ("~/.hermes/bot-desktop", "echo x > $(echo ${PWD%/*})/lease.json"),
+            ("~/.hermes/bot-desktop/browser-profile", "echo x > $(echo ${PWD%/*/*})/lease.json"),
+            ("/tmp", "echo x > $(echo $PWD)/lease.json"),
+        ):
+            dangerous, key, desc = detect_dangerous_command(command, cwd=cwd)
+            assert dangerous is False, (command, cwd)
+
     def test_delete_or_move_away_of_lease_requires_approval(self):
         """Missing lease.json fail-opens to agent hold; auto-approve must not
         drop a human's hold the way ``echo > lease.json`` forges one."""
