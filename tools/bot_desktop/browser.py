@@ -103,27 +103,32 @@ def _chromium_cmdline_tokens(pid: int) -> list[str]:
 
 
 def _chromium_switch_value(tokens: list[str], name: str) -> Optional[str]:
-    """``--name=value`` or ``--name value``. Chromium accepts both.
+    """``--name=value`` / ``--name value`` and the single-dash forms.
 
     Equals is what the dock writes. A human or wrapper can still launch
-    the same jar with the spaced form; recover / configured-listen then
-    missed ``user-data-dir`` and leftover identity treated the jar as
-    another Chrome. A following flag is not a value.
+    the same jar with the spaced form or ``-user-data-dir``; recover /
+    configured-listen then missed the jar (admit ``None`` → leftover
+    HTTP). A following flag is not a value.
 
-    Chromium's CommandLine keeps the *last* value when a switch repeats.
-    First-wins treated ``--user-data-dir=/scratch --user-data-dir=<dock>``
-    as another Chrome (admit ``None`` → leftover HTTP).
+    Chromium's CommandLine keeps the *last* value when a switch repeats
+    and stops at ``--``. First-wins / double-dash-only / scanning past
+    the terminator treated a live dock as another Chrome.
     """
-    key = f"--{name}"
-    prefix = key + "="
+    keys = (f"--{name}", f"-{name}")
     found: Optional[str] = None
     i = 0
     n = len(tokens)
     while i < n:
         raw = tokens[i] if isinstance(tokens[i], str) else str(tokens[i])
-        if raw.startswith(prefix):
-            found = raw.split("=", 1)[1] or None
-        elif raw == key:
+        if raw == "--":
+            break
+        for key in keys:
+            prefix = key + "="
+            if raw.startswith(prefix):
+                found = raw.split("=", 1)[1] or None
+                break
+            if raw != key:
+                continue
             if i + 1 < n:
                 nxt = tokens[i + 1]
                 nxt = nxt if isinstance(nxt, str) else str(nxt)
@@ -134,6 +139,7 @@ def _chromium_switch_value(tokens: list[str], name: str) -> Optional[str]:
                     i += 1
             else:
                 found = None
+            break
         i += 1
     return found
 
