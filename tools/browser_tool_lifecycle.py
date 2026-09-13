@@ -606,8 +606,11 @@ def cleanup_browser(task_id: Optional[str] = None, *, force: bool = False) -> No
     """Clean up browser session(s) for a task: a bare task id reaps BOTH the primary
     session and any hybrid local sidecar; a ``::local`` key reaps only that one.
 
-    ``force`` is process-exit only: a human lease otherwise keeps the shared
-    Chromium (the dock Browser's cookie jar) alive.
+    ``force`` is process-exit / connect-swap: it still must not tree-kill the
+    Chromium a human is typing into. ``_force_reap_browser_session`` already
+    defers that jar; ``cleanup_all_browsers`` used to pass ``force=True`` and
+    skip the guard, so ``/browser connect`` and gateway shutdown SIGTERM'd
+    the dock Browser mid-login.
     """
     if task_id is None:
         task_id = "default"
@@ -696,13 +699,15 @@ def _force_reap_browser_session(task_id: str) -> None:
 def _cleanup_single_browser_session(task_id: str, *, force: bool = False) -> None:
     """Reap a single browser session by its exact session key.
 
-    ``force`` is process-exit: otherwise a human lease keeps the shared
-    Chromium. The polite ``close`` is already fenced; without this guard the
-    unconditional ``_release_session_resources`` tail still tree-killed it.
+    ``force`` skips the polite ``close`` on process-exit, but a human lease
+    still keeps the shared Chromium. The command fence already refuses
+    ``close``; without this guard the ``_release_session_resources`` tail
+    (and ``cleanup_all_browsers``'s unconditional ``force=True``) still
+    tree-killed the dock Browser.
     """
     with _bt._cleanup_lock:
         reserved = _bt._active_sessions.get(task_id)
-    if not force and reserved and _session._local_browser_reserved_by_human(reserved):
+    if reserved and _session._local_browser_reserved_by_human(reserved):
         _bt.logger.info(
             "Deferring browser teardown for %s: a human holds the Bot Desktop lease",
             task_id,

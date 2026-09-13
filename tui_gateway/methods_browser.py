@@ -97,11 +97,39 @@ def _connect_local_default(port: int, system: str, announce) -> str | None:
     return None
 
 
+def _cdp_swap_blocked_by_human() -> str | None:
+    """Refuse connect/disconnect while a human holds this profile's Bot Desktop.
+
+    Both RPCs call ``cleanup_all_browsers()`` (historically ``force=True``)
+    around the CDP override swap. That tree-kills the shared Chromium a
+    human is mid-login in. Even after teardown defers the reserved jar,
+    swapping the process CDP URL would launch or adopt another Chrome
+    against the same profile. Hand back first.
+    """
+    try:
+        from tools.bot_desktop import lease as _bd_lease
+    except ImportError:
+        return None
+    try:
+        if _bd_lease.human_holds():
+            return (
+                "A human holds the Bot Desktop. Hand back before connecting "
+                "or disconnecting another browser — the swap would force-kill "
+                "the Chromium they are using."
+            )
+    except Exception:
+        return None
+    return None
+
+
 def _browser_connect(rid, params: dict) -> dict:
     import platform
     from hermes_cli.browser_connect import DEFAULT_BROWSER_CDP_URL
     from tools.browser_tool_lifecycle import cleanup_all_browsers
     from urllib.parse import urlparse
+    blocked = _cdp_swap_blocked_by_human()
+    if blocked:
+        return _err(rid, 5031, blocked)
     raw_url = params.get("url")
     if raw_url is not None and not isinstance(raw_url, str):
         return _err(rid, 4015, f"browser url must be a string, got {type(raw_url).__name__}")
@@ -163,6 +191,9 @@ def _browser_connect(rid, params: dict) -> dict:
 
 
 def _browser_disconnect(rid) -> dict:
+    blocked = _cdp_swap_blocked_by_human()
+    if blocked:
+        return _err(rid, 5031, blocked)
     # Reap, drop the override, reap again — same swap window as ``_browser_connect``.
     def reap() -> None:
         with contextlib.suppress(Exception):

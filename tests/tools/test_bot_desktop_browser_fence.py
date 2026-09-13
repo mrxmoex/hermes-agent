@@ -1363,3 +1363,63 @@ def test_unstamped_cloud_leftover_eval_is_not_the_dock_jar(monkeypatch):
     finally:
         bt._active_sessions.clear()
         bt._active_sessions.update(saved)
+
+
+def test_force_cleanup_defers_shared_chromium_while_human_holds(monkeypatch):
+    """cleanup_all_browsers used force=True and skipped the human-hold deferral.
+
+    /browser connect and gateway shutdown then tree-killed the dock Chromium
+    a human was typing into. Force-reap already deferred; the regular
+    force path must match.
+    """
+    from tools import browser_tool as bt
+    from tools import browser_tool_lifecycle as life
+
+    released: list = []
+    saved = bt._active_sessions.copy()
+    try:
+        bt._active_sessions["review"] = {
+            "session_name": "h_review",
+            "features": {"local": True},
+            "bb_session_id": None,
+        }
+        monkeypatch.setattr(
+            life, "_release_session_resources", lambda *a, **k: released.append("release")
+        )
+        monkeypatch.setattr(
+            "tools.browser_tool_session._run_browser_command",
+            lambda *a, **k: released.append("close"),
+        )
+        lease.acquire("human-viewer")
+        life.cleanup_browser("review", force=True)
+        life.cleanup_all_browsers()
+        assert "review" in bt._active_sessions
+        assert released == []
+    finally:
+        bt._active_sessions.clear()
+        bt._active_sessions.update(saved)
+
+
+def test_force_cleanup_still_reaps_unrelated_cloud_session_while_human_holds(monkeypatch):
+    """A cloud session is another browser; force cleanup must still reap it."""
+    from tools import browser_tool as bt
+    from tools import browser_tool_lifecycle as life
+
+    saved = bt._active_sessions.copy()
+    try:
+        bt._active_sessions["cloud"] = {
+            "session_name": "bb",
+            "bb_session_id": None,
+            "features": {"local": False},
+        }
+        monkeypatch.setattr(
+            "tools.browser_tool_session._run_browser_command",
+            lambda *a, **k: {"success": True},
+        )
+        monkeypatch.setattr(life.os.path, "exists", lambda *_a, **_k: False)
+        lease.acquire("human-viewer")
+        life.cleanup_browser("cloud", force=True)
+        assert "cloud" not in bt._active_sessions
+    finally:
+        bt._active_sessions.clear()
+        bt._active_sessions.update(saved)
