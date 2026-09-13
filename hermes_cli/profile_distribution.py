@@ -35,6 +35,9 @@ DEFAULT_DIST_OWNED: Tuple[str, ...] = ("SOUL.md", "config.yaml", "mcp.json", "sk
 USER_OWNED_EXCLUDE: frozenset = frozenset({
     # Credentials & runtime secrets
     "auth.json", ".env",
+    # Bot Desktop runtime (cookie jar, lease.json, dock-cdp-port, Xauthority).
+    # Same tree export / --clone-all / backup / profile-import already refuse.
+    "bot-desktop",
     # Databases & runtime state
     "state.db", "state.db-shm", "state.db-wal",
     "hermes_state.db", "response_store.db",

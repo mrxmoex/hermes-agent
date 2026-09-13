@@ -464,9 +464,38 @@ class TestSecurity:
     def test_user_owned_exclude_covers_credentials(self):
         assert "auth.json" in USER_OWNED_EXCLUDE
         assert ".env" in USER_OWNED_EXCLUDE
+        assert "bot-desktop" in USER_OWNED_EXCLUDE
         assert "memories" in USER_OWNED_EXCLUDE
         assert "sessions" in USER_OWNED_EXCLUDE
         assert "local" in USER_OWNED_EXCLUDE
+
+    def test_install_does_not_import_bot_desktop_from_staging(self, profile_env):
+        """A live profile used as a local distribution source (legacy omitted
+        distribution_owned copies every top-level entry) must not ship the
+        screen's cookie jar or a human lease."""
+        staged = _make_staging_dir(profile_env, "src")
+        desktop = staged / "bot-desktop"
+        (desktop / "browser-profile" / "Default").mkdir(parents=True)
+        (desktop / "browser-profile" / "Default" / "Cookies").write_bytes(b"jar")
+        (desktop / "lease.json").write_text('{"holder":"human","epoch":9}\n')
+        (desktop / "dock-cdp-port").write_text("9333\n")
+
+        plan = install_distribution(str(staged), name="clean-screen")
+        assert not (plan.target_dir / "bot-desktop").exists()
+
+    def test_explicit_distribution_owned_cannot_ship_bot_desktop(self, profile_env):
+        """An allowlist that names bot-desktop/ is still user-owned runtime."""
+        mf = DistributionManifest(
+            name="owned-screen",
+            version="0.1.0",
+            distribution_owned=list(DEFAULT_DIST_OWNED) + ["bot-desktop"],
+        )
+        staged = _make_staging_dir(profile_env, "src", manifest=mf)
+        (staged / "bot-desktop").mkdir()
+        (staged / "bot-desktop" / "lease.json").write_text('{"holder":"human"}\n')
+
+        plan = install_distribution(str(staged), name="owned-screen")
+        assert not (plan.target_dir / "bot-desktop").exists()
 
     def test_install_does_not_import_credentials_from_staging(self, profile_env):
         """If an author accidentally ships auth.json or .env in their
