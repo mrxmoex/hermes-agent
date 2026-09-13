@@ -804,6 +804,26 @@ def test_vault_secret_eval_does_not_inject_after_attach_crossed_a_takeover(monke
     assert "WHAT-THE-HUMAN-TYPED" not in json.dumps(result)
 
 
+def test_vault_secret_eval_preserves_handoff_when_cdp_url_probe_remints(monkeypatch):
+    """get cdp-url remints; do not rewrite that as supervisor_required."""
+    from tools import browser_vault_tool as vault
+
+    monkeypatch.setattr(session_mod, "_get_session_info", lambda *a, **k: {
+        "session_name": "review", "cdp_url": None, "features": {"local": True}})
+    monkeypatch.setattr(
+        "tools.browser_supervisor.SUPERVISOR_REGISTRY",
+        type("R", (), {"get": staticmethod(lambda *_a: None)})(),
+    )
+    monkeypatch.setattr(session_mod, "_run_browser_command", lambda *a, **k: {
+        "success": False, "code": "human_has_control",
+        "error": "A human has control of this bot's screen.",
+    })
+    result = vault._eval_js_secret("review", "document.querySelector('input').value='s3cret-pw'")
+    assert result.get("code") == "human_has_control"
+    assert result.get("success") is not True
+    assert result.get("error_type") != "supervisor_required"
+
+
 def test_vault_secret_eval_keeps_caller_epoch(monkeypatch):
     """A write hop must not remint; the caller's ticket is the ownership epoch."""
     from tools import browser_vault_tool as vault

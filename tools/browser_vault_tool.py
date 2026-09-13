@@ -136,6 +136,9 @@ def _ensure_supervisor(task_id: str):
     from tools.browser_tool_session import _run_browser_command
 
     res = _run_browser_command(_last_session_key(task_id), "get", ["cdp-url"])
+    # Independently-fenced get remints; do not rewrite as "no supervisor".
+    if res.get("code") == "human_has_control":
+        return res
     cdp_url = str(((res or {}).get("data") or {}).get("cdpUrl") or "") if (res or {}).get("success") else ""
     if not cdp_url:
         return None
@@ -177,6 +180,8 @@ def _eval_js_secret(task_id: str, expression: str, *, admitted=None) -> Dict[str
     stole = _discard_if_lease_moved(admitted)
     if stole:
         return stole
+    if isinstance(supervisor, dict) and supervisor.get("code") == "human_has_control":
+        return supervisor
 
     if supervisor is None:
         return {
@@ -257,6 +262,8 @@ def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[str]:
             supervisor = None
         if supervisor is None:
             return None
+        if isinstance(supervisor, dict):
+            return supervisor
         focused = supervisor.focus_page(origin, accept=_TAB_PROBES.get(kind))
         return (origin or focused.get("url")) if focused.get("ok") else None
 
