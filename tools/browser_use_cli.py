@@ -643,8 +643,7 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     # Late import: browser_tool_session → lightpanda fallback → this module.
     from tools.browser_tool_session import (
         _admit_bot_desktop_browser,
-        _discard_if_lease_moved,
-        _discard_shared_browser_captures,
+        _lease_moved_after_payload,
         _shared_browser_fence,
     )
     # ``get cdp-url`` is already fenced; the harness then talks CDP directly
@@ -662,8 +661,8 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     if admitted is not None:
         env = desktop_env(env)
 
-    def _lease_moved_error():
-        discarded = _discard_if_lease_moved(admitted)
+    def _lease_moved_error(*, result=None):
+        discarded = _lease_moved_after_payload(admitted, result=result)
         if not discarded:
             return None
         return tool_error(
@@ -718,17 +717,18 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     try:
         proc = _run_cli_killing_process_group(cmd, code, env, timeout)
     except subprocess.TimeoutExpired:
+        moved = _lease_moved_error()
+        if moved:
+            return moved
         return tool_error(f"browser-use exec timed out after {timeout}s. The daemon may still be working; retry "
                           f"with a larger timeout_s (max {_MAX_TIMEOUT_S}), or split the work into several calls that "
                           "append to workspace files — anything already written to the workspace is preserved.")
     except OSError as e:
         return tool_error(f"Failed to launch browser-use CLI: {e}")
 
-    moved = _lease_moved_error()
+    leftover = _find_screenshot(proc.stdout, started)
+    moved = _lease_moved_error(result={"screenshot_path": leftover} if leftover else None)
     if moved:
-        leftover = _find_screenshot(proc.stdout, started)
-        if leftover:
-            _discard_shared_browser_captures(result={"screenshot_path": leftover})
         return moved
 
     result = {"success": proc.returncode == 0, "exit_code": proc.returncode, "output": proc.stdout}
@@ -741,13 +741,17 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
         stderr = stderr[:_STDERR_CAP_CHARS] + "\n… (stderr truncated)"
     if stderr:
         result["stderr"] = stderr
-    screenshot = _find_screenshot(proc.stdout, started)
+    screenshot = leftover
     if screenshot:
         result["screenshot_path"] = screenshot
         native = _native_screenshot_result(result, screenshot)
-        if native is not None:
-            return native
-    return tool_result(result)
+        payload = native if native is not None else tool_result(result)
+    else:
+        payload = tool_result(result)
+    moved = _lease_moved_error(result=result if screenshot else None)
+    if moved:
+        return moved
+    return payload
 
 
 _HEADER_BASE = (

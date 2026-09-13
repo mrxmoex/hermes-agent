@@ -1066,6 +1066,9 @@ def browser_console(clear: bool = False, expression: Optional[str] = None, task_
     }
     _lp._copy_fallback_warning(response, console_result)
     _merge_fallback_warning(response, errors_result)
+    stole = _session._lease_moved_after_payload(admitted)
+    if stole:
+        return _dumps(stole)
     return _dumps(response)
 
 
@@ -1278,9 +1281,19 @@ def browser_get_images(task_id: Optional[str] = None) -> str:
     raw_result = result.get("data", {}).get("result", "[]")
     try:
         images = json.loads(raw_result) if isinstance(raw_result, str) else raw_result
-        return _json_with_fallback({"success": True, "images": _snapshot._redact_browser_output(images), "count": len(images)}, result)
+        payload = _json_with_fallback(
+            {"success": True, "images": _snapshot._redact_browser_output(images), "count": len(images)},
+            result,
+        )
     except json.JSONDecodeError:
-        return _json_with_fallback({"success": True, "images": [], "count": 0, "warning": "Could not parse image data"}, result)
+        payload = _json_with_fallback(
+            {"success": True, "images": [], "count": 0, "warning": "Could not parse image data"},
+            result,
+        )
+    stole = _session._lease_moved_after_payload(admitted)
+    if stole:
+        return _dumps(stole)
+    return payload
 
 
 _LP_VISION_FALLBACK_REASON = "Lightpanda has no graphical renderer for screenshots; used Chrome for vision capture."

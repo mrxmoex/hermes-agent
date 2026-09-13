@@ -409,6 +409,81 @@ def test_browser_exec_reminted_screenshot_is_unlinked_from_this_profile_home(mon
     assert not shot.exists(), "harness screenshot left on disk after remint"
 
 
+def test_browser_exec_terminal_remint_after_screenshot_assembly(monkeypatch, tmp_path):
+    """A takeover while the PNG is being attached must not deliver the frame."""
+    shot = tmp_path / "HUMAN_PRIVATE_FRAME.png"
+    shot.write_bytes(b"\x89PNGHUMAN_PRIVATE_FRAME")
+
+    def run_ok(*_a, **_k):
+        return subprocess.CompletedProcess(["browser-use"], 0, f"{shot}\n", "")
+
+    def find_then_takeover(stdout, since):
+        lease.acquire("human-viewer")
+        lease.release("human-viewer")
+        return str(shot)
+
+    bu, _ = _wire_browser_exec(monkeypatch, run_cli=run_ok)
+    monkeypatch.setattr(bu_cli, "_find_screenshot", find_then_takeover)
+    monkeypatch.setattr(
+        "tools.vision_tools._should_use_native_vision_fast_path", lambda: True)
+    monkeypatch.setattr(
+        "tools.vision_tools._resize_image_for_vision",
+        lambda p, **kw: "data:image/png;base64,HUMAN_PRIVATE_FRAME",
+    )
+    raw = bu.browser_exec("print(capture_screenshot())", task_id="review")
+    text = raw if isinstance(raw, str) else json.dumps(raw)
+    parsed = json.loads(text) if isinstance(raw, str) else raw
+    assert "HUMAN_PRIVATE_FRAME" not in text
+    assert parsed.get("code") == "human_has_control"
+    assert parsed.get("success") is not True
+
+
+def test_browser_exec_terminal_remint_after_native_encode(monkeypatch, tmp_path):
+    """Encode is the last observation step; remint there still unlinks the PNG."""
+    from hermes_constants import get_hermes_home
+
+    shots = get_hermes_home() / "cache" / "screenshots"
+    shots.mkdir(parents=True, exist_ok=True)
+    shot = shots / "browser_screenshot_exec_encode.png"
+    shot.write_bytes(b"\x89PNGHUMAN_PRIVATE_FRAME")
+
+    def run_ok(*_a, **_k):
+        return subprocess.CompletedProcess(["browser-use"], 0, f"{shot}\n", "")
+
+    def encode_then_takeover(result, path):
+        lease.acquire("human-viewer")
+        lease.release("human-viewer")
+        return {
+            "_multimodal": True,
+            "text_summary": "HUMAN_PRIVATE_FRAME",
+            "content": [{"type": "text", "text": "HUMAN_PRIVATE_FRAME"}],
+        }
+
+    bu, _ = _wire_browser_exec(monkeypatch, run_cli=run_ok)
+    monkeypatch.setattr(bu_cli, "_native_screenshot_result", encode_then_takeover)
+    raw = bu.browser_exec("print(capture_screenshot())", task_id="review")
+    text = raw if isinstance(raw, str) else json.dumps(raw)
+    parsed = json.loads(text) if isinstance(raw, str) else raw
+    assert "HUMAN_PRIVATE_FRAME" not in text
+    assert parsed.get("code") == "human_has_control"
+    assert not shot.exists(), "encoded screenshot left on disk after terminal remint"
+
+
+def test_browser_exec_timeout_remints_instead_of_generic_timeout(monkeypatch):
+    """A takeover during a hung harness is wait_for_human, not a retryable timeout."""
+
+    def hang(*_a, **_k):
+        lease.acquire("human-viewer")
+        lease.release("human-viewer")
+        raise subprocess.TimeoutExpired(cmd=["browser-use"], timeout=1)
+
+    bu, _ = _wire_browser_exec(monkeypatch, run_cli=hang)
+    raw = bu.browser_exec("print(page_info())", task_id="review")
+    parsed = json.loads(raw) if isinstance(raw, str) else raw
+    assert parsed.get("code") == "human_has_control"
+    assert "timed out" not in (parsed.get("error") or "").lower()
+
+
 def test_browser_exec_lookup_miss_fails_closed_while_human_holds(monkeypatch):
     ran: list = []
     monkeypatch.setattr(
@@ -1450,6 +1525,31 @@ def test_browser_console_does_not_return_errors_from_a_later_epoch(monkeypatch):
     assert calls["n"] == 1, f"errors read ran after a completed takeover: {calls}"
 
 
+def test_browser_console_terminal_remint_after_assembly(monkeypatch):
+    """console+errors already finished; a remint while merging must not ship the log."""
+    browser, session = _wire(monkeypatch, [])
+    monkeypatch.setattr(session, "_run_browser_command", lambda *_a, **_k: {
+        "success": True,
+        "data": {
+            "messages": [{"type": "log", "text": "WHAT-THE-HUMAN-TYPED"}],
+            "errors": [],
+        },
+    })
+    monkeypatch.setattr(browser, "_blocked_private_page_content", lambda *_a: None)
+
+    def merge_then_takeover(response, _result):
+        lease.acquire("human-viewer")
+        lease.release("human-viewer")
+        return response
+
+    monkeypatch.setattr(browser._lp, "_copy_fallback_warning", merge_then_takeover)
+    raw = browser.browser_console(task_id="review")
+    text = raw if isinstance(raw, str) else json.dumps(raw)
+    parsed = json.loads(text)
+    assert "WHAT-THE-HUMAN-TYPED" not in text
+    assert parsed.get("code") == "human_has_control"
+
+
 def test_browser_navigate_is_fenced_while_human_controls(monkeypatch):
     commands: list = []
     browser, _ = _wire(monkeypatch, commands)
@@ -1611,6 +1711,29 @@ def test_browser_get_images_discards_payload_when_epoch_moves_after_eval(monkeyp
         return None
 
     monkeypatch.setattr(browser, "_blocked_private_page_content", steal)
+    result = json.loads(browser.browser_get_images(task_id="review"))
+    assert result.get("code") == "human_has_control"
+    assert result.get("success") is not True
+    assert "WHAT-THE-HUMAN-TYPED" not in json.dumps(result)
+
+
+def test_browser_get_images_terminal_remint_after_assembly(monkeypatch):
+    """Image JSON is built after the SSRF remint check; a later epoch must not ship it."""
+    browser, session = _wire(monkeypatch, [])
+    monkeypatch.setattr(session, "_run_browser_command", lambda *_a, **_k: {
+        "success": True,
+        "data": {"result": json.dumps([
+            {"src": "https://human.example/secret.png", "alt": "WHAT-THE-HUMAN-TYPED"},
+        ])},
+    })
+    monkeypatch.setattr(browser, "_blocked_private_page_content", lambda *_a: None)
+
+    def redact_then_takeover(images):
+        lease.acquire("human-viewer")
+        lease.release("human-viewer")
+        return images
+
+    monkeypatch.setattr(browser._snapshot, "_redact_browser_output", redact_then_takeover)
     result = json.loads(browser.browser_get_images(task_id="review"))
     assert result.get("code") == "human_has_control"
     assert result.get("success") is not True

@@ -782,6 +782,18 @@ def _discard_if_lease_moved(admitted) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _lease_moved_after_payload(admitted, *, result=None) -> Optional[Dict[str, Any]]:
+    """Terminal remint check after a shared-browser payload is assembled.
+
+    Mid-flight checks discard the run. Screenshot encode, console merge, and
+    image JSON must not ship if the epoch moved while that payload was built.
+    """
+    stole = _discard_if_lease_moved(admitted)
+    if stole:
+        _discard_shared_browser_captures(result=result)
+    return stole
+
+
 def _unlink_shared_capture(raw: str) -> None:
     """Unlink ``raw`` only when it resolves inside this profile's HERMES_HOME."""
     try:
