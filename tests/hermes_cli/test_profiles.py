@@ -9,6 +9,7 @@ import json
 import io
 import os
 import shutil
+import subprocess
 import sys
 import tarfile
 import types
@@ -204,6 +205,25 @@ class TestCreateProfile:
         assert (profile_dir / "cron").is_dir()
         assert not any((profile_dir / "cron").iterdir())
         assert yaml.safe_load((profile_dir / "config.yaml").read_text())["model"] == "test"
+
+    def test_clone_all_does_not_copy_bot_desktop_cookie_jar(self, profile_env):
+        """bot-desktop/ holds the screen's persistent Chromium profile (Cookies,
+        Login Data) plus launcher/lease/Xauthority. --clone-all must not fork
+        those live sessions into a sibling — same reason export drops the dir.
+        Named-source clone-all is the load-bearing case: default-only excludes
+        would still copy a named profile's jar.
+        """
+        source = create_profile("sourcebot", no_alias=True)
+        cookies = source / "bot-desktop" / "browser-profile" / "Default" / "Cookies"
+        cookies.parent.mkdir(parents=True)
+        cookies.write_bytes(b"LIVE-SESSION")
+        (source / "bot-desktop" / "lease.json").write_text('{"holder":"human"}')
+
+        dest = create_profile(
+            "clonebot", clone_from="sourcebot", clone_all=True, no_alias=True,
+        )
+        assert not (dest / "bot-desktop").exists()
+        assert cookies.read_bytes() == b"LIVE-SESSION"
 
 
 
@@ -767,6 +787,51 @@ class TestRenameProfile:
         assert "hermes.ssi_health" not in cfg["hosts"]
         assert cfg["hosts"]["hermes_heimdall"]["aiPeer"] == "ssi_health"
         assert cfg["hosts"]["hermes_heimdall"]["peerName"] == "user-peer"
+
+    @pytest.mark.linux_only
+    @pytest.mark.parametrize("op", ["delete", "rename"])
+    def test_delete_and_rename_stop_a_live_bot_desktop(self, profile_env, monkeypatch, op):
+        """The Bot Desktop launcher is not a gateway or serve backend. Delete
+        and rename must signal it before the profile directory vanishes or
+        changes name; otherwise Xvnc + Xfce keep the display, RFB socket, and
+        cookie jar live against a gone HERMES_HOME. A synthetic session-leader
+        sleep stands in for the launcher.
+        """
+        from tools.bot_desktop import runtime
+
+        monkeypatch.setattr(profiles, "_cleanup_gateway_service", lambda *_a, **_k: None)
+        monkeypatch.setattr(profiles, "check_alias_collision", lambda *_a, **_k: "skip")
+
+        profile_dir = create_profile("screenbot", no_alias=True)
+        desktop = profile_dir / "bot-desktop"
+        desktop.mkdir()
+        proc = subprocess.Popen(["sleep", "60"], start_new_session=True)
+        try:
+            born = runtime._create_time(proc.pid)
+            (desktop / "launcher.pid").write_text(f"{proc.pid} {born}", encoding="utf-8")
+            (desktop / "env").write_text("DISPLAY=:42\n", encoding="utf-8")
+            if op == "delete":
+                delete_profile("screenbot", yes=True)
+            else:
+                rename_profile("screenbot", "screenbot2")
+            assert proc.wait(timeout=10) != 0
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+
+    def test_bot_desktop_stop_failure_does_not_abort_delete(self, profile_env, monkeypatch):
+        """A wedged launcher must not block deleting the profile."""
+        monkeypatch.setattr(profiles, "_cleanup_gateway_service", lambda *_a, **_k: None)
+        monkeypatch.setattr("tools.bot_desktop.runtime.is_supported_host", lambda: True)
+
+        def _boom():
+            raise RuntimeError("launcher wedged")
+
+        monkeypatch.setattr("tools.bot_desktop.runtime.stop", _boom)
+        profile_dir = create_profile("screenbot", no_alias=True)
+        delete_profile("screenbot", yes=True)
+        assert not profile_dir.is_dir()
 
 
 # ===================================================================

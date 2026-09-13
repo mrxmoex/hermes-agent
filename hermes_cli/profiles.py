@@ -54,9 +54,14 @@ _CLONE_ALL_DEFAULT_EXCLUDE_ROOT: frozenset[str] = frozenset({
 # ``cron`` is scheduled work bound to the source profile and its origin channel: a clone
 # that inherits jobs.json runs every job twice (two gateways, same job ids, double spend,
 # duplicate deliveries) the moment its gateway starts. The empty dir is recreated below.
+# ``bot-desktop`` is the screen's live Chromium cookie jar (Cookies, Login Data) plus
+# launcher.pid / lease.json / Xauthority. A clone that inherits it shares the source's
+# web sessions and can adopt a stale launcher identity. Export already drops the directory;
+# the empty dir is NOT recreated — the screen mints a fresh one on first start.
 _CLONE_ALL_HISTORY_EXCLUDE_ROOT: frozenset[str] = frozenset({
     "state.db", "state.db-wal", "state.db-shm", "sessions", "backups", "state-snapshots", "checkpoints",
     "cron",
+    "bot-desktop",
 })
 
 # Marker written by `hermes profile create --no-skills`. When present at a profile root,
@@ -1075,6 +1080,32 @@ def _stop_profile_backends(canon: str, profile_dir: Path) -> None:
     print(f"✓ Stopped {len(pids)} profile backend process(es)")
 
 
+def _stop_bot_desktop(profile_dir: Path) -> None:
+    """Tear down this profile's Bot Desktop before delete/rename.
+
+    The launcher (Xvnc + Xfce + the dock Chromium) is not a gateway or a
+    ``serve``/``dashboard`` backend, so ``_stop_gateway_process`` and
+    ``_stop_profile_backends`` leave it running against a directory that is
+    about to vanish or change name. Call ``runtime.stop()`` directly —
+    ``display.stop`` refuses while a human holds the screen, and delete/rename
+    must still take the screen down. Failure is logged and never fatal: the
+    profile operation proceeds.
+    """
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.bot_desktop import runtime
+
+    if not runtime.is_supported_host():
+        return
+    token = set_hermes_home_override(profile_dir)
+    try:
+        if runtime.stop():
+            print("✓ Bot Desktop stopped")
+    except Exception as e:
+        logger.warning("Could not stop the Bot Desktop of %s: %s", profile_dir, e)
+    finally:
+        reset_hermes_home_override(token)
+
+
 def _rmtree_make_writable(func, path, exc):
     """onexc/onerror handler: add +w on PermissionError so rmtree can proceed. Covers NixOS-
     style read-only copies where the path itself (0444) or its parent (0555) isn't writable."""
@@ -1168,6 +1199,7 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     if gw_running:
         _stop_gateway_process(profile_dir)
     _stop_profile_backends(canon, profile_dir)
+    _stop_bot_desktop(profile_dir)
 
     # Tombstone before rmtree so a stale serve/logging mkdir cannot relist this name live.
     mark_named_profile_deleted(profile_dir)
@@ -1663,10 +1695,13 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     if new_dir.exists():
         raise FileExistsError(f"Profile '{new_canon}' already exists.")
 
-    # 1. Stop gateway if running
+    # 1. Stop gateway if running, then the Bot Desktop (which is neither a
+    # gateway nor a serve backend). Always attempt the desktop stop — a
+    # screen can be live with no gateway.
     if _check_gateway_running(old_dir):
         _cleanup_gateway_service(old_canon, old_dir)
         _stop_gateway_process(old_dir)
+    _stop_bot_desktop(old_dir)
 
     # 2. Rename directory
     old_dir.rename(new_dir)
