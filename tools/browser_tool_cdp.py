@@ -12,8 +12,10 @@ from tools.browser_tool_origin import origin_module as _origin
 def _resolve_cdp_override(cdp_url: str) -> str:
     """Normalize a user-supplied CDP endpoint into a concrete websocket URL.
 
-    Full ``ws://.../devtools/browser/...`` endpoints pass through; HTTP discovery roots and bare ``ws://host:port``
-    resolve via ``/json/version`` → ``webSocketDebuggerUrl`` (falls back to the raw value with a warning).
+    Full ``ws://.../devtools/browser/...`` endpoints pass through; HTTP discovery
+    roots, scheme-less ``host:port``, and bare ``ws://host:port`` resolve via
+    ``/json/version`` → ``webSocketDebuggerUrl`` (falls back to the raw value
+    with a warning).
     """
     _bt = _origin()
     raw = (cdp_url or "").strip()
