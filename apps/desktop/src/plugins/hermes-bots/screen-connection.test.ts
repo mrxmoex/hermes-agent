@@ -19,7 +19,7 @@ vi.mock('./routing', () => ({
   botConnectionRoute: () => routeMock()
 }))
 
-import { isEventForBotScreen } from './screen-connection'
+import { isEventForBotScreen, isEventOnBotConnection } from './screen-connection'
 
 const bot = { name: 'ops' } as RosterRow
 const key = '/home/hermes/.hermes'
@@ -40,5 +40,13 @@ describe('isEventForBotScreen', () => {
 
     expect(isEventForBotScreen(bot, { payload: { profile_key: key }, type: 'display.lease' }, key)).toBe(true)
     expect(isEventForBotScreen(bot, { payload: { profile_key: '/other' }, type: 'display.lease' }, key)).toBe(false)
+  })
+
+  it('does not match any profile until the local key is known', () => {
+    routeMock.mockReturnValue({ connectionId: 'conn-a', profile: 'ops' })
+    const event = { connectionId: 'conn-a', payload: { profile_key: key }, type: 'display.lease' }
+
+    expect(isEventOnBotConnection(bot, event)).toBe(true)
+    expect(isEventForBotScreen(bot, event, null)).toBe(false)
   })
 })

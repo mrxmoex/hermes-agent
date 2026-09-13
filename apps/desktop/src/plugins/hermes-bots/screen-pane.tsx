@@ -10,12 +10,12 @@
  * answers with close 4000 (`control-taken`) simply re-attaches in watch mode.
  */
 
-import { Button, Codicon, EmptyState, GlyphSpinner, host, useValue } from '@hermes/plugin-sdk'
-import type { RpcEvent } from '@hermes/plugin-sdk'
+import { Button, Codicon, EmptyState, GlyphSpinner, useValue } from '@hermes/plugin-sdk'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { useBots } from './i18n'
-import { type DisplayLease, type DisplayObserveResult, displayRequest, type DisplayStatus, isDisplayUnavailable, isEventForBotScreen, leaseHeldBy, resolveScreenWsUrl, retainBotScreen, viewerHash } from './screen-connection'
+import { type DisplayObserveResult, displayRequest, type DisplayStatus, isDisplayUnavailable, leaseHeldBy, resolveScreenWsUrl, retainBotScreen, viewerHash } from './screen-connection'
+import { useScreenBackendEvents } from './screen-events'
 import { ScreenInstallCard } from './screen-install'
 import { $screenState, screenStateFor, setScreenLease, setScreenStatus, setScreenUnavailable, setScreenViewer } from './screen-state'
 import type { RosterRow } from './types'
@@ -81,15 +81,9 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
 
   useEffect(() => {
     void refresh()
+  }, [refresh])
 
-    return host.onEvent('display.lease', (event: RpcEvent) => {
-      const payload = event.payload as { lease?: DisplayLease } | undefined
-
-      if (payload?.lease && isEventForBotScreen(bot, event, status?.profile_key)) {
-        setScreenLease(bot, payload.lease)
-      }
-    })
-  }, [bot, refresh, status?.profile_key])
+  useScreenBackendEvents(bot)
 
   const detach = useCallback((handBack = false) => {
     attachGeneration.current += 1

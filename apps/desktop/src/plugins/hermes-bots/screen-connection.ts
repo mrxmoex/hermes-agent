@@ -107,6 +107,14 @@ export function botScreenRoute(bot: RosterRow): PluginProfileRoute | string {
  * `~/.hermes` path, so the profile key alone is ambiguous: the event must also have
  * arrived on the bot's registry connection (local/legacy events carry no tag).
  */
+/** Did this event arrive on `bot`'s gateway connection? Profile path is not consulted. */
+export function isEventOnBotConnection(bot: RosterRow, event: RpcEvent): boolean {
+  const expected = botConnectionRoute(bot)?.connectionId ?? null
+  const actual = event.connectionId ?? null
+
+  return expected === actual || (expected === 'local' && actual === null)
+}
+
 export function isEventForBotScreen(bot: RosterRow, event: RpcEvent, profileKey: null | string | undefined): boolean {
   const payload = event.payload as { profile_key?: string } | undefined
 
@@ -114,10 +122,7 @@ export function isEventForBotScreen(bot: RosterRow, event: RpcEvent, profileKey:
     return false
   }
 
-  const expected = botConnectionRoute(bot)?.connectionId ?? null
-  const actual = event.connectionId ?? null
-
-  return expected === actual || (expected === 'local' && actual === null)
+  return isEventOnBotConnection(bot, event)
 }
 
 export function displayRequest<T>(bot: RosterRow, method: string, params: Record<string, unknown> = {}): Promise<T> {

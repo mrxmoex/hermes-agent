@@ -9,17 +9,17 @@
  * it once on mount so a bot the user never opened still shows real state.
  */
 
-import { Codicon, host, useValue } from '@hermes/plugin-sdk'
-import type { RpcEvent } from '@hermes/plugin-sdk'
+import { Codicon, useValue } from '@hermes/plugin-sdk'
 import type { ProfileGroupRoute } from '@hermes/plugin-sdk'
 import { useEffect, useMemo } from 'react'
 
 import { $lastRoster } from './data'
 import { useBots } from './i18n'
 import { resolveBotConnectionRoute } from './routing'
-import { type DisplayLease, displayRequest, type DisplayStatus, isDisplayUnavailable, isEventForBotScreen, leaseHeldBy, type ScreenViewer } from './screen-connection'
+import { type DisplayLease, displayRequest, type DisplayStatus, isDisplayUnavailable, leaseHeldBy, type ScreenViewer } from './screen-connection'
+import { useScreenBackendEvents } from './screen-events'
 import { openBotScreen } from './screen-open'
-import { $screenState, screenStateFor, setScreenLease, setScreenStatus, setScreenUnavailable } from './screen-state'
+import { $screenState, screenStateFor, setScreenStatus, setScreenUnavailable } from './screen-state'
 import type { BotMeta, RosterRow } from './types'
 
 export type PortalTone = 'live' | 'handoff' | 'human' | 'other' | 'off' | 'missing' | 'unsupported' | 'unavailable' | 'unknown'
@@ -88,7 +88,8 @@ export function useScreenPortalState(bot: RosterRow) {
   const all = useValue($screenState)
   const state = screenStateFor(all, bot)
   const status = state?.status ?? null
-  const profileKey = status?.profile_key
+
+  useScreenBackendEvents(bot)
 
   useEffect(() => {
     if (status || state?.unavailable) {
@@ -115,32 +116,6 @@ export function useScreenPortalState(bot: RosterRow) {
       cancelled = true
     }
   }, [bot, state?.unavailable, status])
-
-  useEffect(
-    () =>
-      host.onEvent('display.lease', (event: RpcEvent) => {
-        const payload = event.payload as { profile_key?: string; lease?: DisplayLease } | undefined
-
-        if (payload?.lease && isEventForBotScreen(bot, event, profileKey)) {
-          setScreenLease(bot, payload.lease)
-        }
-      }),
-    [bot, profileKey]
-  )
-
-  // A start/stop/crash made outside this window (CLI, gateway auto-start, another Desktop) is
-  // pushed by the serve-side runtime watcher; without it the portal's status was one-shot.
-  useEffect(
-    () =>
-      host.onEvent('display.status', (event: RpcEvent) => {
-        const payload = event.payload as DisplayStatus | undefined
-
-        if (payload?.profile_key && isEventForBotScreen(bot, event, profileKey)) {
-          setScreenStatus(bot, payload)
-        }
-      }),
-    [bot, profileKey]
-  )
 
   return { status, lease: state?.lease ?? null, tone: portalTone(status, state?.lease ?? null, state?.viewer ?? null, state?.unavailable) }
 }
