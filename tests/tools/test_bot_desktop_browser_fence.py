@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+from unittest.mock import patch
 
 import pytest
 
@@ -742,3 +743,46 @@ def test_janitor_does_not_reap_shared_browser_while_human_holds(monkeypatch):
         browser._active_sessions.update(prior_sessions)
         browser._session_last_activity.clear()
         browser._session_last_activity.update(prior_activity)
+
+
+def test_platform_default_human_lease_does_not_fence_this_profile(monkeypatch, tmp_path):
+    """The fence reads this profile's lease, not ``Path.home()/.hermes``.
+
+    Lightpanda-style ``patch.dict(..., clear=True)`` used to drop ``HERMES_HOME``.
+    Admit-before-create then treated a leftover human lease under the platform
+    default home as this session's screen and refused every local command.
+    """
+    platform_home = tmp_path / "platform-default"
+    lease._write(
+        platform_home / "bot-desktop" / "lease.json",
+        lease.Lease(holder=lease.HUMAN, viewer_id="foreign-viewer"),
+    )
+    monkeypatch.setattr(runtime, "published_env", lambda: {})
+    monkeypatch.setattr(
+        "hermes_constants._get_platform_default_hermes_home", lambda: platform_home
+    )
+
+    admitted, refuse = session_mod._shared_browser_fence("review")
+    assert refuse is None
+    assert admitted is None
+
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    _admitted, refuse = session_mod._shared_browser_fence("review")
+    assert refuse is not None
+    assert refuse.get("code") == "human_has_control"
+
+
+def test_cleared_browser_knobs_keep_this_profile_unchanged(monkeypatch):
+    """Wiping AGENT_BROWSER_* must not consult another home's lease."""
+    commands: list = []
+    _browser, session = _wire(monkeypatch, commands)
+    monkeypatch.setattr(runtime, "published_env", lambda: {})
+    kept = {
+        key: os.environ[key]
+        for key in ("HERMES_HOME", "HERMES_TEST_ISOLATION")
+        if key in os.environ
+    }
+    with patch.dict(os.environ, kept, clear=True):
+        result = session._run_browser_command("review", "snapshot", [])
+    assert commands, f"cleared env refused a clean profile: {result}"
+    assert result.get("code") != "human_has_control"

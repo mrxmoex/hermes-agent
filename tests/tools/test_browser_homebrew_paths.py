@@ -444,7 +444,11 @@ class TestRunBrowserCommandPathConstruction:
              patch("os.open", return_value=99), \
              patch("os.close"), \
              patch("tools.interrupt.is_interrupted", return_value=False), \
-             patch.dict(os.environ, {"PATH": "/usr/bin:/bin", "HOME": "/home/test"}, clear=True):
+             patch.dict(os.environ, {
+                 "PATH": "/usr/bin:/bin",
+                 "HOME": "/home/test",
+                 **{k: os.environ[k] for k in ("HERMES_HOME", "HERMES_TEST_ISOLATION") if k in os.environ},
+             }, clear=True):
             with patch("builtins.open", mock_open(read_data=fake_json)):
                 _run_browser_command("test-task", "navigate", ["https://example.com"])
 
