@@ -322,6 +322,12 @@ DANGEROUS_PATTERNS = [
     # moreutils sponge is dest-last like tee (atomic replace). Without this,
     # `cat forged | sponge ~/.hermes/bot-desktop/lease.json` auto-approves.
     (rf'\bsponge\b\s+["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via sponge"),
+    # sqlite3 `.output` / `.once` (unique prefixes `.out` / `.o`) write query
+    # bytes to FILE. Dest is after the dot-command, not command-tail, so
+    # `sqlite3 :memory: ".output lease.json" "select …"` forges holder=agent
+    # under auto-approve. Opening the path as a DB is not this door.
+    (rf'\bsqlite3\b[^\n]*\.(?:output|once|out|o)\s+["\']?{_SENSITIVE_WRITE_TARGET}',
+     "overwrite system file via sqlite3"),
     (rf'>>?\s*["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via redirection"),
     # `dd of=` with no `if=` writes stdin (or zeros) and misses the "disk copy" rule
     # (`dd … if=`). Same pairing as tee/redirect: forges lease.json holder=agent or
@@ -330,6 +336,8 @@ DANGEROUS_PATTERNS = [
     (rf'\b(?:gdd|dd)\b[^\n]*\bof=["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via dd"),
     (rf'\btee\b.*["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_WRITE_TARGET_BOUNDARY}', "overwrite project env/config via tee"),
     (rf'\bsponge\b\s+["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_WRITE_TARGET_BOUNDARY}', "overwrite project env/config via sponge"),
+    (rf'\bsqlite3\b[^\n]*\.(?:output|once|out|o)\s+["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_WRITE_TARGET_BOUNDARY}',
+     "overwrite project env/config via sqlite3"),
     (rf'>>?\s*["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_WRITE_TARGET_BOUNDARY}', "overwrite project env/config via redirection"),
     (r'\bxargs\s+.*\brm\b', "xargs with rm"),
     # -execdir has the same semantics as -exec (runs in each match's directory).
@@ -394,6 +402,11 @@ DANGEROUS_PATTERNS = [
     # argv0 class as finding 37's `gdd` — basename projection does not fold them.
     (rf'\b(?:g?ln)\b.*\s["\']?{_SENSITIVE_WRITE_TARGET}[^\s"\']*["\']?{_COMMAND_TAIL}', "link into sensitive credential/SSH/shell-rc path"),
     (rf'\brsync\b.*\s["\']?{_SENSITIVE_WRITE_TARGET}[^\s"\']*["\']?{_COMMAND_TAIL}', "rsync into sensitive credential/SSH/shell-rc path"),
+    # dest-last local `scp SRC DEST` is the same overwrite as cp/rsync.
+    # `scp /tmp/evil ~/.hermes/bot-desktop/lease.json` writes exact bytes
+    # and auto-approves. Source-only `scp jar /tmp` stays unflagged.
+    (rf'\bscp\b.*\s["\']?{_SENSITIVE_WRITE_TARGET}[^\s"\']*["\']?{_COMMAND_TAIL}',
+     "scp into sensitive credential/SSH/shell-rc path"),
     # dest-last extract/copy siblings of dest-first 7z/curl: unrar/rar put dest
     # last; lz4 -d SRC DEST; rclone copy/sync/move DEST last.
     (rf'\b(?:unrar|rar)\b[^\n]*\s(?:x|e)\b.*\s["\']?{_SENSITIVE_WRITE_TARGET}[^\s"\']*["\']?{_COMMAND_TAIL}',

