@@ -12,6 +12,7 @@ import subprocess
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_constants import get_hermes_home
@@ -862,6 +863,28 @@ def _shares_bot_desktop_browser(session_info: Dict[str, Any]) -> bool:
     return isinstance(cdp_url, str) and cdp_url_is_running_instance(cdp_url)
 
 
+def _cdp_loopback_port(url: str) -> Optional[int]:
+    """DevTools port when ``url`` is loopback HTTP/WS, else ``None``."""
+    if not isinstance(url, str) or not url:
+        return None
+    parsed = urlparse(url)
+    if parsed.hostname not in ("127.0.0.1", "localhost", "::1"):
+        return None
+    return parsed.port
+
+
+def _cdp_endpoints_match(left: str, right: str) -> bool:
+    """Same CDP endpoint, including ``http://127.0.0.1:PORT`` vs rewritten ``ws://``.
+
+    Real-profile cache stores the HTTP discovery root; ``/browser connect`` and
+    ``_get_cdp_override`` rewrite it to a WebSocket URL on the same port.
+    """
+    if left == right:
+        return True
+    a, b = _cdp_loopback_port(left), _cdp_loopback_port(right)
+    return a is not None and a == b
+
+
 def _session_info_for_routed_cdp(cdp_url: str) -> Dict[str, Any]:
     """Session identity for a CDP URL the wrapper already resolved.
 
@@ -877,7 +900,7 @@ def _session_info_for_routed_cdp(cdp_url: str) -> Dict[str, Any]:
         return info
     rp = _bt._active_sessions.get(_bt._REAL_PROFILE_SESSION) or {}
     rp_cdp = str((_bt._real_profile_cdp_cache or {}).get("cdp") or rp.get("cdp_url") or "")
-    if rp_cdp and cdp_url == rp_cdp:
+    if rp_cdp and _cdp_endpoints_match(cdp_url, rp_cdp):
         if rp and _shares_bot_desktop_browser(rp):
             out = dict(rp)
             out["cdp_url"] = cdp_url

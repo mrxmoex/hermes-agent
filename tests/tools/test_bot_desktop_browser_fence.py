@@ -2196,7 +2196,6 @@ def test_browser_cdp_stateless_dock_endpoint_is_fenced(monkeypatch):
     ran: list = []
     monkeypatch.setattr(browser_cdp_tool, "_resolve_cdp_endpoint", lambda: _DOCK_CDP)
     monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", _is_dock_cdp)
-    monkeypatch.setattr(browser_cdp_tool, "cdp_url_is_running_instance", _is_dock_cdp)
     monkeypatch.setattr(
         browser_cdp_tool, "_run_async",
         lambda *_a, **_k: ran.append("cdp") or {"secret": "WHAT-THE-HUMAN-TYPED"},
@@ -2212,7 +2211,6 @@ def test_browser_cdp_stateless_foreign_endpoint_is_not_fenced(monkeypatch):
     ran: list = []
     monkeypatch.setattr(browser_cdp_tool, "_resolve_cdp_endpoint", lambda: _FOREIGN_CDP)
     monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", lambda url, **k: False)
-    monkeypatch.setattr(browser_cdp_tool, "cdp_url_is_running_instance", lambda url, **k: False)
 
     async def fake_call(*_a, **_k):
         ran.append("cdp")
@@ -2229,7 +2227,6 @@ def test_browser_cdp_stateless_foreign_endpoint_is_not_fenced(monkeypatch):
 def test_browser_cdp_stateless_dock_result_crossing_a_takeover_is_discarded(monkeypatch):
     monkeypatch.setattr(browser_cdp_tool, "_resolve_cdp_endpoint", lambda: _DOCK_CDP)
     monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", _is_dock_cdp)
-    monkeypatch.setattr(browser_cdp_tool, "cdp_url_is_running_instance", _is_dock_cdp)
 
     def run(*_a, **_k):
         lease.acquire("human-viewer")
@@ -2251,9 +2248,10 @@ def test_browser_cdp_stateless_real_profile_endpoint_is_fenced(monkeypatch):
     from tools import browser_tool as browser
 
     ran: list = []
-    rp_cdp = "http://127.0.0.1:9334"
-    browser._real_profile_cdp_cache["cdp"] = rp_cdp
-    monkeypatch.setattr(browser_cdp_tool, "_resolve_cdp_endpoint", lambda: rp_cdp)
+    rp_http = "http://127.0.0.1:9334"
+    rp_ws = "ws://127.0.0.1:9334/devtools/browser/rp"
+    browser._real_profile_cdp_cache["cdp"] = rp_http
+    monkeypatch.setattr(browser_cdp_tool, "_resolve_cdp_endpoint", lambda: rp_ws)
     monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", _is_dock_cdp)
     monkeypatch.setattr(
         browser_cdp_tool, "_run_async",
@@ -2272,9 +2270,10 @@ def test_browser_cdp_stateless_real_profile_endpoint_is_fenced(monkeypatch):
 def test_browser_cdp_stateless_real_profile_result_crossing_a_takeover_is_discarded(monkeypatch):
     from tools import browser_tool as browser
 
-    rp_cdp = "http://127.0.0.1:9334"
-    browser._real_profile_cdp_cache["cdp"] = rp_cdp
-    monkeypatch.setattr(browser_cdp_tool, "_resolve_cdp_endpoint", lambda: rp_cdp)
+    rp_http = "http://127.0.0.1:9334"
+    rp_ws = "ws://127.0.0.1:9334/devtools/browser/rp"
+    browser._real_profile_cdp_cache["cdp"] = rp_http
+    monkeypatch.setattr(browser_cdp_tool, "_resolve_cdp_endpoint", lambda: rp_ws)
     monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", _is_dock_cdp)
 
     def run(*_a, **_k):
