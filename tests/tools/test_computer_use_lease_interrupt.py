@@ -278,6 +278,11 @@ def test_computer_use_wait_for_human_persists_dock_port_before_devtools_miss(mon
     dock = "ws://127.0.0.1:9333/devtools/browser/x"
     other = "ws://127.0.0.1:9222/devtools/browser/x"
     monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: 9333)
+    json.loads(tool.handle_computer_use(
+        {"action": "request_handoff", "reason": "Finish 2FA"},
+    ))
+    _reset_dock_port_memory_for_tests()
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: 9333)
     assert bdb.last_known_dock_cdp_port() is None
     waited = json.loads(tool.handle_computer_use(
         {"action": "wait_for_human", "seconds": 1, "grace": 0.05},
