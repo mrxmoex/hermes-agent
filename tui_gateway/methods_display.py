@@ -165,11 +165,23 @@ def _reset_minted_for_tests() -> None:
 
 
 def _mint_viewer_id(requested: str) -> str:
-    """Server-minted viewer identity. ``requested`` is honoured only when THIS connection minted it
-    earlier; anything else (including a holder id read off display.status) gets a fresh id."""
+    """Server-minted viewer identity. At most one id per (caller, profile).
+
+    ``requested`` is honoured only when THIS caller already minted it. A missing
+    or foreign id used to mint another string on every ``display.observe``, so
+    one connection could grow the set without bound and open one RFB stream per
+    id (the live-stream registry is keyed by viewer_id, not by socket).
+    """
     mine = _caller_minted_ids()
-    if requested in mine:
+    if requested and requested in mine:
         return requested
+    if mine:
+        # Collapse a pre-fix set that already has extras; pick a stable keep.
+        keep = next(iter(mine))
+        if len(mine) > 1:
+            mine.clear()
+            mine.add(keep)
+        return keep
     # Inline: bind_module rebinds this body onto server.py's globals, which do not import secrets.
     import secrets
     viewer_id = secrets.token_urlsafe(16)

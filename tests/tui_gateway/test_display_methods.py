@@ -216,6 +216,29 @@ def test_observe_remint_revokes_the_unused_ticket_for_that_viewer(monkeypatch, t
     assert ws_tickets.consume_ticket(second["ticket"])["viewer_id"] == first["viewer_id"]
 
 
+def test_observe_reuses_one_id_when_the_client_omits_or_invents_one(monkeypatch, tmp_path, _fresh_lease):
+    """One (caller, profile) is one viewer. observe() without an id, or with a
+    client-invented string, used to mint a fresh id every time — each id can
+    hold one RFB stream, so a single connection could open many."""
+    from tools.bot_desktop import runtime
+    import tui_gateway.server as server
+
+    monkeypatch.setattr(runtime, "rfb_socket_path", lambda: tmp_path / "rfb.sock")
+    mine, other = _Peer(), _Peer()
+    first = server.dispatch({"jsonrpc": "2.0", "id": 8, "method": "display.observe", "params": {}}, mine)["result"]
+    omitted = server.dispatch({"jsonrpc": "2.0", "id": 9, "method": "display.observe", "params": {}}, mine)["result"]
+    invented = server.dispatch({"jsonrpc": "2.0", "id": 10, "method": "display.observe",
+                                "params": {"viewer_id": "client-invented"}}, mine)["result"]
+    assert omitted["viewer_id"] == first["viewer_id"]
+    assert invented["viewer_id"] == first["viewer_id"]
+    assert omitted["ticket"] != first["ticket"]
+    with pytest.raises(ws_tickets.TicketInvalid):
+        ws_tickets.consume_ticket(first["ticket"])
+    stranger = server.dispatch({"jsonrpc": "2.0", "id": 11, "method": "display.observe", "params": {}}, other)["result"]
+    assert stranger["viewer_id"] != first["viewer_id"]
+    assert ws_tickets.consume_ticket(invented["ticket"])["viewer_id"] == first["viewer_id"]
+
+
 def test_minted_viewer_id_survives_a_loopback_token_transport_replace(monkeypatch, tmp_path, _fresh_lease):
     """Local hermes serve authenticates /api/ws with ?token= and never stamps
     auth_identity (that would make the token a dashboard controller). mint_identity

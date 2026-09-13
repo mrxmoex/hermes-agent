@@ -39,6 +39,20 @@ class _Ws:
         self.closed = True
 
 
+def test_bridge_refuses_a_ticket_that_does_not_name_a_viewer():
+    """A home-only ticket used to fall through to user_id or the literal
+    ``viewer``, so every such stream shared one input-gate identity."""
+
+    async def _run():
+        ws = _Ws(1000)
+        await display._bridge(ws, {"hermes_home": "/tmp/unused-bot-desktop"})
+        return ws.close_code, ws.close_reason
+
+    close_code, close_reason = asyncio.run(_run())
+    assert close_code == display._CLOSE_BAD_TICKET
+    assert "viewer" in close_reason
+
+
 async def _bridge_once(close_code: int, home: str) -> lease.Lease:
     sock_dir = os.path.join(home, "bot-desktop")
     os.makedirs(sock_dir, exist_ok=True)

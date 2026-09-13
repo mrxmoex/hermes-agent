@@ -92,7 +92,12 @@ def _consume_display_ticket(ws: WebSocket) -> Optional[dict]:
         info = consume_ticket(ticket)
     except TicketInvalid:
         return None
-    if info.get("provider") != "bot-desktop" or not info.get("hermes_home"):
+    # Both pins are required. A ticket with a home but no viewer used to fall
+    # through to user_id or the literal "viewer" — every such stream then
+    # shared one input-gate identity.
+    if (info.get("provider") != "bot-desktop"
+            or not info.get("hermes_home")
+            or not str(info.get("viewer_id") or "").strip()):
         return None
     return info
 
@@ -119,7 +124,10 @@ async def _bridge(ws: WebSocket, info: dict) -> None:
     sock = Path(info["hermes_home"]) / "bot-desktop" / "rfb.sock"
     profile_home = str(info["hermes_home"])
     profile_key = hermes_home_key(profile_home)
-    viewer_id = str(info.get("viewer_id") or info.get("user_id") or "viewer")
+    viewer_id = str(info.get("viewer_id") or "").strip()
+    if not viewer_id:
+        await ws.close(code=_CLOSE_BAD_TICKET, reason="display ticket missing viewer")
+        return
     if not sock.exists():
         await ws.close(code=_CLOSE_DESKTOP_GONE, reason="Bot Desktop is not running")
         return
