@@ -368,6 +368,9 @@ DANGEROUS_PATTERNS = [
     # implant), `cp creds ~/.netrc`, and `cp evil ~/.bashrc` (login-time command injection) slipped through
     # with auto-approve. Same unpaired-door rationale as #14639 / the sed-tee-redirect pairing on these
     # targets. `authorized_keys` after the `~/.ssh/` fragment).
+    # Dest-LAST only. GNU `-t` / `--target-directory` (and curl -o / tar -C /
+    # unzip -d) put dest earlier — those run on the case-preserved variant via
+    # DEST_FIRST_SENSITIVE_PATTERNS so `-t` is not collapsed into `-T`.
     (rf'\b(cp|mv|install)\b.*\s["\']?{_SENSITIVE_WRITE_TARGET}[^\s"\']*["\']?{_COMMAND_TAIL}', "copy/move file into sensitive credential/SSH/shell-rc path"),
     # ln/rsync DEST is the same unpaired overwrite as cp: `ln -sf /tmp/evil
     # ~/.hermes/bot-desktop/lease.json` replaces a live human lease with a
@@ -446,6 +449,43 @@ DANGEROUS_PATTERNS = [
 
 
 DANGEROUS_PATTERNS_COMPILED = [(re.compile(p, _RE_FLAGS), d) for p, d in DANGEROUS_PATTERNS]
+
+# Dest-first writes. dest-tail requires the sensitive path as LAST argv;
+# these flags name dest earlier (`cp -t DEST SRC`, `curl -o DEST URL`,
+# `tar -C DEST -xf ARCHIVE`). detect_dangerous_command lowercases
+# DANGEROUS_PATTERNS input, which collapses `cp -t` / `cp -T` and tar
+# `-C` (directory) / `-c` (create), so these search the case-preserved
+# variant. Short flags are `(?-i:)` so `-T` / `-c` / `-X` stay out;
+# long options and path spelling stay IGNORECASE.
+_DEST_FIRST_TARGET_DIR = r'(?:(?-i:-[a-zA-Z]*t)|--target-directory)'
+_DEST_FIRST_TAR_DIR = r'(?:(?-i:-C)|--directory)'
+# `-xf` / `-zxf` put `x` in the cluster, not last (`-[a-zA-Z]*x` misses them).
+_DEST_FIRST_TAR_EXTRACT = r'(?:(?-i:-[a-zA-Z]*x[a-zA-Z]*)|--extract|--get)'
+# dest-tail sees `~/.ssh/file` or `~/.ssh` at EOS. dest-first dest is usually
+# a directory token (`-t ~/.ssh SRC`) so `.ssh(?:/|$)` misses the trailing space.
+_DEST_FIRST_DIR = (
+    rf'(?:/etc(?:/|(?=[\s;"\']|$))|(?:~|\$home|\$\{{home\}})/\.ssh(?:/|(?=[\s;"\']|$)))'
+)
+_DEST_FIRST_WRITE_TARGET = rf'(?:{_SENSITIVE_WRITE_TARGET}|{_DEST_FIRST_DIR})'
+DEST_FIRST_SENSITIVE_PATTERNS = [
+    # `cp -t ~/.hermes/bot-desktop /tmp/evil.json` forges lease.json;
+    # `cp -t ~/.ssh /tmp/k` is the dest-tail key-implant sibling.
+    (rf'\b(?:cp|mv|install|ln)\b[^\n]*\s{_DEST_FIRST_TARGET_DIR}[=\s]*["\']?{_DEST_FIRST_WRITE_TARGET}',
+     "copy/move/link into sensitive path via --target-directory"),
+    (rf'\bcurl\b[^\n]*\s(?:(?-i:-o|-O)|--output-dir|--output)[=\s]*["\']?{_DEST_FIRST_WRITE_TARGET}',
+     "overwrite system file via curl --output"),
+    (rf'\bwget\b[^\n]*\s(?:(?-i:-o|-O)|--output-document|--directory-prefix)[=\s]*["\']?{_DEST_FIRST_WRITE_TARGET}',
+     "overwrite system file via wget --output"),
+    (rf'\b(?:bsd)?tar\b[^\n]*\s{_DEST_FIRST_TAR_EXTRACT}\b[^\n]*\s{_DEST_FIRST_TAR_DIR}[=\s]*["\']?{_DEST_FIRST_WRITE_TARGET}',
+     "extract archive into sensitive path"),
+    (rf'\b(?:bsd)?tar\b[^\n]*\s{_DEST_FIRST_TAR_DIR}[=\s]*["\']?{_DEST_FIRST_WRITE_TARGET}[^\n]*\s{_DEST_FIRST_TAR_EXTRACT}\b',
+     "extract archive into sensitive path"),
+    (rf'\bunzip\b[^\n]*\s(?-i:-d)[=\s]*["\']?{_DEST_FIRST_WRITE_TARGET}',
+     "extract archive into sensitive path"),
+]
+DEST_FIRST_SENSITIVE_PATTERNS_COMPILED = [
+    (re.compile(p, _RE_FLAGS), d) for p, d in DEST_FIRST_SENSITIVE_PATTERNS
+]
 
 # Preserve approvals stored under the removed interpreter regex rules.
 _REMOVED_PATTERN_KEY_ALIASES = {
@@ -1454,6 +1494,10 @@ def detect_dangerous_command(command: str) -> tuple:
     if _is_verification_artifact_cleanup(command):
         return (False, None, None)
     for command_variant in _command_detection_variants(command):
+        # Case-preserved: dest-first short flags (`-t` vs `-T`, tar `-C` vs `-c`).
+        for pattern_re, description in DEST_FIRST_SENSITIVE_PATTERNS_COMPILED:
+            if pattern_re.search(command_variant):
+                return (True, description, description)
         command_lower = command_variant.lower()
         for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
             if pattern_re.search(command_lower):

