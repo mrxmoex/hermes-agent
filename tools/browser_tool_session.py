@@ -703,6 +703,32 @@ def _dock_supervisor_session_info(task_id: str) -> Dict[str, Any]:
     return {}
 
 
+def _supervisor_belongs_to_session(supervisor, session_info: Dict[str, Any]) -> bool:
+    """True when ``supervisor`` is the same browser the CLI session talks to.
+
+    Leftover ``/browser connect`` can keep a dock supervisor registered under
+    the same task_id as a cached cloud session. Snapshot used to merge that
+    screen's ``pending_dialogs`` into the cloud accessibility tree. Eval/dialog
+    overlay still fences leftover when a human holds; this helper is only the
+    merge/attach identity check.
+
+    Both sides empty (local ``--session`` / test doubles) belong together.
+    A CDP session matches only the same loopback/endpoint. A local session
+    with no ``cdp_url`` belongs to a supervisor on this screen.
+    """
+    if supervisor is None:
+        return False
+    sup_cdp = str(getattr(supervisor, "cdp_url", "") or "")
+    sess_cdp = str((session_info or {}).get("cdp_url") or "")
+    if not sess_cdp and not sup_cdp:
+        return True
+    if sup_cdp and sess_cdp:
+        return _cdp_endpoints_match(sup_cdp, sess_cdp)
+    if not sess_cdp:
+        return _shares_bot_desktop_browser({"cdp_url": sup_cdp})
+    return False
+
+
 def _session_info_for_shared_browser_fence(task_id: str) -> Dict[str, Any]:
     """Session info for the lease bracket — never creates or recycles a session.
 

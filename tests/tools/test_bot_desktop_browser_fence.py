@@ -2762,6 +2762,182 @@ def test_ensure_supervisor_does_not_probe_leftover_dock_on_cached_cloud(monkeypa
     assert started == [cloud]
 
 
+def test_ensure_supervisor_does_not_steal_cloud_session_for_leftover_connect(monkeypatch):
+    """Leftover ``/browser connect`` is this screen. A cached cloud session must
+    keep its own supervisor even while the agent holds — preferring leftover
+    mixed this screen's dialogs into cloud snapshots."""
+    from tools import browser_tool as browser
+    from tools import browser_tool_cdp as cdp
+
+    cloud = "wss://cloud.example/devtools/browser/x"
+    prior = browser._active_sessions.get("review")
+    browser._active_sessions["review"] = {
+        "session_name": "cloud", "cdp_url": cloud, "features": {"local": False},
+    }
+    monkeypatch.setattr(cdp, "_get_cdp_override", lambda: _DOCK_CDP)
+    monkeypatch.setattr(cdp, "_get_cdp_override_raw", lambda: _DOCK_CDP)
+    monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", _is_dock_cdp)
+    probed: list = []
+
+    def probe(*_a, **_k):
+        probed.append("get")
+        raise AssertionError("leftover dock must not be probed for a cloud session")
+
+    started: list = []
+    monkeypatch.setattr("requests.get", probe)
+    monkeypatch.setattr(
+        "tools.browser_supervisor.SUPERVISOR_REGISTRY",
+        type("R", (), {"get_or_start": staticmethod(lambda **kw: started.append(kw.get("cdp_url")))})(),
+    )
+    try:
+        cdp._ensure_cdp_supervisor("review")
+    finally:
+        if prior is None:
+            browser._active_sessions.pop("review", None)
+        else:
+            browser._active_sessions["review"] = prior
+    assert probed == [], f"cloud session attach probed leftover dock: {probed}"
+    assert started == [cloud]
+
+
+def test_ensure_supervisor_keeps_leftover_when_session_is_that_endpoint(monkeypatch):
+    """Same-endpoint leftover connect is this session — attach it."""
+    from tools import browser_tool as browser
+    from tools import browser_tool_cdp as cdp
+
+    prior = browser._active_sessions.get("review")
+    browser._active_sessions["review"] = {
+        "session_name": "cdp", "cdp_url": _DOCK_CDP, "features": {"cdp_override": True},
+    }
+    monkeypatch.setattr(cdp, "_get_cdp_override", lambda: _DOCK_CDP)
+    monkeypatch.setattr(cdp, "_get_cdp_override_raw", lambda: _DOCK_CDP)
+    monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", _is_dock_cdp)
+    started: list = []
+    monkeypatch.setattr(
+        "tools.browser_supervisor.SUPERVISOR_REGISTRY",
+        type("R", (), {"get_or_start": staticmethod(lambda **kw: started.append(kw.get("cdp_url")))})(),
+    )
+    try:
+        cdp._ensure_cdp_supervisor("review")
+    finally:
+        if prior is None:
+            browser._active_sessions.pop("review", None)
+        else:
+            browser._active_sessions["review"] = prior
+    assert started == [_DOCK_CDP]
+
+
+def test_snapshot_does_not_merge_leftover_dock_dialogs_into_a_cloud_tree(monkeypatch):
+    """CLI snapshot talks the cached cloud session; leftover connect can keep
+    a dock supervisor on the same task_id. Those dialogs are this screen."""
+    from tools import browser_tool as browser
+    from tools import browser_tool_session as session
+
+    monkeypatch.setattr(browser, "_is_camofox_mode", lambda: False)
+    monkeypatch.setattr(browser, "_blocked_private_page_content", lambda *_a: None)
+    monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", _is_dock_cdp)
+    prior = browser._active_sessions.get("review")
+    browser._active_sessions["review"] = {
+        "session_name": "cloud", "cdp_url": "wss://browserbase.example/s",
+        "features": {"cloud": True},
+    }
+    monkeypatch.setattr(session, "_run_browser_command", lambda *_a, **_k: {
+        "success": True, "data": {"snapshot": "CLOUD_TREE", "refs": {}},
+    })
+    merged: list = []
+
+    class _Snap:
+        active = True
+
+        def to_dict(self):
+            merged.append("dialogs")
+            return {"pending_dialogs": [{"message": "WHAT-THE-HUMAN-TYPED"}]}
+
+    class _Sup:
+        cdp_url = _DOCK_CDP
+
+        def snapshot(self):
+            return _Snap()
+
+    monkeypatch.setattr(
+        "tools.browser_supervisor.SUPERVISOR_REGISTRY",
+        type("R", (), {"get": staticmethod(lambda _tid: _Sup())})(),
+    )
+    try:
+        parsed = json.loads(browser.browser_snapshot(task_id="review"))
+    finally:
+        if prior is None:
+            browser._active_sessions.pop("review", None)
+        else:
+            browser._active_sessions["review"] = prior
+    assert parsed.get("success") is True
+    assert parsed.get("snapshot") == "CLOUD_TREE"
+    assert merged == [], f"leftover dock dialogs were merged into the cloud tree: {merged}"
+    assert "WHAT-THE-HUMAN-TYPED" not in json.dumps(parsed)
+    assert not parsed.get("pending_dialogs")
+
+
+def test_snapshot_merges_supervisor_dialogs_when_session_is_the_dock(monkeypatch):
+    """Same-browser leftover connect still contributes pending_dialogs."""
+    from tools import browser_tool as browser
+    from tools import browser_tool_session as session
+
+    monkeypatch.setattr(browser, "_is_camofox_mode", lambda: False)
+    monkeypatch.setattr(browser, "_blocked_private_page_content", lambda *_a: None)
+    monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", _is_dock_cdp)
+    prior = browser._active_sessions.get("review")
+    browser._active_sessions["review"] = {
+        "session_name": "cdp", "cdp_url": _DOCK_CDP, "features": {"cdp_override": True},
+    }
+    monkeypatch.setattr(session, "_run_browser_command", lambda *_a, **_k: {
+        "success": True, "data": {"snapshot": "DOCK_TREE", "refs": {}},
+    })
+
+    class _Snap:
+        active = True
+
+        def to_dict(self):
+            return {"pending_dialogs": [{"message": "DOCK_DIALOG"}]}
+
+    class _Sup:
+        cdp_url = _DOCK_CDP
+
+        def snapshot(self):
+            return _Snap()
+
+    monkeypatch.setattr(
+        "tools.browser_supervisor.SUPERVISOR_REGISTRY",
+        type("R", (), {"get": staticmethod(lambda _tid: _Sup())})(),
+    )
+    try:
+        parsed = json.loads(browser.browser_snapshot(task_id="review"))
+    finally:
+        if prior is None:
+            browser._active_sessions.pop("review", None)
+        else:
+            browser._active_sessions["review"] = prior
+    assert parsed.get("success") is True
+    assert parsed.get("snapshot") == "DOCK_TREE"
+    assert parsed.get("pending_dialogs") == [{"message": "DOCK_DIALOG"}]
+
+
+def test_supervisor_belongs_to_session_is_endpoint_identity(monkeypatch):
+    """Merge identity is the live CDP endpoint, not the cache label."""
+    monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", _is_dock_cdp)
+    dock = type("S", (), {"cdp_url": _DOCK_CDP})()
+    cloud = {"session_name": "cloud", "cdp_url": "wss://browserbase.example/s", "features": {"cloud": True}}
+    assert session_mod._supervisor_belongs_to_session(dock, cloud) is False
+    assert session_mod._supervisor_belongs_to_session(
+        dock, {"session_name": "cdp", "cdp_url": _DOCK_CDP},
+    ) is True
+    assert session_mod._supervisor_belongs_to_session(
+        type("S", (), {"cdp_url": ""})(), {},
+    ) is True
+    assert session_mod._supervisor_belongs_to_session(
+        dock, {"session_name": "local", "features": {"local": True}},
+    ) is True
+
+
 def test_browser_click_cached_cloud_does_not_probe_leftover_override(monkeypatch):
     """Cloud click must run; leftover ``/browser connect`` must not be discovered."""
     from tools import browser_tool as browser

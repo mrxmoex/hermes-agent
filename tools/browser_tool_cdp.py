@@ -108,26 +108,39 @@ def _ensure_cdp_supervisor(task_id: str) -> None:
     """Start a CDP supervisor for ``task_id`` if an endpoint is reachable.
 
     Idempotent (``get_or_start`` skips an existing ``(task_id, cdp_url)`` and restarts on URL change), so safe on
-    every navigate / ``/browser connect``. URL precedence: the CDP override, then the session's own ``cdp_url``
-    (cloud providers, e.g. Browserbase). Swallows all errors — a failed attach must not break the session;
+    every navigate / ``/browser connect``. URL precedence: the CDP override when it
+    is the same endpoint as this session, then the session's own ``cdp_url``
+    (cloud providers, e.g. Browserbase). A leftover ``/browser connect`` on
+    this screen must not steal a cloud / foreign session's supervisor.
+    Swallows all errors — a failed attach must not break the session;
     snapshots just lack ``pending_dialogs`` / ``frame_tree``.
     """
     _bt = _origin()
     # A cached cloud session skips the outer fence. Preferring the leftover
     # ``/browser connect`` override here used to ``/json/version``-probe and
-    # attach a supervisor to this screen while a human held it.
+    # attach a supervisor to this screen while a human held it — and, while
+    # the agent held, steal the supervisor away from the cloud session so
+    # snapshot/eval mixed this screen into another browser's result.
     try:
-        from tools.browser_tool_session import _shared_cdp_override_held_by_human
+        from tools.browser_tool_session import (
+            _cdp_endpoints_match,
+            _shared_cdp_override_held_by_human,
+        )
         skip_override = _shared_cdp_override_held_by_human()
     except Exception:
         skip_override = False
-    cdp_url = "" if skip_override else _get_cdp_override()
-    if not cdp_url:
-        with _bt._cleanup_lock:
-            session_info = _bt._active_sessions.get(task_id, {})
-        maybe = str(session_info.get("cdp_url") or "")
-        if maybe:
-            cdp_url = _resolve_cdp_override(maybe)
+        _cdp_endpoints_match = None  # type: ignore[assignment]
+    leftover = "" if skip_override else (_get_cdp_override() or "")
+    with _bt._cleanup_lock:
+        session_info = _bt._active_sessions.get(task_id, {})
+    session_cdp = str(session_info.get("cdp_url") or "")
+    if leftover and session_cdp and _cdp_endpoints_match is not None:
+        try:
+            if not _cdp_endpoints_match(leftover, session_cdp):
+                leftover = ""
+        except Exception:
+            leftover = ""
+    cdp_url = leftover or (_resolve_cdp_override(session_cdp) if session_cdp else "")
     if not cdp_url:
         return
     try:
