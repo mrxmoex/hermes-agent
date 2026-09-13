@@ -578,19 +578,52 @@ def _run_browser_command(
     # over is typing into. While the human holds the lease every action AND read against it is
     # refused (the page may show their credential); the fence brackets the whole run so a takeover
     # mid-command also voids the result. Cloud / user-supplied CDP sessions are a different browser.
-    if _shares_bot_desktop_browser(session_info):
-        from tools.bot_desktop import lease as _bd_lease
-        try:
-            admitted = _bd_lease.assert_agent_may_act()
-        except _bd_lease.HumanHasControl as e:
-            return {"success": False, "error": str(e), "code": "human_has_control"}
-        result = _run_browser_command_unfenced(task_id, command, args, timeout, _engine_override, browser_cmd, session_info)
-        if _bd_lease.get().epoch != admitted.epoch:
-            return {"success": False, "code": "human_has_control",
-                    "error": "A human took over the bot's screen while this browser command ran; its result was "
-                             "discarded. Call computer_use action='wait_for_human' to block until they hand back."}
-        return result
-    return _run_browser_command_unfenced(task_id, command, args, timeout, _engine_override, browser_cmd, session_info)
+    return _bracket_bot_desktop_browser(
+        session_info,
+        lambda: _run_browser_command_unfenced(
+            task_id, command, args, timeout, _engine_override, browser_cmd, session_info
+        ),
+    )
+
+
+_HUMAN_TOOK_OVER = (
+    "A human took over the bot's screen while this browser command ran; its result was "
+    "discarded. Call computer_use action='wait_for_human' to block until they hand back."
+)
+
+
+def _admit_bot_desktop_browser(session_info: Dict[str, Any]):
+    """Admit a shared-browser run. Returns ``(lease_or_None, refuse_dict_or_None)``."""
+    if not _shares_bot_desktop_browser(session_info):
+        return None, None
+    from tools.bot_desktop import lease as _bd_lease
+    try:
+        return _bd_lease.assert_agent_may_act(), None
+    except _bd_lease.HumanHasControl as e:
+        return None, {"success": False, "error": str(e), "code": "human_has_control"}
+
+
+def _discard_if_lease_moved(admitted) -> Optional[Dict[str, Any]]:
+    if admitted is None:
+        return None
+    from tools.bot_desktop import lease as _bd_lease
+    if _bd_lease.get().epoch != admitted.epoch:
+        return {"success": False, "code": "human_has_control", "error": _HUMAN_TOOK_OVER}
+    return None
+
+
+def _bracket_bot_desktop_browser(session_info: Dict[str, Any], run):
+    """Refuse or discard a shared-browser result the same way ``computer_use`` does.
+
+    Used by ``_run_browser_command`` and by the Lightpanda Chrome fallback, which
+    otherwise pops a temp Chromium outside that wrapper (vision preroute, and
+    any future caller of ``_run_chrome_fallback_command``).
+    """
+    admitted, refuse = _admit_bot_desktop_browser(session_info)
+    if refuse:
+        return refuse
+    result = run()
+    return _discard_if_lease_moved(admitted) or result
 
 
 def _shares_bot_desktop_browser(session_info: Dict[str, Any]) -> bool:

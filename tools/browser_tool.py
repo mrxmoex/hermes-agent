@@ -1179,8 +1179,25 @@ from tools import browser_tool_vision as _vision
 def _capture_vision_screenshot(effective_task_id: str, annotate: bool, screenshot_path: Path, lp_prerouted: bool):
     """Take (or adopt the pre-routed) screenshot; returns ``(result, path, error_json_or_None)``."""
     if lp_prerouted and screenshot_path.exists():
-        result = _lp._annotate_lightpanda_fallback(
-            {"success": True, "data": {"path": str(screenshot_path)}}, _LP_VISION_FALLBACK_REASON)
+        # Adopting the prerouted PNG skips ``_run_browser_command``. Re-apply
+        # the lease bracket so a takeover after the preroute cannot deliver it.
+        from tools.bot_desktop import lease as _bd_lease, runtime as _bd_runtime
+
+        if _bd_runtime.published_env().get("DISPLAY") or _bd_lease.human_holds():
+            try:
+                session_info = _session._get_session_info(effective_task_id)
+            except Exception:
+                session_info = {}
+            result = _session._bracket_bot_desktop_browser(
+                session_info,
+                lambda: _lp._annotate_lightpanda_fallback(
+                    {"success": True, "data": {"path": str(screenshot_path)}}, _LP_VISION_FALLBACK_REASON
+                ),
+            )
+        else:
+            result = _lp._annotate_lightpanda_fallback(
+                {"success": True, "data": {"path": str(screenshot_path)}}, _LP_VISION_FALLBACK_REASON
+            )
     else:
         screenshot_args = (["--annotate"] if annotate else []) + ["--full", str(screenshot_path)]
         # A failed Lightpanda pre-route forces Chrome so _run_browser_command
@@ -1188,9 +1205,10 @@ def _capture_vision_screenshot(effective_task_id: str, annotate: bool, screensho
         result = _session._run_browser_command(effective_task_id, "screenshot", screenshot_args,
                                       _engine_override="auto" if lp_prerouted else None)
     if not result.get("success"):
-        return result, screenshot_path, _json_with_fallback(_err(
-            f"Failed to take screenshot ({_vision._vision_mode_label()} mode): {result.get('error', 'Unknown error')}"
-        ), result)
+        return result, screenshot_path, _failed_response(
+            result,
+            f"Failed to take screenshot ({_vision._vision_mode_label()} mode): {result.get('error', 'Unknown error')}",
+        )
     if result.get("data", {}).get("path"):
         screenshot_path = Path(result["data"]["path"])
     if not screenshot_path.exists():
@@ -1219,6 +1237,22 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
     if blocked is not None:
         return blocked
 
+    from tools.bot_desktop import lease as _bd_lease, runtime as _bd_runtime
+
+    admitted = None
+    if _bd_runtime.published_env().get("DISPLAY") or _bd_lease.human_holds():
+        try:
+            session_info = _session._get_session_info(effective_task_id)
+        except Exception:
+            session_info = {}
+        admitted, refuse = _session._admit_bot_desktop_browser(session_info)
+        if refuse:
+            return _dumps(refuse)
+
+    def _guard(payload):
+        stole = _session._discard_if_lease_moved(admitted)
+        return _dumps(stole) if stole else payload
+
     _lp_prerouted, _lp_fallback_warning, screenshot_path = _vision._lightpanda_vision_preroute(
         effective_task_id, annotate, screenshot_path)
     result: Dict[str, Any] = {}
@@ -1228,12 +1262,12 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         result, screenshot_path, error = _capture_vision_screenshot(
             effective_task_id, annotate, screenshot_path, _lp_prerouted)
         if error is not None:
-            return error
+            return _guard(error)
         # Native image routing: attach the screenshot directly instead of describing it
         # through an aux vision LLM (no information loss).
         from tools.vision_tools import _should_use_native_vision_fast_path
         if _should_use_native_vision_fast_path():
-            return _vision._native_vision_result(screenshot_path, question, annotate, result, _lp_fallback_warning)
+            return _guard(_vision._native_vision_result(screenshot_path, question, annotate, result, _lp_fallback_warning))
 
         analysis = _vision._analyze_screenshot_with_aux_llm(screenshot_path, question)
         response_data = {"success": True, "analysis": analysis or "Vision analysis returned no content.",
@@ -1241,7 +1275,7 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         _lp._copy_fallback_warning(response_data, result)
         if annotate and result.get("data", {}).get("annotations"):
             response_data["annotations"] = result["data"]["annotations"]
-        return _dumps(response_data)
+        return _guard(_dumps(response_data))
     except Exception as e:
         # Keep a captured screenshot — the failure is in the analysis, not the capture,
         # and deleting it loses evidence. The 24-hour cleanup bounds disk growth.
@@ -1251,7 +1285,7 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
             error_info["screenshot_path"] = str(screenshot_path)
             error_info["note"] = "Screenshot was captured but vision analysis failed. You can still share it via MEDIA:<path>."
         _lp._copy_fallback_warning(error_info, result)
-        return _dumps(error_info)
+        return _guard(_dumps(error_info))
 
 
 # ---------------------------------------------------------------------------

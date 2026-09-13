@@ -4,6 +4,7 @@ dispatched, and a command whose run crossed a takeover loses its result."""
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
@@ -76,3 +77,81 @@ def test_real_profile_local_browser_is_fenced_by_provenance_even_without_a_live_
     result = json.loads(browser.browser_click("e1", task_id="review"))
     assert commands == [], f"human holds the lease, yet a real-profile browser command was dispatched: {commands}"
     assert result.get("code") == "human_has_control"
+
+
+def test_chrome_fallback_is_fenced_while_human_controls_shared_browser(monkeypatch):
+    """``_run_chrome_fallback_command`` pops temp Chrome outside ``_run_browser_command``.
+    A human lease must refuse before that session is launched."""
+    from tools import browser_tool_lightpanda_fallback as lp
+    from tools import browser_tool_session as session
+
+    spawned: list = []
+    monkeypatch.setattr(session, "_get_session_info", lambda *a: {
+        "session_name": "review", "cdp_url": None, "features": {"local": True}})
+    monkeypatch.setattr(session, "_popen_agent_browser", lambda *a, **k: spawned.append(a) or (_ for _ in ()).throw(AssertionError("unfenced")))
+    monkeypatch.setattr(session, "_run_browser_command", lambda *a, **k: spawned.append(("get-url",)) or {"success": True, "data": {"url": "https://example.com/"}})
+    lease.acquire("human-viewer")
+    result = lp._run_chrome_fallback_command("review", "screenshot", [], timeout=10)
+    assert spawned == [], f"human holds the lease, yet chrome fallback ran: {spawned}"
+    assert result.get("code") == "human_has_control"
+
+
+def test_chrome_fallback_result_crossing_a_takeover_is_discarded(monkeypatch, tmp_path):
+    """Takeover during the unfenced ``_run_tmp`` open/screenshot must drop the frame."""
+    from tools import browser_tool_lightpanda_fallback as lp
+    from tools import browser_tool_session as session
+
+    monkeypatch.setattr(session, "_get_session_info", lambda *a: {
+        "session_name": "review", "cdp_url": None, "features": {"local": True}})
+    monkeypatch.setattr(session, "_run_browser_command", lambda *a, **k: {
+        "success": True, "data": {"url": "https://example.com/"}})
+    monkeypatch.setattr("tools.browser_tool._socket_safe_tmpdir", lambda: str(tmp_path))
+    monkeypatch.setattr("tools.browser_tool_install._find_agent_browser", lambda: "/usr/bin/agent-browser")
+    monkeypatch.setattr("tools.browser_tool_install._chromium_installed", lambda: True)
+
+    class _Proc:
+        def wait(self, timeout=None):
+            return None
+
+    def popen(_cmd, env, socket_dir, cmd):
+        lease.acquire("human-viewer")
+        lease.release("human-viewer")
+        stdout = os.path.join(socket_dir, f"_stdout_{cmd}")
+        with open(stdout, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps({"success": True, "data": {"path": str(tmp_path / "HUMAN_PRIVATE_FRAME.png"), "secret": "WHAT-THE-HUMAN-TYPED"}}))
+        return _Proc()
+
+    def prepare(name):
+        dest = tmp_path / name
+        dest.mkdir(exist_ok=True)
+        return str(dest)
+
+    monkeypatch.setattr(session, "_popen_agent_browser", popen)
+    monkeypatch.setattr(session, "_prepare_session_socket_dir", prepare)
+    result = lp._run_chrome_fallback_command("review", "screenshot", [], timeout=10)
+    assert "WHAT-THE-HUMAN-TYPED" not in json.dumps(result)
+    assert result.get("code") == "human_has_control"
+
+
+def test_browser_vision_preroute_is_fenced_while_human_controls(monkeypatch, tmp_path):
+    """Lightpanda vision preroute must not adopt a frame after the human takes over."""
+    commands: list = []
+    browser, session = _wire(monkeypatch, commands)
+    monkeypatch.setattr(session._cloud, "_get_browser_engine", lambda: "lightpanda")
+    monkeypatch.setattr(session._cloud, "_should_inject_engine", lambda *a, **k: True)
+
+    shot = tmp_path / "HUMAN_PRIVATE_FRAME.png"
+    shot.write_bytes(b"\x89PNGHUMAN_PRIVATE_FRAME")
+
+    def preroute(_task, _annotate, screenshot_path):
+        lease.acquire("human-viewer")
+        lease.release("human-viewer")
+        return True, "chrome fallback", shot
+
+    monkeypatch.setattr("tools.browser_tool_vision._lightpanda_vision_preroute", preroute)
+    raw = browser.browser_vision("what is on the page?", task_id="review")
+    text = raw if isinstance(raw, str) else json.dumps(raw)
+    parsed = json.loads(text)
+    assert "HUMAN_PRIVATE_FRAME" not in text
+    assert parsed.get("success") is False
+    assert parsed.get("code") == "human_has_control"
