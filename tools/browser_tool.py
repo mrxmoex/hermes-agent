@@ -1138,7 +1138,10 @@ def _eval_failure_response(result: Dict[str, Any]) -> str:
             "(e.g. .innerText, .href, .src, .value) or use "
             "JSON.stringify() / a snapshot tool instead."
         )
-    return json.dumps(_lp._copy_fallback_warning(_err(err), result))
+    # Keep ``code: human_has_control`` — type's sibling. A reminted CLI eval
+    # refuse must not look like a generic eval failure.
+    extra = {"code": result["code"]} if result.get("code") else {}
+    return json.dumps(_lp._copy_fallback_warning(_err(err, **extra), result))
 
 
 def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:

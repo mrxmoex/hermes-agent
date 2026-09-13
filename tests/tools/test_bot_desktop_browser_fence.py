@@ -828,6 +828,25 @@ def test_browser_eval_subprocess_discards_when_epoch_moves_during_ssrf_recheck(m
     assert "WHAT-THE-HUMAN-TYPED" not in text
 
 
+def test_browser_eval_failure_preserves_human_has_control_code(monkeypatch):
+    """The CLI eval failure wrapper rewrites backend errors and used to drop ``code``.
+
+    ``_run_browser_command`` can refuse with human_has_control while the tool-level
+    ticket is still current (or None). The agent must still see the handoff code.
+    """
+    browser, session = _wire(monkeypatch, [])
+    monkeypatch.setattr(browser._eval_policy, "_eval_ssrf_guard_active", lambda *_a: False)
+    monkeypatch.setattr(browser, "_eval_supervisor_fast_path", lambda *_a, **_k: None)
+    monkeypatch.setattr(session, "_run_browser_command", lambda *_a, **_k: {
+        "success": False, "code": "human_has_control",
+        "error": "A human has control of this bot's screen.",
+    })
+    raw = browser._browser_eval("1+1", task_id="review")
+    parsed = json.loads(raw if isinstance(raw, str) else json.dumps(raw))
+    assert parsed.get("code") == "human_has_control"
+    assert parsed.get("success") is not True
+
+
 def test_browser_type_preserves_human_has_control_code(monkeypatch):
     """fill's refuse/discard carries ``code``; type must not rewrite it as a generic error.
 
