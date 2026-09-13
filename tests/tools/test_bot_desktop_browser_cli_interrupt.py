@@ -334,6 +334,26 @@ def test_agent_browser_invocation_is_token_match_not_substring():
         ["npm", "install", "chrome-devtools-mcp"])
     assert not _is_playwright_invocation(["yarn", "add", "playwright"])
     assert not _is_chrome_devtools_mcp_invocation(["pnpm", "exec", "ruff"])
+    from tools.browser_tool_session import _is_lighthouse_invocation
+    assert _is_lighthouse_invocation(
+        ["npx", "-y", "lighthouse@latest", "--port", "9333", "https://example.com"])
+    assert _is_lighthouse_invocation(
+        ["node", "/home/x/node_modules/lighthouse/cli/index.js",
+         "--port=9333", "https://example.com"])
+    assert _is_lighthouse_invocation(
+        ["pnpm", "exec", "lighthouse", "--port", "9333", "https://example.com"])
+    assert _is_lighthouse_invocation(
+        ["npm", "exec", "--package=lighthouse", "--",
+         "--port=9333", "https://example.com"])
+    assert not _is_lighthouse_invocation(["npx", "lighthouse-ci"])
+    assert not _is_lighthouse_invocation(
+        ["node", "/home/x/node_modules/@lhci/cli/src/cli.js"])
+    assert not _is_lighthouse_invocation(["/usr/bin/cat", "lighthouse.log"])
+    assert not _is_lighthouse_invocation(
+        ["/bin/bash", "-c", "npx lighthouse --port 9333 https://example.com"])
+    assert not _is_lighthouse_invocation(["pnpm", "run", "lighthouse"])
+    assert not _is_lighthouse_invocation(["npm", "install", "lighthouse"])
+    assert not _is_lighthouse_invocation(["pnpm", "exec", "ruff"])
 
 
 def test_unregistered_cdp_dock_cli_killed_on_takeover():
@@ -896,6 +916,86 @@ def test_unregistered_package_exec_dock_cli_killed_on_takeover():
     assert run_script.killed == 0
     assert other.killed == 0
     assert install.killed == 0
+    assert bash_parent.killed == 0
+
+
+def test_unregistered_lighthouse_dock_port_killed_on_takeover():
+    """terminal() lighthouse --port <dock> is leftover CDP action.
+
+    Official attach is ``--port`` (+ optional ``--hostname``, default
+    localhost). No ``--port`` / ``--port=0`` launches its own Chrome.
+    LAN ``--hostname`` is another machine. Do not treat ``-p`` as the
+    port (npm pin / CRI).
+    """
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    bdb.remember_dock_cdp_port(9333)
+    leftover = _FakeProc(
+        9400,
+        ["npx", "-y", "lighthouse@latest",
+         "--port", "9333", "https://example.com"],
+    )
+    equals = _FakeProc(
+        9401,
+        ["lighthouse", "--port=9333", "--hostname", "127.0.0.1",
+         "https://example.com"],
+    )
+    shebang = _FakeProc(
+        9402,
+        ["node", "/home/x/node_modules/lighthouse/cli/index.js",
+         "--port=9333", "https://example.com"],
+    )
+    packaged = _FakeProc(
+        9403,
+        ["pnpm", "exec", "lighthouse",
+         "--port", "9333", "https://example.com"],
+    )
+    no_port = _FakeProc(
+        9404,
+        ["npx", "lighthouse", "https://example.com"],
+    )
+    ephemeral = _FakeProc(
+        9405,
+        ["npx", "lighthouse", "--port=0", "https://example.com"],
+    )
+    other = _FakeProc(
+        9406,
+        ["npx", "lighthouse", "--port", "9222", "https://example.com"],
+    )
+    lan = _FakeProc(
+        9407,
+        ["npx", "lighthouse", "--hostname", "10.0.0.5",
+         "--port", "9333", "https://example.com"],
+    )
+    cri_short = _FakeProc(
+        9408,
+        ["npx", "lighthouse", "-p", "9333", "https://example.com"],
+    )
+    bash_parent = _FakeProc(
+        9409,
+        ["/bin/bash", "-c",
+         "npx lighthouse --port 9333 https://example.com"],
+    )
+    lease.acquire("human")
+    n = interrupt_unregistered_dock_cli(
+        processes=[
+            leftover, equals, shebang, packaged, no_port, ephemeral,
+            other, lan, cri_short, bash_parent,
+        ],
+        chromium_pid=9999,
+        owner_daemon_pid=9998,
+    )
+    assert n == 4
+    assert leftover.killed == 1
+    assert equals.killed == 1
+    assert shebang.killed == 1
+    assert packaged.killed == 1
+    assert no_port.killed == 0
+    assert ephemeral.killed == 0
+    assert other.killed == 0
+    assert lan.killed == 0
+    assert cri_short.killed == 0
     assert bash_parent.killed == 0
 
 

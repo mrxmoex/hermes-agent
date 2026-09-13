@@ -985,6 +985,10 @@ _PLAYWRIGHT_NODE_ENTRYPOINTS = frozenset({
 _PLAYWRIGHT_MCP_NODE_ENTRYPOINTS = frozenset({
     "mcp", "cli.js", "cli.mjs", "cli.cjs", "index.js",
 })
+_LIGHTHOUSE_NODE_ENTRYPOINTS = frozenset({
+    "lighthouse", "lighthouse.js", "lighthouse-cli.js",
+    "cli.js", "cli.mjs", "cli.cjs", "index.js",
+})
 _PLAYWRIGHT_CDP_ENV = (
     "PW_TEST_CONNECT_WS_ENDPOINT",
     "PLAYWRIGHT_WS_ENDPOINT",
@@ -1420,6 +1424,54 @@ def _is_chrome_devtools_mcp_invocation(tokens: List[str]) -> bool:
     return False
 
 
+def _token_is_lighthouse(token: str) -> bool:
+    """True when this token is the Lighthouse CLI or its Node entry.
+
+    Token-match only. ``lighthouse-ci`` / ``@lhci/cli`` / ``cat lighthouse.log``
+    are not invocations. Path parts must include ``lighthouse`` — not
+    ``lighthouse-ci``.
+    """
+    if _token_basename_is(token, "lighthouse"):
+        return True
+    raw = (token or "").strip().strip("\"'")
+    if not raw:
+        return False
+    path = Path(raw)
+    parts = [p.lower() for p in path.parts]
+    if "lighthouse" not in parts:
+        return False
+    return path.name.lower() in _LIGHTHOUSE_NODE_ENTRYPOINTS
+
+
+def _is_lighthouse_invocation(tokens: List[str]) -> bool:
+    """True when argv launches the Lighthouse CLI (binary, npx, shebang node).
+
+    Token-match only. ``npx lighthouse https://example.com`` without
+    ``--port`` launches its own Chrome and stays unknown at aim time.
+    Do not match ``lighthouse-ci`` or a bash ``-c`` parent. Do not use
+    ``-p`` as a port flag — that is npm's package pin / CRI's short port.
+    """
+    if not tokens:
+        return False
+    if _token_is_lighthouse(tokens[0]):
+        return True
+    name0 = _launcher_basename(tokens[0])
+    if name0 in _ENV_LAUNCHERS:
+        return _is_lighthouse_invocation(_env_command_tokens(tokens))
+    via = _invocation_via_package_exec(tokens, _is_lighthouse_invocation)
+    if via is not None:
+        return via
+    if name0 in _NPX_LAUNCHERS:
+        rest = _first_non_flag_tokens(tokens)
+        return bool(rest) and _token_is_lighthouse(rest[0])
+    if name0 in _NODE_LAUNCHERS:
+        return any(_token_is_lighthouse(t) for t in _first_non_flag_tokens(tokens))
+    if _is_python_launcher(name0):
+        rest = _first_non_flag_tokens(tokens)
+        return bool(rest) and _token_is_lighthouse(rest[0])
+    return False
+
+
 def _is_unregistered_dock_cli_invocation(tokens: List[str]) -> bool:
     return (
         _is_agent_browser_invocation(tokens)
@@ -1428,6 +1480,7 @@ def _is_unregistered_dock_cli_invocation(tokens: List[str]) -> bool:
         or _is_playwright_mcp_invocation(tokens)
         or _is_chrome_remote_interface_invocation(tokens)
         or _is_chrome_devtools_mcp_invocation(tokens)
+        or _is_lighthouse_invocation(tokens)
     )
 
 
@@ -1533,6 +1586,24 @@ def _unregistered_cli_aims_at_dock(
             port = _loopback_cdp_port(val)
             return dock_port is not None and port == dock_port
         return False
+    if (
+        _is_lighthouse_invocation(tokens)
+        and not _is_agent_browser_invocation(tokens)
+    ):
+        # Official attach: ``lighthouse URL --port=<dock>``. Default
+        # hostname is localhost. ``--port=0`` / missing ``--port`` launch
+        # their own Chrome. LAN ``--hostname`` is another machine.
+        # ``--port`` only — never ``-p`` (npm pin / CRI short port).
+        port_text = _flag_value(tokens, ("--port",))
+        if not port_text or not str(port_text).isdigit():
+            return False
+        port = int(port_text)
+        if not (1 <= port <= 65535):
+            return False
+        host = _flag_value(tokens, ("--hostname",))
+        if host and not _is_loopback_cdp_host(host):
+            return False
+        return dock_port is not None and port == dock_port
     cdp = _cdp_arg_from_argv(tokens)
     if cdp:
         if _cdp_url_is_bot_desktop_browser(cdp):
@@ -1602,10 +1673,11 @@ def interrupt_unregistered_dock_cli(
 
     Finding 42 only tracks Hermes-spawned CLIs (``_spawn_and_collect`` /
     ``browser_exec``). ``terminal()`` ``agent-browser`` / ``npx agent-browser``
-    and ``browser-use`` / ``uvx browser-use`` / ``npx playwright`` never enter
-    ``_inflight_dock_cli``, so Take over would wait those writers out —
-    leftover *action* in the field the human is typing into, the same
-    class as leftover ``ws.send``. After Linux shebang the writer is
+    and ``browser-use`` / ``uvx browser-use`` / ``npx playwright`` /
+    ``npx lighthouse --port <dock>`` never enter ``_inflight_dock_cli``,
+    so Take over would wait those writers out — leftover *action* in the
+    field the human is typing into, the same class as leftover
+    ``ws.send``. After Linux shebang the writer is
     ``node /path/agent-browser`` (or ``python3 …/browser-use``), not
     argv0. The bash ``-c`` parent is not the writer — PID-only kill of
     bash orphans the child. This is not a lease-gated terminal fence:
