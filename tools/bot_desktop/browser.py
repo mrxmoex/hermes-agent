@@ -327,9 +327,34 @@ def _cdp_port_reachable(port: int, hosts: Tuple[str, ...]) -> bool:
     return False
 
 
-def _paths_same_user_data_dir(left: str, right: str) -> bool:
+def _proc_cwd(pid: int) -> Optional[Path]:
+    """Chromium's cwd (``/proc/<pid>/cwd``), or ``None``."""
     try:
-        return Path(left).resolve() == Path(right).resolve()
+        return Path(os.readlink(f"/proc/{pid}/cwd"))
+    except OSError:
+        return None
+
+
+def _resolve_user_data_dir(path: str, *, cwd: Optional[Path] = None) -> Path:
+    """Resolve a cmdline ``--user-data-dir`` against *cwd* when relative.
+
+    Chromium stores the argv literally. A wrapper that ``cd``s into
+    ``~/.hermes/bot-desktop`` and launches ``--user-data-dir=browser-profile``
+    is still this jar. ``Path.resolve()`` without *cwd* uses *this*
+    process's cwd and then recover / configured-listen treat the dock as
+    another Chrome — leftover identity HTTP-probes the jar a human holds.
+    """
+    raw = Path(path)
+    if not raw.is_absolute() and cwd is not None:
+        raw = cwd / raw
+    return raw.resolve()
+
+
+def _paths_same_user_data_dir(
+    left: str, right: str, *, cwd: Optional[Path] = None,
+) -> bool:
+    try:
+        return _resolve_user_data_dir(left, cwd=cwd) == Path(right).resolve()
     except OSError:
         return os.path.normpath(left) == os.path.normpath(right)
 
@@ -378,7 +403,9 @@ def _recover_cdp_port_from_singleton(user_data_dir: str, pid: int) -> Optional[i
     """
     tokens = _chromium_cmdline_tokens(pid)
     listed = _user_data_dir_from_cmdline(tokens)
-    if not listed or not _paths_same_user_data_dir(listed, user_data_dir):
+    if not listed or not _paths_same_user_data_dir(
+        listed, user_data_dir, cwd=_proc_cwd(pid),
+    ):
         return None
     explicit = _remote_debugging_port_from_cmdline(tokens)
     if explicit is not None:
@@ -501,7 +528,9 @@ def _configured_listen_port_for_this_jar() -> Optional[int]:
     if pid is None:
         return None
     listed = _user_data_dir_from_cmdline(_chromium_cmdline_tokens(pid))
-    if not listed or not _paths_same_user_data_dir(listed, user_data_dir):
+    if not listed or not _paths_same_user_data_dir(
+        listed, user_data_dir, cwd=_proc_cwd(pid),
+    ):
         return None
     if want not in _loopback_listen_ports_for_pid(pid):
         return None

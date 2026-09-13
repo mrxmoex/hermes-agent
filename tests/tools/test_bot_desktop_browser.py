@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 import socket
+from pathlib import Path
 
 from tools.bot_desktop import browser, runtime
 
@@ -395,6 +396,76 @@ def test_running_instance_recovers_explicit_cmdline_port(tmp_path, monkeypatch):
     try:
         # Explicit cmdline port wins even when several listens exist.
         assert browser.running_instance_cdp_port(str(tmp_path)) == port
+    finally:
+        listener.close()
+
+
+def test_paths_same_user_data_dir_resolves_relative_against_pid_cwd(tmp_path):
+    """Cmdline ``--user-data-dir`` is relative to Chromium's cwd, not ours."""
+    profile = tmp_path / "bot-desktop" / "browser-profile"
+    profile.mkdir(parents=True)
+    cwd = tmp_path / "bot-desktop"
+    assert browser._paths_same_user_data_dir("browser-profile", str(profile), cwd=cwd)
+    assert browser._paths_same_user_data_dir("./browser-profile", str(profile), cwd=cwd)
+    assert browser._paths_same_user_data_dir(".", str(profile), cwd=profile)
+    assert not browser._paths_same_user_data_dir(
+        "browser-profile", str(profile), cwd=tmp_path)
+    assert browser._paths_same_user_data_dir(str(profile), str(profile))
+
+
+def test_running_instance_recovers_relative_user_data_dir(tmp_path, monkeypatch):
+    """Relative cmdline dir resolved against this process cwd missed the jar.
+
+    A wrapper ``cd ~/.hermes/bot-desktop && chrome --user-data-dir=browser-profile``
+    is still this cookie jar. Admit None → leftover HTTP on the human hold.
+    """
+    profile = tmp_path / "jar"
+    profile.mkdir()
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+    os.symlink(f"host-{os.getpid()}", profile / "SingletonLock")
+    monkeypatch.setattr(
+        browser,
+        "_chromium_cmdline_tokens",
+        lambda pid: ["chrome", "--user-data-dir=jar", "--remote-debugging-port=0"],
+    )
+    monkeypatch.setattr(browser, "_proc_cwd", lambda pid: tmp_path)
+    monkeypatch.setattr(browser, "_loopback_listen_ports_for_pid", lambda pid: {port})
+    try:
+        assert browser.running_instance_cdp_port(str(profile)) == port
+        monkeypatch.setattr(browser, "_proc_cwd", lambda pid: Path("/tmp"))
+        assert browser.running_instance_cdp_port(str(profile)) is None
+    finally:
+        listener.close()
+
+
+def test_persist_configured_listen_accepts_relative_user_data_dir(tmp_path, monkeypatch):
+    """Configured listen must not fail the jar check on a relative cmdline dir."""
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+    profile = tmp_path / "browser-profile"
+    profile.mkdir()
+    os.symlink(f"host-{os.getpid()}", profile / "SingletonLock")
+    monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path)
+    monkeypatch.setattr(browser, "profile_dir", lambda: profile)
+    monkeypatch.setattr(browser, "running_instance_cdp_port", lambda *a, **k: None)
+    monkeypatch.setattr(
+        browser,
+        "_chromium_cmdline_tokens",
+        lambda pid: ["chrome", "--user-data-dir=browser-profile"],
+    )
+    monkeypatch.setattr(browser, "_proc_cwd", lambda pid: tmp_path)
+    monkeypatch.setattr(browser, "_loopback_listen_ports_for_pid", lambda pid: {port})
+    monkeypatch.setattr(
+        browser, "_configured_cdp_override_url", lambda: f"http://127.0.0.1:{port}",
+    )
+    try:
+        assert browser.persist_live_dock_cdp_port() == port
+        assert browser.last_known_dock_cdp_port() == port
     finally:
         listener.close()
 
