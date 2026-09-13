@@ -160,19 +160,23 @@ def _ensure_cdp_supervisor(task_id: str) -> None:
         raw = (_get_cdp_override_raw() or "").strip()
     except Exception:
         raw = ""
-    session_cdp = ""
-    if not raw:
-        with _bt._cleanup_lock:
-            session_info = _bt._active_sessions.get(task_id, {})
-        session_cdp = str(session_info.get("cdp_url") or "")
+    with _bt._cleanup_lock:
+        session_info = _bt._active_sessions.get(task_id, {}) or {}
+    session_cdp = str(session_info.get("cdp_url") or "")
     candidate = raw or session_cdp
     if not candidate:
         return
     try:
+        from tools.bot_desktop.lease import HumanHasControl
+        from tools.browser_tool_session import _admit_shared_browser, _shares_bot_desktop_browser
         from tools.browser_tool_supervisor_lease import install_supervisor_lease_hook, supervisor_may_touch_page
-        if not supervisor_may_touch_page(candidate):
+        if session_info and _shares_bot_desktop_browser(session_info):
+            _admit_shared_browser(session_info)
+        elif not supervisor_may_touch_page(candidate):
             return
         install_supervisor_lease_hook()
+    except HumanHasControl:
+        return
     except Exception:
         pass
     if raw:
@@ -190,8 +194,13 @@ def _ensure_cdp_supervisor(task_id: str) -> None:
             pass
     try:
         from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
+        from tools.browser_tool_session import _shares_bot_desktop_browser
         policy, timeout_s = _get_dialog_policy_config()
-        SUPERVISOR_REGISTRY.get_or_start(task_id=task_id, cdp_url=cdp_url, dialog_policy=policy, dialog_timeout_s=timeout_s)
+        supervisor = SUPERVISOR_REGISTRY.get_or_start(
+            task_id=task_id, cdp_url=cdp_url, dialog_policy=policy, dialog_timeout_s=timeout_s,
+        )
+        if session_info and _shares_bot_desktop_browser(session_info):
+            supervisor.targets_bot_desktop = True
     except Exception as exc:
         _bt.logger.debug("CDP supervisor attach for task=%s failed (non-fatal): %s", task_id, exc)
 

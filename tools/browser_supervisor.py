@@ -107,6 +107,15 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         # lease.json are a different bot.
         from hermes_constants import hermes_home_key
         self.hermes_home = hermes_home_key()
+        # Capture dock identity NOW. After Take over, DevToolsActivePort /
+        # SingletonLock can be gone while this WS is still the jar the human
+        # is typing into — a live re-probe would fail-open leftover I/O.
+        self.targets_bot_desktop = False
+        try:
+            from tools.browser_tool_session import _cdp_url_is_bot_desktop_browser
+            self.targets_bot_desktop = bool(_cdp_url_is_bot_desktop_browser(cdp_url))
+        except Exception:
+            self.targets_bot_desktop = False
 
         # State protected by ``_state_lock`` for cross-thread reads.
         self._state_lock = threading.Lock()
@@ -367,7 +376,9 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
             try:
                 from tools.browser_tool_supervisor_lease import supervisor_may_touch_page
                 if not supervisor_may_touch_page(
-                    self.cdp_url, home=getattr(self, "hermes_home", None),
+                    self.cdp_url,
+                    home=getattr(self, "hermes_home", None),
+                    targets_bot_desktop=getattr(self, "targets_bot_desktop", None),
                 ):
                     logger.info(
                         "CDP supervisor %s: not (re)connecting; a human holds the Bot Desktop lease",

@@ -714,19 +714,43 @@ def _refuse_shared_session_while_human_holds(*, cdp_url: str = "") -> None:
     _bd_lease.assert_agent_may_act()
 
 
-def _admit_shared_browser(session_info: Optional[Dict[str, Any]] = None, *, cdp_url: str = ""):
+def _admit_shared_browser(
+    session_info: Optional[Dict[str, Any]] = None,
+    *,
+    cdp_url: str = "",
+    home: Optional[str] = None,
+    treat_as_dock: bool = False,
+):
     """Admit a call against the Bot Desktop's shared Chromium.
 
     Returns the lease snapshot when this *is* that browser (so the caller can
     discard a mid-flight result). Returns ``None`` for another browser.
     Raises ``HumanHasControl`` while a human holds.
+
+    ``home`` re-enters the profile that owns the dock (leftover supervisors
+    outlive a multiplex turn). ``treat_as_dock`` is mint-time identity: a
+    leftover WS stamped as the dock stays the dock even after
+    ``DevToolsActivePort`` disappears.
     """
-    if session_info is None and cdp_url:
-        session_info = {"cdp_url": cdp_url, "features": {"cdp_override": True}}
-    if not session_info or not _shares_bot_desktop_browser(session_info):
-        return None
-    from tools.bot_desktop import lease as _bd_lease
-    return _bd_lease.assert_agent_may_act()
+    token = None
+    if isinstance(home, str) and home:
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        token = set_hermes_home_override(home)
+    try:
+        from tools.bot_desktop import lease as _bd_lease, runtime as _bd_runtime
+        if treat_as_dock:
+            if not (_bd_runtime.published_env().get("DISPLAY") or _bd_lease.human_holds()):
+                return None
+            return _bd_lease.assert_agent_may_act()
+        if session_info is None and cdp_url:
+            session_info = {"cdp_url": cdp_url, "features": {"cdp_override": True}}
+        if not session_info or not _shares_bot_desktop_browser(session_info):
+            return None
+        return _bd_lease.assert_agent_may_act()
+    finally:
+        if token is not None:
+            from hermes_constants import reset_hermes_home_override
+            reset_hermes_home_override(token)
 
 
 def _admit_task_shared_browser(task_id: Optional[str] = None, *, cdp_url: str = ""):
@@ -740,6 +764,8 @@ def _admit_task_shared_browser(task_id: Optional[str] = None, *, cdp_url: str = 
     if info is None and task_id:
         info = _bt._active_sessions.get(task_id)
     raw = (cdp_url or "").strip()
+    leftover_home: Optional[str] = None
+    leftover_dock = False
     if not raw:
         try:
             raw = _cdp._get_cdp_override_raw()
@@ -747,7 +773,8 @@ def _admit_task_shared_browser(task_id: Optional[str] = None, *, cdp_url: str = 
             raw = ""
     if not raw:
         # Leftover supervisor after the session row was dropped: still the dock jar
-        # if its stored CDP URL is this profile's live Chromium.
+        # if it was stamped as this profile's Chromium at mint, or its stored
+        # CDP URL still matches the live port.
         try:
             from tools.browser_supervisor import SUPERVISOR_REGISTRY
             for candidate in (task_id, key, "default"):
@@ -757,7 +784,10 @@ def _admit_task_shared_browser(task_id: Optional[str] = None, *, cdp_url: str = 
                 if sup is None:
                     continue
                 raw = str(getattr(sup, "cdp_url", "") or "")
-                if raw:
+                home = getattr(sup, "hermes_home", None)
+                leftover_home = home if isinstance(home, str) and home else None
+                leftover_dock = getattr(sup, "targets_bot_desktop", None) is True
+                if raw or leftover_dock:
                     break
         except Exception:
             raw = raw
@@ -765,7 +795,9 @@ def _admit_task_shared_browser(task_id: Optional[str] = None, *, cdp_url: str = 
         admitted = _admit_shared_browser(info)
         if admitted is not None:
             return admitted
-    return _admit_shared_browser(cdp_url=raw)
+    return _admit_shared_browser(
+        cdp_url=raw, home=leftover_home, treat_as_dock=leftover_dock,
+    )
 
 
 def _lease_moved_result(admitted) -> Optional[Dict[str, Any]]:

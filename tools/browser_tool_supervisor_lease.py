@@ -60,22 +60,29 @@ def _supervisor_home(supervisor, task_id: Optional[str] = None) -> Optional[str]
         return None
 
 
-def supervisor_may_touch_page(cdp_url: str = "", home: Optional[str] = None) -> bool:
+def supervisor_may_touch_page(
+    cdp_url: str = "",
+    home: Optional[str] = None,
+    targets_bot_desktop=None,
+) -> bool:
     """False when a leftover supervisor must not talk to this Chromium.
 
     A human-held dock jar is the page they are typing into. Reconnect,
     ``Target.createTarget``, Fetch passthrough, and ``/json/version`` are all
     observation/action on that jar. Unrelated remote CDP is another browser.
 
-    ``home`` is the HERMES_HOME that owns the dock. Without it, a leftover
-    supervisor thread in a multiplex process would match the launch profile's
-    port (a miss) and treat the sibling bot's jar as "another browser".
+    ``home`` is the HERMES_HOME that owns the dock. ``targets_bot_desktop`` is
+    mint-time identity so a missing ``DevToolsActivePort`` cannot unfence a
+    leftover WS that was the dock when it attached.
     """
     try:
         from tools.bot_desktop.lease import HumanHasControl
         from tools.browser_tool_session import _admit_shared_browser
-        with _home_scope(home):
-            _admit_shared_browser(cdp_url=cdp_url or "")
+        _admit_shared_browser(
+            cdp_url=cdp_url or "",
+            home=home,
+            treat_as_dock=targets_bot_desktop is True,
+        )
         return True
     except HumanHasControl:
         return False
@@ -90,7 +97,12 @@ def request_leftover_stop(supervisor) -> bool:
     WebSocket or break the read loop; ``_run`` then exits instead of reconnecting.
     """
     home = _supervisor_home(supervisor)
-    if supervisor_may_touch_page(getattr(supervisor, "cdp_url", "") or "", home=home):
+    targets = getattr(supervisor, "targets_bot_desktop", None)
+    if supervisor_may_touch_page(
+        getattr(supervisor, "cdp_url", "") or "",
+        home=home,
+        targets_bot_desktop=targets if isinstance(targets, bool) else None,
+    ):
         return False
     setattr(supervisor, "_stop_requested", True)
     return True
@@ -177,9 +189,14 @@ def stop_reserved_supervisors(home: Optional[str] = None) -> None:
                     continue
                 session_info = _bt._active_sessions.get(task_id)
                 cdp_url = str(getattr(sup, "cdp_url", "") or "")
+                stamped_dock = getattr(sup, "targets_bot_desktop", None) is True
                 if session_info is not None and not _session._is_shared_bot_desktop_session(session_info):
                     continue
-                if session_info is None and not _session._cdp_url_is_bot_desktop_browser(cdp_url):
+                if (
+                    session_info is None
+                    and not stamped_dock
+                    and not _session._cdp_url_is_bot_desktop_browser(cdp_url)
+                ):
                     continue
                 SUPERVISOR_REGISTRY.stop(task_id)
         except Exception:

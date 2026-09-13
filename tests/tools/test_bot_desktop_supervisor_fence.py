@@ -331,3 +331,51 @@ def test_cross_process_takeover_stops_sibling_profile_supervisor(monkeypatch, tm
                     f.unlink()
                 except OSError:
                     pass
+
+
+def test_minted_dock_identity_survives_a_missing_devtools_port(monkeypatch):
+    """Take over can unlink DevToolsActivePort; leftover I/O is still the dock."""
+    import tools.bot_desktop.browser as bdb
+    from tools.bot_desktop.lease import HumanHasControl
+    from tools.browser_supervisor import CDPSupervisor
+    from tools.browser_tool_session import _admit_task_shared_browser
+    from tools.browser_tool_supervisor_lease import request_leftover_stop, supervisor_may_touch_page
+
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: 9333)
+    sup = CDPSupervisor(task_id="review", cdp_url="ws://127.0.0.1:9333/devtools/browser/x")
+    assert sup.targets_bot_desktop is True
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: None)
+    lease.acquire("human-viewer")
+    assert supervisor_may_touch_page(sup.cdp_url) is True
+    assert supervisor_may_touch_page(
+        sup.cdp_url, home=sup.hermes_home, targets_bot_desktop=True,
+    ) is False
+    assert request_leftover_stop(sup) is True
+    assert sup._stop_requested is True
+    import tools.browser_supervisor as bs
+    registry = MagicMock()
+    registry.get.return_value = sup
+    monkeypatch.setattr(bs, "SUPERVISOR_REGISTRY", registry)
+    with pytest.raises(HumanHasControl):
+        _admit_task_shared_browser("review")
+
+
+def test_missing_devtools_port_still_stops_stamped_dock_supervisor(monkeypatch):
+    """Watch sweep must not skip a leftover dock just because the port file is gone."""
+    import tools.bot_desktop.browser as bdb
+    from tools.browser_supervisor import CDPSupervisor
+    from tools.browser_tool_supervisor_lease import stop_reserved_supervisors
+
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: 9333)
+    sup = CDPSupervisor(task_id="review", cdp_url="ws://127.0.0.1:9333/devtools/browser/x")
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: None)
+    stopped = []
+    import tools.browser_supervisor as bs
+    registry = MagicMock()
+    registry._lock = __import__("threading").Lock()
+    registry._by_task = {"review": sup}
+    registry.stop.side_effect = lambda tid: stopped.append(tid)
+    monkeypatch.setattr(bs, "SUPERVISOR_REGISTRY", registry)
+    lease.acquire("human-viewer")
+    stop_reserved_supervisors()
+    assert stopped == ["review"]
