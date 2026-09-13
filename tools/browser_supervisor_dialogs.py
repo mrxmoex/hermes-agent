@@ -43,6 +43,26 @@ def _dialog_dict(obj: Any, keys: tuple) -> Dict[str, Any]:
     return {k: _redact_supervisor_text(getattr(obj, k)) if k in _REDACTED_FIELDS else getattr(obj, k) for k in keys}
 
 
+def _human_holds_shared_browser(cdp_url: str) -> bool:
+    """True when ``cdp_url`` is this profile's Bot Desktop Chromium and a human holds it.
+
+    The supervisor WebSocket stays up across takeover (teardown is deferred so the
+    human keeps the page). Tool wrappers remint, but this connection still rewrites
+    ``alert``/``confirm``/``prompt`` and auto-answers them. That is driving the
+    shared browser during the reserved turn.
+    """
+    if not cdp_url:
+        return False
+    try:
+        from tools.bot_desktop.lease import human_holds
+        from tools.browser_tool_session import _shares_bot_desktop_browser
+    except Exception:
+        return False
+    if not human_holds():
+        return False
+    return _shares_bot_desktop_browser({"cdp_url": cdp_url})
+
+
 DIALOG_POLICY_MUST_RESPOND = "must_respond"
 DIALOG_POLICY_AUTO_DISMISS = "auto_dismiss"
 DIALOG_POLICY_AUTO_ACCEPT = "auto_accept"
@@ -60,6 +80,17 @@ RECENT_DIALOGS_MAX = 20
 # resolution, so it never has to exist. Keep ASCII + URL-safe (Fetch patterns gate on it).
 DIALOG_BRIDGE_HOST = "hermes-dialog-bridge.invalid"
 DIALOG_BRIDGE_URL_PATTERN = f"http://{DIALOG_BRIDGE_HOST}/*"
+
+# Restore Window.prototype natives after a human takes the shared Chromium.
+# ``delete`` drops the page-level override the bridge installed.
+_DIALOG_BRIDGE_RESTORE_SCRIPT = r"""
+(() => {
+  delete window.__hermesDialogBridgeInstalled;
+  delete window.alert;
+  delete window.confirm;
+  delete window.prompt;
+})();
+"""
 
 # Injected into every frame via Page.addScriptToEvaluateOnNewDocument. Sync GET with
 # query params so the Fetch interceptor never parses a body; unreachable bridge → null
@@ -134,7 +165,7 @@ class DialogRecord:
     message: str
     opened_at: float
     closed_at: float
-    closed_by: str  # "agent" | "auto_policy" | "remote" | "watchdog"
+    closed_by: str  # "agent" | "auto_policy" | "remote" | "watchdog" | "human_takeover"
     frame_id: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
@@ -156,22 +187,132 @@ class DialogSupervisionMixin:
         """Install the dialog-bridge init script + Fetch interceptor on a session. Idempotent at
         the CDP level (Chromium de-dupes identical add-script calls; Fetch.enable replaces prior
         patterns); the final Runtime.evaluate injects into the already-loaded document so
-        existing pages pick up the override on reconnect."""
+        existing pages pick up the override on reconnect.
+
+        Skipped while a human holds this shared Chromium — they need native
+        ``alert``/``confirm``/``prompt``, not an agent-owned XHR intercept.
+        """
+        if _human_holds_shared_browser(getattr(self, "cdp_url", "")):
+            return
         sid = (session_id or "")[:16]
-        steps = (
-            ("Page.addScriptToEvaluateOnNewDocument", {"source": _DIALOG_BRIDGE_SCRIPT, "runImmediately": True},
-             5.0, f"dialog bridge sid={sid}"),
-            ("Fetch.enable", {"patterns": [{"urlPattern": DIALOG_BRIDGE_URL_PATTERN, "requestStage": "Request"}],
-                              "handleAuthRequests": False}, 5.0, f"dialog bridge sid={sid}"),
-            ("Runtime.evaluate", {"expression": _DIALOG_BRIDGE_SCRIPT, "returnByValue": True},
-             3.0, f"dialog bridge inject sid={sid}"),
+        try:
+            added = await self._cdp(
+                "Page.addScriptToEvaluateOnNewDocument",
+                {"source": _DIALOG_BRIDGE_SCRIPT, "runImmediately": True},
+                session_id=session_id, timeout=5.0,
+            )
+            ident = str((added.get("result") or {}).get("identifier") or "")
+            if ident:
+                ids = getattr(self, "_dialog_bridge_script_ids", None)
+                if ids is None:
+                    self._dialog_bridge_script_ids = {}
+                self._dialog_bridge_script_ids[session_id] = ident
+        except Exception as e:
+            logger.debug("Page.addScriptToEvaluateOnNewDocument failed (%s): %s", sid, e)
+        await self._cdp_quiet(
+            "Fetch.enable",
+            {"patterns": [{"urlPattern": DIALOG_BRIDGE_URL_PATTERN, "requestStage": "Request"}],
+             "handleAuthRequests": False},
+            session_id=session_id, timeout=5.0, what=f"dialog bridge sid={sid}",
         )
-        for method, params, timeout, what in steps:
-            await self._cdp_quiet(method, params, session_id=session_id, timeout=timeout, what=what)
+        await self._cdp_quiet(
+            "Runtime.evaluate", {"expression": _DIALOG_BRIDGE_SCRIPT, "returnByValue": True},
+            session_id=session_id, timeout=3.0, what=f"dialog bridge inject sid={sid}",
+        )
+        self._dialog_intercept_paused = False
+
+    def _dialog_live_session_ids(self) -> list:
+        """Page session plus any child sessions the bridge was installed on."""
+        sessions: list = []
+        page = getattr(self, "_page_session_id", None)
+        if page:
+            sessions.append(page)
+        for sid in getattr(self, "_dialog_bridge_script_ids", {}) or {}:
+            if sid and sid not in sessions:
+                sessions.append(sid)
+        for frame in (getattr(self, "_frames", None) or {}).values():
+            sid = getattr(frame, "cdp_session_id", None)
+            if sid and sid not in sessions:
+                sessions.append(sid)
+        return sessions
+
+    async def _pause_dialog_intercept(self) -> None:
+        """Drop the bridge and Fetch intercept so the human sees native JS dialogs."""
+        if getattr(self, "_dialog_intercept_paused", False):
+            return
+        self._dialog_intercept_paused = True
+        ids = dict(getattr(self, "_dialog_bridge_script_ids", {}) or {})
+        sessions = self._dialog_live_session_ids()
+        script_ids = getattr(self, "_dialog_bridge_script_ids", None)
+        if isinstance(script_ids, dict):
+            script_ids.clear()
+        for session_id in sessions:
+            ident = ids.get(session_id)
+            if ident:
+                await self._cdp_quiet(
+                    "Page.removeScriptToEvaluateOnNewDocument", {"identifier": ident},
+                    session_id=session_id, timeout=5.0, what="remove dialog bridge",
+                )
+            await self._cdp_quiet(
+                "Fetch.disable", {}, session_id=session_id, timeout=5.0, what="disable dialog Fetch",
+            )
+            await self._cdp_quiet(
+                "Runtime.evaluate",
+                {"expression": _DIALOG_BRIDGE_RESTORE_SCRIPT, "returnByValue": True},
+                session_id=session_id, timeout=3.0, what="restore native dialogs",
+            )
+        watchdogs = getattr(self, "_dialog_watchdogs", {})
+        for handle in list(watchdogs.values()):
+            handle.cancel()
+        watchdogs.clear()
+        pending = getattr(self, "_pending_dialogs", {})
+        lock = getattr(self, "_state_lock", None)
+        in_flight = []
+        if lock is not None:
+            with lock:
+                in_flight = [d for d in list(pending.values()) if d.bridge_request_id]
+                for dialog in in_flight:
+                    pending.pop(dialog.id, None)
+                    self._archive_dialog_locked(dialog, "human_takeover")
+        for dialog in in_flight:
+            await self._respond_quiet(dialog, accept=False, prompt_text=None)
+
+    async def _resume_dialog_intercept(self) -> None:
+        """Re-install the bridge after the human hands back."""
+        if _human_holds_shared_browser(getattr(self, "cdp_url", "")):
+            return
+        already = getattr(self, "_dialog_bridge_script_ids", {})
+        live = self._dialog_live_session_ids()
+        if not getattr(self, "_dialog_intercept_paused", False) and live and all(
+            already.get(sid) for sid in live
+        ):
+            return
+        self._dialog_intercept_paused = False
+        for session_id in live:
+            await self._install_dialog_bridge(session_id)
+
+    async def _sync_dialog_intercept_to_lease(self) -> None:
+        """Pause or resume intercept from the on-disk lease (cross-process takeover)."""
+        if _human_holds_shared_browser(getattr(self, "cdp_url", "")):
+            await self._pause_dialog_intercept()
+        else:
+            await self._resume_dialog_intercept()
+
+    async def _watch_dialog_lease(self) -> None:
+        """Desktop acquire writes the lease file in another process; poll it."""
+        while True:
+            await asyncio.sleep(0.5)
+            try:
+                await self._sync_dialog_intercept_to_lease()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.debug("dialog lease watch failed: %s", e)
 
     # ── Capture ──────────────────────────────────────────────────────────────
 
     async def _on_dialog_opening(self, params: Dict[str, Any], session_id: Optional[str]) -> None:
+        await self._sync_dialog_intercept_to_lease()
         self._admit_dialog(
             type=str(params.get("type") or ""), message=str(params.get("message") or ""),
             default_prompt=str(params.get("defaultPrompt") or ""), session_id=session_id, frame_id=params.get("frameId"),
@@ -189,6 +330,7 @@ class DialogSupervisionMixin:
             await self._cdp_quiet("Fetch.continueRequest", {"requestId": request_id},
                                   session_id=session_id, timeout=3.0, what="passthrough")
             return
+        await self._sync_dialog_intercept_to_lease()
         q = {k: v[0] for k, v in parse_qs(urlparse(url).query).items()}
         self._admit_dialog(
             type=q.get("kind") or "alert", message=q.get("message", ""), default_prompt=q.get("default_prompt", ""),
@@ -199,13 +341,27 @@ class DialogSupervisionMixin:
                       frame_id: Optional[str], bridge_request_id: Optional[str] = None) -> None:
         """Create the dialog and apply the policy: auto-respond, or queue + arm the watchdog.
         Auto policies archive FIRST (tagged ``auto_policy``) so the ``closed`` event that
-        follows our own response isn't re-archived as ``remote``."""
+        follows our own response isn't re-archived as ``remote``.
+
+        While a human holds this shared Chromium: native dialogs stay queued (the human
+        is looking at them) with no auto-policy and no watchdog; bridge XHRs are
+        dismissed so the page unblocks, and are not left pending for the agent.
+        """
         self._dialog_seq += 1
         dialog = PendingDialog(
             id=f"d-{self._dialog_seq}", type=type, message=message, default_prompt=default_prompt,
             opened_at=time.time(), cdp_session_id=session_id or self._page_session_id or "",
             frame_id=frame_id, bridge_request_id=bridge_request_id,
         )
+        if _human_holds_shared_browser(getattr(self, "cdp_url", "")):
+            if bridge_request_id:
+                with self._state_lock:
+                    self._archive_dialog_locked(dialog, "human_takeover")
+                asyncio.create_task(self._respond_quiet(dialog, accept=False, prompt_text=None))
+                return
+            with self._state_lock:
+                self._pending_dialogs[dialog.id] = dialog
+            return
         auto = {DIALOG_POLICY_AUTO_DISMISS: (False, ""), DIALOG_POLICY_AUTO_ACCEPT: (True, default_prompt)}.get(
             self.dialog_policy
         )
@@ -261,6 +417,8 @@ class DialogSupervisionMixin:
             self._retire_dialog(dialog.id, "agent")
 
     async def _dialog_timeout_expired(self, dialog_id: str) -> None:
+        if _human_holds_shared_browser(getattr(self, "cdp_url", "")):
+            return
         with self._state_lock:
             dialog = self._pending_dialogs.get(dialog_id)
         if dialog is None:

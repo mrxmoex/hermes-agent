@@ -3,9 +3,11 @@ dispatched, and a command whose run crossed a takeover loses its result."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import subprocess
+import threading
 from pathlib import Path
 from unittest.mock import patch
 
@@ -3268,3 +3270,205 @@ def test_cleared_browser_knobs_keep_this_profile_unchanged(monkeypatch):
         result = session._run_browser_command("review", "snapshot", [])
     assert commands, f"cleared env refused a clean profile: {result}"
     assert result.get("code") != "human_has_control"
+
+
+def _dialog_supervisor(*, cdp_url=None, policy=None, timeout_s=300.0):
+    """Minimal DialogSupervisionMixin stand-in: records CDP, no WebSocket."""
+    from tools.browser_supervisor_dialogs import (
+        DEFAULT_DIALOG_POLICY,
+        DialogSupervisionMixin,
+    )
+
+    class Fake(DialogSupervisionMixin):
+        def __init__(self):
+            self.cdp_url = _DOCK_CDP if cdp_url is None else cdp_url
+            self.task_id = "review"
+            self.dialog_policy = policy if policy is not None else DEFAULT_DIALOG_POLICY
+            self.dialog_timeout_s = timeout_s
+            self._state_lock = threading.Lock()
+            self._pending_dialogs = {}
+            self._recent_dialogs = []
+            self._dialog_watchdogs = {}
+            self._dialog_seq = 0
+            self._page_session_id = "page-1"
+            self._dialog_intercept_paused = False
+            self._dialog_bridge_script_ids = {}
+            self._frames = {}
+            self.cdp_calls = []
+            self.responded = []
+
+        async def _cdp(self, method, params=None, *, session_id=None, timeout=10.0):
+            self.cdp_calls.append((method, params or {}, session_id))
+            if method == "Page.addScriptToEvaluateOnNewDocument":
+                return {"result": {"identifier": f"script-{session_id}"}}
+            return {"result": {}}
+
+        async def _respond_quiet(self, dialog, *, accept, prompt_text):
+            self.responded.append((dialog.id, accept, dialog.bridge_request_id))
+
+    return Fake()
+
+
+def test_human_holds_shared_browser_only_for_this_screen(monkeypatch):
+    from tools.browser_supervisor_dialogs import _human_holds_shared_browser
+
+    monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", _is_dock_cdp)
+    assert _human_holds_shared_browser(_DOCK_CDP) is False
+    assert _human_holds_shared_browser("") is False
+    lease.acquire("human-viewer")
+    assert _human_holds_shared_browser(_DOCK_CDP) is True
+    assert _human_holds_shared_browser(_FOREIGN_CDP) is False
+
+
+def test_auto_accept_does_not_answer_native_dialog_while_human_holds(monkeypatch):
+    from tools.browser_supervisor_dialogs import DIALOG_POLICY_AUTO_ACCEPT
+
+    monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", _is_dock_cdp)
+    fake = _dialog_supervisor(policy=DIALOG_POLICY_AUTO_ACCEPT)
+    lease.acquire("human-viewer")
+
+    async def _go():
+        fake._admit_dialog(
+            type="confirm", message="ok?", default_prompt="", session_id="page-1", frame_id=None,
+        )
+        await asyncio.sleep(0)
+
+    asyncio.run(_go())
+    assert fake.responded == []
+    assert list(fake._pending_dialogs)
+    assert fake._dialog_watchdogs == {}
+    assert fake._recent_dialogs == []
+
+
+def test_auto_accept_still_answers_when_agent_holds(monkeypatch):
+    from tools.browser_supervisor_dialogs import DIALOG_POLICY_AUTO_ACCEPT
+
+    monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", _is_dock_cdp)
+    fake = _dialog_supervisor(policy=DIALOG_POLICY_AUTO_ACCEPT)
+
+    async def _go():
+        fake._admit_dialog(
+            type="confirm", message="ok?", default_prompt="", session_id="page-1", frame_id=None,
+        )
+        await asyncio.sleep(0)
+
+    asyncio.run(_go())
+    assert fake.responded == [("d-1", True, None)]
+    assert fake._pending_dialogs == {}
+    assert fake._recent_dialogs[-1].closed_by == "auto_policy"
+
+
+def test_foreign_cdp_still_auto_accepts_while_human_holds_this_screen(monkeypatch):
+    from tools.browser_supervisor_dialogs import DIALOG_POLICY_AUTO_ACCEPT
+
+    monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", _is_dock_cdp)
+    fake = _dialog_supervisor(cdp_url=_FOREIGN_CDP, policy=DIALOG_POLICY_AUTO_ACCEPT)
+    lease.acquire("human-viewer")
+
+    async def _go():
+        fake._admit_dialog(
+            type="alert", message="hi", default_prompt="", session_id="page-1", frame_id=None,
+        )
+        await asyncio.sleep(0)
+
+    asyncio.run(_go())
+    assert fake.responded == [("d-1", True, None)]
+    assert fake._pending_dialogs == {}
+
+
+def test_bridge_dialog_is_dismissed_not_queued_while_human_holds(monkeypatch):
+    monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", _is_dock_cdp)
+    fake = _dialog_supervisor()
+    lease.acquire("human-viewer")
+
+    async def _go():
+        fake._admit_dialog(
+            type="confirm", message="ok?", default_prompt="", session_id="page-1",
+            frame_id=None, bridge_request_id="req-1",
+        )
+        await asyncio.sleep(0)
+
+    asyncio.run(_go())
+    assert fake.responded == [("d-1", False, "req-1")]
+    assert fake._pending_dialogs == {}
+    assert fake._recent_dialogs[-1].closed_by == "human_takeover"
+
+
+def test_fetch_paused_bridge_is_dismissed_while_human_holds(monkeypatch):
+    monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", _is_dock_cdp)
+    fake = _dialog_supervisor()
+    lease.acquire("human-viewer")
+
+    async def _go():
+        await fake._on_fetch_paused(
+            {
+                "requestId": "req-9",
+                "request": {
+                    "url": "http://hermes-dialog-bridge.invalid/?kind=confirm&message=hi&default_prompt=",
+                },
+            },
+            "page-1",
+        )
+        await asyncio.sleep(0)
+
+    asyncio.run(_go())
+    assert fake.responded == [("d-1", False, "req-9")]
+    assert fake._pending_dialogs == {}
+
+
+def test_dialog_watchdog_does_not_dismiss_while_human_holds(monkeypatch):
+    from tools.browser_supervisor_dialogs import PendingDialog
+
+    monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", _is_dock_cdp)
+    fake = _dialog_supervisor()
+    dialog = PendingDialog(
+        id="d-held", type="alert", message="stay", default_prompt="",
+        opened_at=0.0, cdp_session_id="page-1",
+    )
+    fake._pending_dialogs["d-held"] = dialog
+    lease.acquire("human-viewer")
+
+    async def _go():
+        await fake._dialog_timeout_expired("d-held")
+
+    asyncio.run(_go())
+    assert "d-held" in fake._pending_dialogs
+    assert fake.responded == []
+
+
+def test_install_dialog_bridge_is_noop_while_human_holds(monkeypatch):
+    monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", _is_dock_cdp)
+    fake = _dialog_supervisor()
+    lease.acquire("human-viewer")
+
+    async def _go():
+        await fake._install_dialog_bridge("page-1")
+
+    asyncio.run(_go())
+    assert fake.cdp_calls == []
+    assert fake._dialog_bridge_script_ids == {}
+
+
+def test_dialog_intercept_resumes_after_human_releases(monkeypatch):
+    monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", _is_dock_cdp)
+    fake = _dialog_supervisor()
+
+    async def _go():
+        await fake._install_dialog_bridge("page-1")
+        assert fake._dialog_bridge_script_ids["page-1"]
+        lease.acquire("human-viewer")
+        await fake._sync_dialog_intercept_to_lease()
+        methods = [name for name, _params, _sid in fake.cdp_calls]
+        assert "Fetch.disable" in methods
+        assert "Page.removeScriptToEvaluateOnNewDocument" in methods
+        assert any(
+            name == "Runtime.evaluate" and "delete window.alert" in (params.get("expression") or "")
+            for name, params, _sid in fake.cdp_calls
+        )
+        assert fake._dialog_intercept_paused is True
+        lease.release("human-viewer")
+        await fake._sync_dialog_intercept_to_lease()
+        assert fake._dialog_intercept_paused is False
+        assert fake._dialog_bridge_script_ids.get("page-1")
+
+    asyncio.run(_go())

@@ -116,7 +116,9 @@ class FrameTrackingMixin:
             await self._enable_page_domains(sid, timeout=3.0)
         except Exception as e:
             logger.debug("child session %s setup failed: %s", sid[:16], e)
-        await self._install_dialog_bridge(sid)
+        await self._sync_dialog_intercept_to_lease()
+        if not getattr(self, "_dialog_intercept_paused", False):
+            await self._install_dialog_bridge(sid)
 
     def _on_target_detached(self, params: Dict[str, Any], session_id: Optional[str] = None) -> None:
         """Clear the session binding of frames on a detached child session. Frames are
