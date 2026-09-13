@@ -387,6 +387,32 @@ def test_agent_browser_invocation_is_token_match_not_substring():
     assert not _is_lighthouse_invocation(["bun", "x", "ruff"])
     assert not _is_lighthouse_invocation(
         ["/bin/bash", "-c", "bun x lighthouse --port 9333"])
+    # Workspace-dir globals used to become the "command" (finding 102).
+    assert _is_lighthouse_invocation(
+        ["pnpm", "--dir", "/tmp/ws", "exec", "lighthouse",
+         "--port", "9333", "https://example.com"])
+    assert _is_lighthouse_invocation(
+        ["pnpm", "-C", "/tmp/ws", "exec", "lighthouse", "--port", "9333"])
+    assert _is_lighthouse_invocation(
+        ["pnpm", "exec", "--dir", "/tmp/ws", "lighthouse", "--port", "9333"])
+    assert _is_lighthouse_invocation(
+        ["pnpm", "--filter", "@scope/pkg", "exec", "lighthouse", "--port", "9333"])
+    assert _is_lighthouse_invocation(
+        ["npm", "--prefix", "/tmp/ws", "exec", "lighthouse", "--port", "9333"])
+    assert _is_lighthouse_invocation(
+        ["yarn", "--cwd", "/tmp/ws", "dlx", "lighthouse", "--port", "9333"])
+    assert _is_lighthouse_invocation(
+        ["bun", "--cwd", "/tmp/ws", "x", "lighthouse", "--port", "9333"])
+    assert _is_lighthouse_invocation(
+        ["corepack", "pnpm", "--dir", "/tmp/ws", "exec", "lighthouse",
+         "--port", "9333"])
+    assert not _is_lighthouse_invocation(
+        ["pnpm", "--dir", "/tmp/ws", "run", "lighthouse"])
+    # Missing dir/cwd value must not swallow the subcommand.
+    assert _is_lighthouse_invocation(
+        ["pnpm", "--dir", "exec", "lighthouse", "--port", "9333"])
+    assert _is_lighthouse_invocation(
+        ["bun", "--cwd", "x", "lighthouse", "--port", "9333"])
 
 
 def test_unregistered_cdp_dock_cli_killed_on_takeover():
@@ -1008,6 +1034,95 @@ def test_unregistered_package_exec_dock_cli_killed_on_takeover():
     assert run_script.killed == 0
     assert other.killed == 0
     assert install.killed == 0
+    assert bash_parent.killed == 0
+
+
+def test_unregistered_package_exec_dir_flag_dock_cli_killed_on_takeover():
+    """``pnpm --dir /tmp exec lighthouse --port <dock>`` missed leftover unwrap.
+
+    ``_first_non_flag_tokens`` treated the directory as the command, so
+    invocation was false and Take over left the writer running. Equals
+    ``--dir=/tmp`` already matched. ``pnpm run --dir`` is not an invocation.
+    """
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    bdb.remember_dock_cdp_port(9333)
+    pnpm_dir = _FakeProc(
+        9600,
+        ["pnpm", "--dir", "/tmp/ws", "exec", "lighthouse",
+         "--port", "9333", "https://example.com"],
+    )
+    pnpm_c = _FakeProc(
+        9601,
+        ["pnpm", "-C", "/tmp/ws", "exec", "lighthouse",
+         "--port=9333", "https://example.com"],
+    )
+    after_exec = _FakeProc(
+        9602,
+        ["pnpm", "exec", "--dir", "/tmp/ws", "lighthouse",
+         "--port", "9333", "https://example.com"],
+    )
+    npm_prefix = _FakeProc(
+        9603,
+        ["npm", "--prefix", "/tmp/ws", "exec", "lighthouse",
+         "--port", "9333", "https://example.com"],
+    )
+    yarn_cwd = _FakeProc(
+        9604,
+        ["yarn", "--cwd", "/tmp/ws", "dlx", "chrome-devtools-mcp",
+         "--browserUrl", "http://127.0.0.1:9333"],
+    )
+    bun_cwd = _FakeProc(
+        9605,
+        ["bun", "--cwd", "/tmp/ws", "x", "lighthouse",
+         "--port", "9333", "https://example.com"],
+    )
+    corepack_dir = _FakeProc(
+        9606,
+        ["corepack", "pnpm", "--dir", "/tmp/ws", "exec", "lighthouse",
+         "--port", "9333", "https://example.com"],
+    )
+    filter_pkg = _FakeProc(
+        9607,
+        ["pnpm", "--filter", "@scope/pkg", "exec", "lighthouse",
+         "--port", "9333", "https://example.com"],
+    )
+    run_dir = _FakeProc(
+        9608,
+        ["pnpm", "--dir", "/tmp/ws", "run", "lighthouse",
+         "--port", "9333", "https://example.com"],
+    )
+    other = _FakeProc(
+        9609,
+        ["pnpm", "--dir", "/tmp/ws", "exec", "lighthouse",
+         "--port", "9222", "https://example.com"],
+    )
+    bash_parent = _FakeProc(
+        9610,
+        ["/bin/bash", "-c",
+         "pnpm --dir /tmp/ws exec lighthouse --port 9333"],
+    )
+    lease.acquire("human")
+    n = interrupt_unregistered_dock_cli(
+        processes=[
+            pnpm_dir, pnpm_c, after_exec, npm_prefix, yarn_cwd, bun_cwd,
+            corepack_dir, filter_pkg, run_dir, other, bash_parent,
+        ],
+        chromium_pid=9999,
+        owner_daemon_pid=9998,
+    )
+    assert n == 8
+    assert pnpm_dir.killed == 1
+    assert pnpm_c.killed == 1
+    assert after_exec.killed == 1
+    assert npm_prefix.killed == 1
+    assert yarn_cwd.killed == 1
+    assert bun_cwd.killed == 1
+    assert corepack_dir.killed == 1
+    assert filter_pkg.killed == 1
+    assert run_dir.killed == 0
+    assert other.killed == 0
     assert bash_parent.killed == 0
 
 

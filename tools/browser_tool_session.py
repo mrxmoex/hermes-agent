@@ -1119,25 +1119,45 @@ def _launcher_basename(token: str) -> str:
 
 
 _LAUNCHER_VALUE_FLAGS = frozenset({"--from"})
+# Global options that take a path / selector *before* exec|dlx|x.
+# Space-separated values used to become the "command" (``pnpm --dir /tmp
+# exec lighthouse`` → rest[0] == ``/tmp``), so leftover unwrap missed
+# every workspace-dir writer. Equals form (``--dir=/tmp``) already
+# skipped as a flag. Do not put ``-p`` here — that is npm's package pin.
+_PACKAGE_EXEC_VALUE_FLAGS = frozenset({
+    "--dir", "-C", "--prefix", "--cwd", "--filter", "--workspace",
+})
+_BUN_VALUE_FLAGS = frozenset({"--cwd"})
 
 
-def _first_non_flag_tokens(tokens: List[str], skip: int = 1) -> List[str]:
+def _first_non_flag_tokens(
+    tokens: List[str],
+    skip: int = 1,
+    value_flags: Optional[frozenset] = None,
+    reserved: Optional[frozenset] = None,
+) -> List[str]:
     """Non-flag argv after the launcher, skipping values of known launcher flags.
 
     ``uvx --from browser-use==1 browser-use`` must see ``browser-use`` as the
     command, not the pin. ``npx -p agent-browser@latest agent-browser`` is
-    the same shape.
+    the same shape. ``pnpm --dir /tmp exec lighthouse`` must see ``exec``,
+    not the directory. A reserved next token (``exec`` / ``x``) is the
+    subcommand, not a directory named ``exec``.
     """
+    known = _LAUNCHER_VALUE_FLAGS if not value_flags else (_LAUNCHER_VALUE_FLAGS | value_flags)
+    reserved_next = reserved or frozenset()
     out: List[str] = []
     expect_value = False
     for tok in tokens[skip:]:
         raw = str(tok) if tok is not None else ""
         if expect_value:
             expect_value = False
+            if raw in reserved_next:
+                out.append(raw)
             continue
         if not raw or raw.startswith("-"):
             key = raw.split("=", 1)[0]
-            if key in _LAUNCHER_VALUE_FLAGS and "=" not in raw:
+            if key in known and "=" not in raw:
                 expect_value = True
             continue
         out.append(raw)
@@ -1153,14 +1173,19 @@ def _package_exec_parts(
     / ``yarn dlx`` are the leftover writers those launchers miss. ``pnpm run``
     / ``npm install`` / ``yarn add`` are not invocations. ``npm x`` is
     ``npm exec``. ``--package`` / ``-p`` before a bare ``--`` are npm's
-    package pins, not the child's ``-p`` port.
+    package pins, not the child's ``-p`` port. ``--dir`` / ``-C`` /
+    ``--prefix`` / ``--cwd`` / ``--filter`` take a value — do not treat
+    that path as the command (finding 102).
     """
     if not tokens:
         return None
     name0 = _launcher_basename(tokens[0])
     if name0 not in _PACKAGE_EXEC_LAUNCHERS:
         return None
-    rest = _first_non_flag_tokens(tokens)
+    reserved = _PACKAGE_EXEC_SUBCOMMANDS | ({"x"} if name0 == "npm" else set())
+    rest = _first_non_flag_tokens(
+        tokens, value_flags=_PACKAGE_EXEC_VALUE_FLAGS, reserved=reserved,
+    )
     if not rest:
         return None
     sub = rest[0]
@@ -1213,7 +1238,9 @@ def _bun_x_operands(tokens: List[str]) -> Optional[List[str]]:
     """
     if not tokens or _launcher_basename(tokens[0]) not in _BUN_LAUNCHERS:
         return None
-    rest = _first_non_flag_tokens(tokens)
+    rest = _first_non_flag_tokens(
+        tokens, value_flags=_BUN_VALUE_FLAGS, reserved=_BUN_X_SUBCOMMANDS,
+    )
     if not rest or rest[0] not in _BUN_X_SUBCOMMANDS:
         return None
     operands = rest[1:]
@@ -1247,8 +1274,36 @@ def _package_manager_child_argv(tokens: List[str]) -> Optional[List[str]]:
     return None
 
 
+def _is_package_exec_sub(name0: str, raw: str) -> bool:
+    return (name0 == "npm" and raw == "x") or raw in _PACKAGE_EXEC_SUBCOMMANDS
+
+
+def _skip_manager_value_flag(
+    tokens: List[str],
+    i: int,
+    raw: str,
+    value_flags: frozenset,
+    reserved: frozenset,
+) -> Optional[int]:
+    """Advance past ``--dir /tmp`` / ``--cwd=/tmp``. None if ``raw`` is not one.
+
+    Do not eat the subcommand as a value (``pnpm --dir exec lighthouse``).
+    """
+    key = raw.split("=", 1)[0]
+    if key not in value_flags:
+        return None
+    if "=" in raw:
+        return i + 1
+    if i + 1 < len(tokens):
+        nxt = str(tokens[i + 1]) if tokens[i + 1] is not None else ""
+        if nxt and not nxt.startswith("-") and nxt not in reserved:
+            return i + 2
+    return i + 1
+
+
 def _package_exec_child_argv(tokens: List[str]) -> Optional[List[str]]:
     name0 = _launcher_basename(tokens[0])
+    reserved = _PACKAGE_EXEC_SUBCOMMANDS | ({"x"} if name0 == "npm" else set())
     i = 1
     saw_sub = False
     while i < len(tokens):
@@ -1260,11 +1315,17 @@ def _package_exec_child_argv(tokens: List[str]) -> Optional[List[str]]:
             if not nxt.startswith("-"):
                 i += 2
                 continue
+        skipped = _skip_manager_value_flag(
+            tokens, i, raw, _PACKAGE_EXEC_VALUE_FLAGS, reserved,
+        )
+        if skipped is not None:
+            i = skipped
+            continue
         if raw.startswith("-"):
             i += 1
             continue
         if not saw_sub:
-            if (name0 == "npm" and raw == "x") or raw in _PACKAGE_EXEC_SUBCOMMANDS:
+            if _is_package_exec_sub(name0, raw):
                 saw_sub = True
                 i += 1
                 continue
@@ -1280,6 +1341,12 @@ def _bun_x_child_argv(tokens: List[str]) -> Optional[List[str]]:
         raw = str(tokens[i]) if tokens[i] is not None else ""
         if raw == "--":
             return [str(t) for t in tokens[i + 1:]] if saw_sub else None
+        skipped = _skip_manager_value_flag(
+            tokens, i, raw, _BUN_VALUE_FLAGS, _BUN_X_SUBCOMMANDS,
+        )
+        if skipped is not None:
+            i = skipped
+            continue
         if raw.startswith("-"):
             i += 1
             continue
