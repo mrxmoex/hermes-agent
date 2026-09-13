@@ -828,11 +828,39 @@ def test_browser_eval_subprocess_discards_when_epoch_moves_during_ssrf_recheck(m
     assert "WHAT-THE-HUMAN-TYPED" not in text
 
 
+def test_browser_type_preserves_human_has_control_code(monkeypatch):
+    """fill's refuse/discard carries ``code``; type must not rewrite it as a generic error.
+
+    Click/press go through ``_tool_response``; type builds its own payload for
+    redaction and used to drop the machine-readable handoff code.
+    """
+    commands: list = []
+    browser, _ = _wire(monkeypatch, commands)
+    lease.acquire("human-viewer")
+    result = json.loads(browser.browser_type("e1", "secret-token", task_id="review"))
+    assert commands == [], f"human holds the lease, yet type was dispatched: {commands}"
+    assert result.get("code") == "human_has_control"
+    assert result.get("success") is not True
+
+
+def test_browser_type_preserves_human_has_control_when_fill_was_discarded(monkeypatch):
+    """A reminted fill discard must still tell the agent to wait_for_human."""
+    browser, session = _wire(monkeypatch, [])
+    monkeypatch.setattr(session, "_run_browser_command", lambda *_a, **_k: {
+        "success": False, "code": "human_has_control",
+        "error": "A human took over the bot's screen while this browser command ran; its result was discarded.",
+    })
+    result = json.loads(browser.browser_type("e1", "secret-token", task_id="review"))
+    assert result.get("code") == "human_has_control"
+    assert result.get("success") is not True
+
+
 @pytest.mark.parametrize("invoke", [
     lambda browser: browser.browser_click("e1", task_id="review"),
     lambda browser: browser.browser_navigate("https://example.com", task_id="review"),
     lambda browser: browser.browser_get_images(task_id="review"),
     lambda browser: browser.browser_back(task_id="review"),
+    lambda browser: browser.browser_type("e1", "x", task_id="review"),
 ])
 def test_human_hold_does_not_create_or_recycle_shared_session(monkeypatch, invoke):
     """Admit before session create: a human lease must not launch or tear down Chromium.

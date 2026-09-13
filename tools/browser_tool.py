@@ -945,7 +945,10 @@ def browser_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
     if result.get("success"):
         response = {"success": True, "typed": display_text, "element": ref}
     else:
-        response = _err(result.get("error", f"Failed to type into {ref}"))
+        # Same shape as ``_failed_response`` / click — do not drop
+        # ``code: human_has_control`` when fill was refused or discarded.
+        extra = {"code": result["code"]} if result.get("code") else {}
+        response = _err(result.get("error", f"Failed to type into {ref}"), **extra)
     return _dumps(redact_browser_typed_text_for_display(_lp._copy_fallback_warning(response, result), text))
 
 
