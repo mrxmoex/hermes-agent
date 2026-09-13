@@ -1613,30 +1613,62 @@ def _is_shell_token_spliced_gateway_lifecycle(command: str) -> bool:
 # cwd there). Absolute / `~` / `$HOME` dests already hit the prefix
 # patterns; `> lease.json` does not.
 _RELATIVE_WRITE_DEST = r'(?:["\']?)(?!(?:/|~|\$))(?:\./)?[A-Za-z0-9._][^\s;&|<>"\']*'
+# `$PWD/…` / `$(pwd)/…` expand to that cwd but start with `$`, so the
+# exclusion above lets `cd ~/.hermes/bot-desktop && echo … > $PWD/lease.json`
+# auto-approve. Require a path component — `> $PWD` writes a directory.
+_PWD_WRITE_DEST = (
+    r'(?:["\']?)'
+    r'(?:\$\{PWD\}|\$PWD\b|\$\(\s*pwd\s*\)|`pwd`)'
+    r'(?:["\']?)'
+    r'/'
+    r'(?:["\']?)'
+    r'[^\s;&|<>"\']+'
+)
+# `$OLDPWD/…` is the screen only after a same-command chdir *into* it
+# (`cd ~/.hermes/bot-desktop && cd /tmp && > $OLDPWD/lease.json`). Session
+# cwd in the tree does not make OLDPWD the screen.
+_OLDPWD_WRITE_DEST = (
+    r'(?:["\']?)'
+    r'(?:\$\{OLDPWD\}|\$OLDPWD\b)'
+    r'(?:["\']?)'
+    r'/'
+    r'(?:["\']?)'
+    r'[^\s;&|<>"\']+'
+)
 _CHDIR_BOT_DESKTOP_RE = re.compile(
     rf'(?:(?:\bcd\b|\bpushd\b)\s+|\benv\b[^\n]*\s(?:-C|--chdir)[=\s]*)["\']?{_HERMES_BOT_DESKTOP_PATH}',
     _RE_FLAGS,
 )
 _BOT_DESKTOP_CWD_RE = re.compile(_HERMES_BOT_DESKTOP_PATH, _RE_FLAGS)
-_RELATIVE_BOT_DESKTOP_WRITE_RE = re.compile(
-    r'(?:'
-    r'>>?\s*' + _RELATIVE_WRITE_DEST +
-    r'|\btee\b(?:\s+-[^\s]+)*\s+' + _RELATIVE_WRITE_DEST +
-    r'|\b(?:gdd|dd)\b[^\n]*\bof=' + _RELATIVE_WRITE_DEST +
-    r'|\b(?:g?cp|g?mv|g?install|g?ln|rsync|scp|objcopy|sponge)\b[^\n]*\s'
-    + _RELATIVE_WRITE_DEST + r'(?:\s*(?:&&|\|\||;).*)?$'
-    r'|\b(?:curl|wget|iconv|patch|aria2c)\b[^\n]*\s'
-    r'(?:(?-i:-o|-O|-P|-d)|--output|--output-dir|--output-document|'
-    r'--directory-prefix|--dir)[=\s]*' + _RELATIVE_WRITE_DEST +
-    r'|\b(?:g?rm|unlink|shred|trash(?:-put)?)\b[^\n]*\s' + _RELATIVE_WRITE_DEST +
-    r'|\bgio\s+trash\b[^\n]*\s' + _RELATIVE_WRITE_DEST +
-    r'|\b(?:(?:bsd|g)?tar)\b(?![^\n]*\s(?:-C|--directory)[=\s]*[/~$])'
-    r'[^\n]*\s' + _DEST_FIRST_TAR_EXTRACT + r'\b'
-    r'|\b(?:unzip)\b(?![^\n]*\s(?-i:-d)[=\s]*[/~$])'
-    r'|\b(?:7z|7za|7zr|7zz)\b(?=[^\n]*\s(?:x|e)\b)(?![^\n]*(?-i:-o)[/~$])'
-    r')',
-    _RE_FLAGS,
+
+
+def _bot_desktop_cwd_write_re(dest: str) -> re.Pattern:
+    """Redirect / dest-last / dest-first writers whose dest is *dest*."""
+    return re.compile(
+        r'(?:'
+        r'>>?\s*' + dest +
+        r'|\btee\b(?:\s+-[^\s]+)*\s+' + dest +
+        r'|\b(?:gdd|dd)\b[^\n]*\bof=' + dest +
+        r'|\b(?:g?cp|g?mv|g?install|g?ln|rsync|scp|objcopy|sponge)\b[^\n]*\s'
+        + dest + r'(?:\s*(?:&&|\|\||;).*)?$'
+        r'|\b(?:curl|wget|iconv|patch|aria2c)\b[^\n]*\s'
+        r'(?:(?-i:-o|-O|-P|-d)|--output|--output-dir|--output-document|'
+        r'--directory-prefix|--dir)[=\s]*' + dest +
+        r'|\b(?:g?rm|unlink|shred|trash(?:-put)?)\b[^\n]*\s' + dest +
+        r'|\bgio\s+trash\b[^\n]*\s' + dest +
+        r'|\b(?:(?:bsd|g)?tar)\b(?![^\n]*\s(?:-C|--directory)[=\s]*[/~$])'
+        r'[^\n]*\s' + _DEST_FIRST_TAR_EXTRACT + r'\b'
+        r'|\b(?:unzip)\b(?![^\n]*\s(?-i:-d)[=\s]*[/~$])'
+        r'|\b(?:7z|7za|7zr|7zz)\b(?=[^\n]*\s(?:x|e)\b)(?![^\n]*(?-i:-o)[/~$])'
+        r')',
+        _RE_FLAGS,
+    )
+
+
+_RELATIVE_BOT_DESKTOP_WRITE_RE = _bot_desktop_cwd_write_re(
+    rf'(?:{_RELATIVE_WRITE_DEST}|{_PWD_WRITE_DEST})'
 )
+_OLDPWD_BOT_DESKTOP_WRITE_RE = _bot_desktop_cwd_write_re(_OLDPWD_WRITE_DEST)
 _CHDIR_BOT_DESKTOP_WRITE_DESCRIPTION = "write into bot-desktop after chdir"
 
 
@@ -1675,8 +1707,10 @@ def _command_chdirs_into_bot_desktop(command: str) -> bool:
     return bool(_CHDIR_BOT_DESKTOP_RE.search(command))
 
 
-def _has_relative_bot_desktop_write(command: str) -> bool:
-    return bool(_RELATIVE_BOT_DESKTOP_WRITE_RE.search(command))
+def _has_relative_bot_desktop_write(command: str, *, include_oldpwd: bool = False) -> bool:
+    if _RELATIVE_BOT_DESKTOP_WRITE_RE.search(command):
+        return True
+    return bool(include_oldpwd and _OLDPWD_BOT_DESKTOP_WRITE_RE.search(command))
 
 
 def detect_dangerous_command(command: str, *, cwd: Optional[str] = None) -> tuple:
@@ -1691,11 +1725,10 @@ def detect_dangerous_command(command: str, *, cwd: Optional[str] = None) -> tupl
         return (True, _PARSER_LIMIT_DESCRIPTION, _PARSER_LIMIT_DESCRIPTION)
     if _is_verification_artifact_cleanup(command):
         return (False, None, None)
-    in_bot_desktop = _cwd_is_hermes_bot_desktop(cwd)
-    if not in_bot_desktop:
-        in_bot_desktop = _command_chdirs_into_bot_desktop(
-            _normalize_command_for_detection(command)
-        )
+    chdir_bot_desktop = _command_chdirs_into_bot_desktop(
+        _normalize_command_for_detection(command)
+    )
+    in_bot_desktop = _cwd_is_hermes_bot_desktop(cwd) or chdir_bot_desktop
     for command_variant in _command_detection_variants(command):
         # Case-preserved: dest-first short flags (`-t` vs `-T`, tar `-C` vs `-c`).
         for pattern_re, description in DEST_FIRST_SENSITIVE_PATTERNS_COMPILED:
@@ -1705,10 +1738,12 @@ def detect_dangerous_command(command: str, *, cwd: Optional[str] = None) -> tupl
         for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
             if pattern_re.search(command_lower):
                 return (True, description, description)
-        if in_bot_desktop and _has_relative_bot_desktop_write(command_variant):
+        if in_bot_desktop and _has_relative_bot_desktop_write(
+            command_variant, include_oldpwd=chdir_bot_desktop
+        ):
             return (True, _CHDIR_BOT_DESKTOP_WRITE_DESCRIPTION, _CHDIR_BOT_DESKTOP_WRITE_DESCRIPTION)
     if in_bot_desktop and _has_relative_bot_desktop_write(
-        _normalize_command_for_detection(command)
+        _normalize_command_for_detection(command), include_oldpwd=chdir_bot_desktop
     ):
         return (True, _CHDIR_BOT_DESKTOP_WRITE_DESCRIPTION, _CHDIR_BOT_DESKTOP_WRITE_DESCRIPTION)
     normalized = _normalize_command_for_detection(command)

