@@ -8,6 +8,11 @@
  * are buffered (connection-matched only) and replayed against the real key.
  * They are never applied without a key — two local profiles on one connection
  * would otherwise cross-paint.
+ *
+ * Buffered `display.status` is a miss signal, not a snapshot to replay: a
+ * stale push (or one that survived unmount) must not overwrite a newer RPC
+ * pull. Flush applies leases (epoch-fenced) and re-pulls if a status was
+ * queued. Live status after the key is known still applies immediately.
  */
 
 import { host, useValue } from '@hermes/plugin-sdk'
@@ -23,7 +28,15 @@ import {
   isEventForBotScreen,
   isEventOnBotConnection
 } from './screen-connection'
-import { $screenState, screenStateFor, setScreenLease, setScreenStatus, setScreenUnavailable } from './screen-state'
+import {
+  $screenState,
+  applyScreenStatusIfUnchanged,
+  screenStateFor,
+  screenStatusGeneration,
+  setScreenLease,
+  setScreenStatus,
+  setScreenUnavailable
+} from './screen-state'
 import type { RosterRow } from './types'
 
 const MAX_BUFFERED = 16
@@ -40,8 +53,10 @@ export const SCREEN_STATUS_RETRY_MS = 2000
 
 /** One `display.status` RPC into the per-bot cache. Offline stays as-is; method-not-found settles unavailable. */
 export async function pullScreenStatus(bot: RosterRow): Promise<PullScreenStatusResult> {
+  const started = screenStatusGeneration(bot)
+
   try {
-    setScreenStatus(bot, await displayRequest<DisplayStatus>(bot, 'display.status'))
+    applyScreenStatusIfUnchanged(bot, await displayRequest<DisplayStatus>(bot, 'display.status'), started)
 
     return 'ok'
   } catch (error) {
@@ -173,23 +188,32 @@ export function ingestScreenBackendEvent(
   pending.set(key, list)
 }
 
-export function flushScreenBackendEvents(bot: RosterRow, profileKey: null | string | undefined): void {
+/** Replay buffered events. Returns true when a status was queued and must be re-pulled. */
+export function flushScreenBackendEvents(bot: RosterRow, profileKey: null | string | undefined): boolean {
   if (!profileKey) {
-    return
+    return false
   }
 
   const key = botSelectionKey(bot)
   const list = pending.get(key)
 
   if (!list?.length) {
-    return
+    return false
   }
 
   pending.delete(key)
+  let discardedStatus = false
 
   for (const event of list) {
+    if (event.type === 'display.status') {
+      discardedStatus = true
+      continue
+    }
+
     applyScreenBackendEvent(bot, event, profileKey)
   }
+
+  return discardedStatus
 }
 
 /** Subscribe the current bot to backend screen pushes for the lifetime of the surface. */
@@ -198,7 +222,9 @@ export function useScreenBackendEvents(bot: RosterRow): void {
   const profileKey = screenStateFor(all, bot)?.status?.profile_key
 
   useEffect(() => {
-    flushScreenBackendEvents(bot, profileKey)
+    if (flushScreenBackendEvents(bot, profileKey)) {
+      void pullScreenStatus(bot)
+    }
   }, [bot, profileKey])
 
   useEffect(() => {

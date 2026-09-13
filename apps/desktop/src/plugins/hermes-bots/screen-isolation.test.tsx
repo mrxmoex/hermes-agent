@@ -55,7 +55,7 @@ import { emitGatewayEvent } from '../../contrib/events'
 
 import { $lastRoster } from './data'
 import type { DisplayStatus } from './screen-connection'
-import { SCREEN_STATUS_RETRY_MS } from './screen-events'
+import { resetScreenEventBufferForTests, SCREEN_STATUS_RETRY_MS } from './screen-events'
 import { ScreenHero } from './screen-hero'
 import { openBotScreen } from './screen-open'
 import { ProfileGroupScreenPortal, useScreenPortalState } from './screen-portal'
@@ -81,6 +81,7 @@ const status: DisplayStatus = {
 
 beforeEach(() => {
   $screenState.set({})
+  resetScreenEventBufferForTests()
   $lastRoster.set([])
   $testGateway.set('open')
   vi.mocked(host.requestProfile).mockReset()

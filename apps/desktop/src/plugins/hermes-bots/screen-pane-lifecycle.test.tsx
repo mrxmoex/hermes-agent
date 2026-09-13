@@ -103,7 +103,7 @@ vi.mock('@novnc/novnc', () => ({
   }
 }))
 
-import { SCREEN_STATUS_RETRY_MS } from './screen-events'
+import { resetScreenEventBufferForTests, SCREEN_STATUS_RETRY_MS } from './screen-events'
 import { displayRequest } from './screen-connection'
 import { BotScreenPane } from './screen-pane'
 import { $screenState, setScreenStatus } from './screen-state'
@@ -127,6 +127,7 @@ const status: DisplayStatus = {
 
 beforeEach(() => {
   $screenState.set({})
+  resetScreenEventBufferForTests()
   $testGateway.set('open')
   sockets.length = 0
   rfbs.length = 0

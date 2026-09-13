@@ -1,7 +1,8 @@
 /**
  * Screen event ingest: apply only when connection + profile_key match;
  * buffer connection-matched events until the first status sets the key;
- * never apply a sibling profile's payload on the same connection.
+ * never apply a sibling profile's payload on the same connection;
+ * never let a buffered display.status overwrite a newer pull.
  */
 
 import { act, renderHook } from '@testing-library/react'
@@ -27,6 +28,7 @@ vi.mock('./routing', () => ({
     bot.connectionId ? { connectionId: bot.connectionId, profile: bot.name } : { connectionId: 'local', profile: bot.name }
 }))
 
+import { host } from '@hermes/plugin-sdk'
 import { emitGatewayEvent } from '../../contrib/events'
 import {
   flushScreenBackendEvents,
@@ -98,6 +100,13 @@ describe('ingestScreenBackendEvent', () => {
     expect(screenStateFor($screenState.get(), bot)?.status?.running).toBe(false)
   })
 
+  it('does not let a buffered display.status overwrite a newer pull', () => {
+    ingestScreenBackendEvent(bot, { type: 'display.status', connectionId: 'host-a', payload: running }, null)
+    setScreenStatus(bot, stopped)
+    expect(flushScreenBackendEvents(bot, key)).toBe(true)
+    expect(screenStateFor($screenState.get(), bot)?.status?.running).toBe(false)
+  })
+
   it('replays a lease that arrived before the first status, and drops a sibling profile on the same connection', () => {
     ingestScreenBackendEvent(
       bot,
@@ -138,6 +147,30 @@ describe('useScreenBackendEvents', () => {
       })
     )
     expect(screenStateFor($screenState.get(), bot)?.status?.running).toBe(true)
+    view.unmount()
+  })
+
+  it('keeps a fresh pull when a stale status was buffered before the profile key', async () => {
+    const request = vi.mocked(host.requestProfile)
+    request.mockReset()
+    request.mockResolvedValue(stopped)
+
+    const view = renderHook(() => useScreenBackendEvents(bot))
+
+    act(() =>
+      emitGatewayEvent({
+        type: 'display.status',
+        connectionId: 'host-a',
+        payload: running
+      })
+    )
+    expect(screenStateFor($screenState.get(), bot)?.status?.running).toBeUndefined()
+
+    await act(async () => {
+      setScreenStatus(bot, stopped)
+    })
+    expect(screenStateFor($screenState.get(), bot)?.status?.running).toBe(false)
+    expect(request).toHaveBeenCalledWith(expect.anything(), 'display.status', {})
     view.unmount()
   })
 

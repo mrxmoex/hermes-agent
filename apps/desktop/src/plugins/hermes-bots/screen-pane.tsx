@@ -17,7 +17,16 @@ import { useBots } from './i18n'
 import { type DisplayLease, type DisplayObserveResult, displayRequest, type DisplayStatus, isDisplayUnavailable, leaseHeldBy, resolveScreenWsUrl, retainBotScreen, viewerHash } from './screen-connection'
 import { useOnGatewayOpen, usePullScreenStatusUntilSettled, useScreenBackendEvents } from './screen-events'
 import { ScreenInstallCard } from './screen-install'
-import { $screenState, screenStateFor, setScreenLease, setScreenStatus, setScreenUnavailable, setScreenViewer } from './screen-state'
+import {
+  $screenState,
+  applyScreenStatusIfUnchanged,
+  screenStateFor,
+  screenStatusGeneration,
+  setScreenLease,
+  setScreenStatus,
+  setScreenUnavailable,
+  setScreenViewer
+} from './screen-state'
 import type { RosterRow } from './types'
 
 type RfbLike = {
@@ -66,9 +75,10 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
   const attachGeneration = useRef(0)
 
   const refresh = useCallback(async () => {
+    const started = screenStatusGeneration(bot)
+
     try {
-      const next = await displayRequest<DisplayStatus>(bot, 'display.status')
-      setScreenStatus(bot, next)
+      applyScreenStatusIfUnchanged(bot, await displayRequest<DisplayStatus>(bot, 'display.status'), started)
       setError(null)
     } catch (err) {
       if (isDisplayUnavailable(err)) {
