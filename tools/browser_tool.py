@@ -810,22 +810,29 @@ def browser_snapshot(
     if _is_camofox_mode():
         return _camofox("camofox_snapshot", full, task_id)
     effective_task_id = _last_session_key(task_id or "default")
+    admitted, refuse = _session._shared_browser_fence(effective_task_id)
+    if refuse:
+        return _dumps(refuse)
     result = _session._run_browser_command(effective_task_id, "snapshot", [] if full else ["-c"])
     if not result.get("success"):
         return _failed_response(result, "Failed to get snapshot")
+    moved = _lease_moved_json(admitted)
+    if moved:
+        return moved
 
     blocked = _blocked_private_page_content(effective_task_id)
     if blocked is not None:
         return blocked
+    moved = _lease_moved_json(admitted)
+    if moved:
+        return moved
 
     response = {"success": True, **_snapshot_fields(result)}
     _lp._copy_fallback_warning(response, result)
 
     # Merge supervisor state (pending dialogs + frame tree) when a CDP supervisor is
     # attached. See website/docs/developer-guide/browser-supervisor.md.
-    admitted, refuse = _session._shared_browser_fence(effective_task_id)
-    if refuse:
-        return _dumps(refuse)
+    # Same ticket as the CLI snapshot: reminting here would attach a later epoch's dialogs.
     try:
         from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
         _supervisor = SUPERVISOR_REGISTRY.get(effective_task_id)

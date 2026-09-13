@@ -360,6 +360,52 @@ def test_browser_dialog_is_fenced_while_human_controls(monkeypatch):
     assert result.get("code") == "human_has_control"
 
 
+def test_browser_snapshot_is_fenced_while_human_controls(monkeypatch):
+    commands: list = []
+    browser, session = _wire(monkeypatch, commands)
+    ran: list = []
+    monkeypatch.setattr(session, "_run_browser_command", lambda *a, **k: ran.append(a) or {
+        "success": True, "data": {"snapshot": "ok", "refs": {}}})
+    lease.acquire("human-viewer")
+    result = json.loads(browser.browser_snapshot(task_id="review"))
+    assert ran == [], f"human holds the lease, yet snapshot ran: {ran}"
+    assert result.get("code") == "human_has_control"
+
+
+def test_snapshot_does_not_merge_dialogs_from_a_later_epoch(monkeypatch):
+    """CLI tree + supervisor merge are one ownership epoch."""
+    commands: list = []
+    browser, session = _wire(monkeypatch, commands)
+    ran: list = []
+
+    def run_cmd(*_a, **_k):
+        lease.acquire("human-viewer")
+        lease.release("human-viewer")
+        return {"success": True, "data": {"snapshot": "ok", "refs": {}}}
+
+    monkeypatch.setattr(session, "_run_browser_command", run_cmd)
+    monkeypatch.setattr(browser, "_blocked_private_page_content", lambda *_a: None)
+
+    class _Sup:
+        def snapshot(self):
+            ran.append("merge")
+            return type("S", (), {
+                "active": True,
+                "to_dict": staticmethod(lambda: {"pending_dialogs": [{"message": "WHAT-THE-HUMAN-TYPED"}]}),
+            })()
+
+    monkeypatch.setattr(
+        "tools.browser_supervisor.SUPERVISOR_REGISTRY",
+        type("R", (), {"get": staticmethod(lambda _tid: _Sup())})(),
+    )
+    raw = browser.browser_snapshot(task_id="review")
+    text = raw if isinstance(raw, str) else json.dumps(raw)
+    parsed = json.loads(text)
+    assert ran == [], f"supervisor merge ran after a completed takeover: {ran}"
+    assert "WHAT-THE-HUMAN-TYPED" not in text
+    assert parsed.get("code") == "human_has_control"
+
+
 def test_snapshot_supervisor_merge_is_fenced_while_human_controls(monkeypatch):
     """A successful CLI snapshot must not merge human dialog text after takeover."""
     commands: list = []
