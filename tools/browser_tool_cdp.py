@@ -9,6 +9,25 @@ from typing import Optional, Tuple
 from tools.browser_tool_origin import origin_module as _origin
 
 
+def _dock_discovery_blocked_by_human(url: str) -> bool:
+    """True when HTTP ``/json/version`` would observe the dock a human holds.
+
+    Callers used to admit *after* discovery. Tab list + debugger websocket
+    on that jar is leftover observation — the same class as leftover
+    ``ws.send``. Unrelated Chromes still resolve (admit is None). A lease
+    helper failure fail-closes: do not probe a jar a human may be using.
+    """
+    try:
+        from tools.bot_desktop.lease import HumanHasControl
+        from tools.browser_tool_session import _admit_shared_browser
+        _admit_shared_browser(cdp_url=url)
+        return False
+    except HumanHasControl:
+        return True
+    except Exception:
+        return True
+
+
 def _resolve_cdp_override(cdp_url: str) -> str:
     """Normalize a user-supplied CDP endpoint into a concrete websocket URL.
 
@@ -29,6 +48,12 @@ def _resolve_cdp_override(cdp_url: str) -> str:
             return raw
         discovery_url = ("http://" if lowered.startswith("ws://") else "https://") + raw.split("://", 1)[1]
     version_url = discovery_url if discovery_url.lower().endswith("/json/version") else discovery_url.rstrip("/") + "/json/version"
+
+    # Admit *before* HTTP. Vault ``get cdp-url``, ``browser_cdp`` discovery,
+    # and any future caller that skipped the raw-URL fence used to talk to
+    # the jar a human is typing into, then admit the resolved WS.
+    if _dock_discovery_blocked_by_human(raw) or _dock_discovery_blocked_by_human(discovery_url):
+        return raw
 
     san = _bt._sanitize_url_for_logs
     try:

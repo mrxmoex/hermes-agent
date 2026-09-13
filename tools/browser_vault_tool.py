@@ -139,6 +139,11 @@ def _ensure_supervisor(task_id: str):
     policy, timeout_s = _get_dialog_policy_config()
     try:
         from tools.browser_tool_session import _admit_resolved_cdp_for_attach
+        # Admit the raw daemon URL before HTTP /json/version. Session admit
+        # can be a no-op (cloud / other-Chrome row) while ``get cdp-url``
+        # still names this profile's dock.
+        if not _admit_resolved_cdp_for_attach(cdp_url):
+            return None
         resolved = _resolve_cdp_override(cdp_url)
         if not resolved:
             return None

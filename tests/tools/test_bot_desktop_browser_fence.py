@@ -1441,6 +1441,149 @@ def test_vault_ensure_supervisor_does_not_start_after_takeover_during_resolve(mo
     assert lease.human_holds() is True
 
 
+def test_resolve_cdp_override_does_not_http_probe_dock_while_human_holds(monkeypatch):
+    """HTTP /json/version is leftover observation. Callers that skipped the
+    raw-URL admit (vault ``get cdp-url``, ``browser_cdp`` discovery) still
+    talked to the jar, then admitted the resolved WS. Discovery now admits
+    first. Other Chromes and the agent-held dock still resolve.
+    """
+    import tools.bot_desktop.browser as bdb
+    from tools.browser_tool_cdp import _resolve_cdp_override
+
+    probed = []
+
+    class _Resp:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"webSocketDebuggerUrl": "ws://127.0.0.1:9333/devtools/browser/x"}
+
+    monkeypatch.setattr("requests.get", lambda *a, **k: probed.append(a[0]) or _Resp())
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: 9333)
+    lease.acquire("human-viewer")
+    assert _resolve_cdp_override("http://127.0.0.1:9333") == "http://127.0.0.1:9333"
+    assert _resolve_cdp_override("http://127.0.1.1:9333") == "http://127.0.1.1:9333"
+    assert _resolve_cdp_override("ws://127.0.0.1:9333") == "ws://127.0.0.1:9333"
+    assert probed == []
+    assert _resolve_cdp_override("http://127.0.0.1:9222") == "ws://127.0.0.1:9333/devtools/browser/x"
+    assert probed == ["http://127.0.0.1:9222/json/version"]
+    lease.release("human-viewer")
+    probed.clear()
+    assert _resolve_cdp_override("http://127.0.0.1:9333") == "ws://127.0.0.1:9333/devtools/browser/x"
+    assert probed == ["http://127.0.0.1:9333/json/version"]
+
+
+def test_resolve_cdp_override_does_not_http_probe_hostname_dock_while_human_holds(monkeypatch):
+    """Finding 73 identifies hostname leftover URLs. Discovery must not HTTP
+    them after persist + Take over just because the caller skipped raw admit.
+    """
+    import os
+    import socket
+
+    import tools.bot_desktop.browser as bdb
+    from tools.browser_tool_cdp import _resolve_cdp_override
+    from tools.browser_tool_session import _last_dock_cdp_port
+
+    class _Uname:
+        nodename = "testbox"
+
+    monkeypatch.setattr(socket, "gethostname", lambda: "testbox")
+    monkeypatch.setattr(os, "uname", lambda: _Uname)
+    probed = []
+    monkeypatch.setattr("requests.get", lambda *a, **k: probed.append(a[0]) or (_ for _ in ()).throw(AssertionError("probed dock")))
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: 9333)
+    from tools.browser_tool_session import _cdp_url_is_bot_desktop_browser
+    assert _cdp_url_is_bot_desktop_browser("http://testbox:9333") is True
+    _last_dock_cdp_port.clear()
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: None)
+    lease.acquire("human-viewer")
+    assert _resolve_cdp_override("http://testbox:9333") == "http://testbox:9333"
+    assert _resolve_cdp_override("http://testbox.example:9333") == "http://testbox.example:9333"
+    assert probed == []
+
+
+def test_resolve_cdp_override_does_not_http_probe_hosts_alias_dock_while_human_holds(monkeypatch):
+    """Finding 74 identifies /etc/hosts loopback aliases. Discovery must not
+    HTTP them after persist + Take over just because the caller skipped raw admit.
+    """
+    import tools.bot_desktop.browser as bdb
+    from tools.browser_tool_cdp import _resolve_cdp_override
+    from tools.browser_tool_session import _cdp_url_is_bot_desktop_browser, _last_dock_cdp_port
+
+    monkeypatch.setattr(
+        "tools.browser_tool_session._loopback_hosts_file_names",
+        lambda: {"dock-chrome"},
+    )
+    probed = []
+    monkeypatch.setattr(
+        "requests.get",
+        lambda *a, **k: probed.append(a[0]) or (_ for _ in ()).throw(AssertionError("probed dock")),
+    )
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: 9333)
+    assert _cdp_url_is_bot_desktop_browser("http://dock-chrome:9333") is True
+    _last_dock_cdp_port.clear()
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: None)
+    lease.acquire("human-viewer")
+    assert _resolve_cdp_override("http://dock-chrome:9333") == "http://dock-chrome:9333"
+    assert _resolve_cdp_override("ws://dock-chrome:9333") == "ws://dock-chrome:9333"
+    assert probed == []
+
+
+def test_resolve_cdp_override_does_not_http_probe_when_admit_explodes(monkeypatch):
+    """Finding 2: a lease-helper explosion must not fall through to /json/version."""
+    from tools.browser_tool_cdp import _resolve_cdp_override
+
+    probed = []
+    monkeypatch.setattr(
+        "tools.browser_tool_session._admit_shared_browser",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("lease helper exploded")),
+    )
+    monkeypatch.setattr(
+        "requests.get",
+        lambda *a, **k: probed.append(a[0]) or (_ for _ in ()).throw(AssertionError("probed")),
+    )
+    assert _resolve_cdp_override("http://127.0.0.1:9333") == "http://127.0.0.1:9333"
+    assert _resolve_cdp_override("http://example-host:9223") == "http://example-host:9223"
+    assert probed == []
+
+
+def test_vault_ensure_does_not_probe_raw_dock_url_while_human_holds(monkeypatch):
+    """Session admit can be a no-op while ``get cdp-url`` names the dock."""
+    import tools.bot_desktop.browser as bdb
+    from tools import browser_vault_tool as vault
+
+    probed = []
+    started = []
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: 9333)
+    lease.acquire("human-viewer")
+    monkeypatch.setattr(
+        "tools.browser_tool_session._admit_task_shared_browser",
+        lambda *a, **k: None,
+    )
+    monkeypatch.setattr(
+        "tools.browser_tool_session._run_browser_command",
+        lambda *a, **k: {"success": True, "data": {"cdpUrl": "http://127.0.0.1:9333"}},
+    )
+    monkeypatch.setattr("tools.browser_tool._last_session_key", lambda tid: tid)
+    monkeypatch.setattr(
+        "tools.browser_tool_cdp._get_dialog_policy_config",
+        lambda: ("accept", 1.0),
+    )
+    monkeypatch.setattr(
+        "tools.browser_tool_cdp._resolve_cdp_override",
+        lambda url: probed.append(url) or url,
+    )
+    import tools.browser_supervisor as bs
+    registry = __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock()
+    registry.get.return_value = None
+    registry.get_or_start.side_effect = lambda **k: started.append(k.get("cdp_url"))
+    monkeypatch.setattr(bs, "SUPERVISOR_REGISTRY", registry)
+    assert vault._ensure_supervisor("review") is None
+    assert probed == []
+    assert started == []
+
+
 def test_browser_cdp_remembers_dock_port_when_devtools_file_is_gone(monkeypatch):
     """browser_cdp must not HTTP-probe the remembered dock after the port file vanishes."""
     import tools.bot_desktop.browser as bdb
