@@ -709,16 +709,113 @@ def _is_this_machine_hostname(host: str) -> bool:
     return text.split(".", 1)[0] in ours
 
 
+def _hosts_file_paths() -> list[str]:
+    """Local hosts files only. Do not resolve DNS."""
+    if os.name == "nt":
+        windir = os.environ.get("SystemRoot") or os.environ.get("WINDIR") or r"C:\Windows"
+        return [os.path.join(windir, "System32", "drivers", "etc", "hosts")]
+    return ["/etc/hosts"]
+
+
+def _ip_is_this_machine_loopback(addr) -> bool:
+    if addr.is_loopback or addr.is_unspecified:
+        return True
+    mapped = getattr(addr, "ipv4_mapped", None)
+    return bool(mapped and (mapped.is_loopback or mapped.is_unspecified))
+
+
+def _parse_loopback_hosts_text(text: str) -> set[str]:
+    """Names whose hosts-file address is this machine's loopback.
+
+    LAN / remote mappings stay another browser. No DNS.
+    """
+    names: set[str] = set()
+    for raw_line in (text or "").splitlines():
+        line = raw_line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        try:
+            addr = ipaddress.ip_address(parts[0].strip().strip("[]"))
+        except ValueError:
+            continue
+        if not _ip_is_this_machine_loopback(addr):
+            continue
+        for raw_name in parts[1:]:
+            name = (raw_name or "").strip().lower().strip("[]").rstrip(".")
+            if not name:
+                continue
+            names.add(name)
+            short = name.split(".", 1)[0]
+            if short:
+                names.add(short)
+    return names
+
+
+_hosts_loopback_names_cache: Optional[tuple] = None
+
+
+def _reset_loopback_hosts_cache_for_tests() -> None:
+    global _hosts_loopback_names_cache
+    _hosts_loopback_names_cache = None
+
+
+def _loopback_hosts_file_names() -> set[str]:
+    """Loopback aliases from the local hosts file, cached by mtime/size."""
+    global _hosts_loopback_names_cache
+    paths = _hosts_file_paths()
+    stamp = []
+    for path in paths:
+        try:
+            st = os.stat(path)
+            stamp.append((path, st.st_mtime_ns, st.st_size))
+        except OSError:
+            stamp.append((path, None, None))
+    stamp_t = tuple(stamp)
+    cached = _hosts_loopback_names_cache
+    if cached and cached[0] == stamp_t:
+        return set(cached[1])
+    names: set[str] = set()
+    for path in paths:
+        try:
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                names.update(_parse_loopback_hosts_text(fh.read()))
+        except OSError:
+            continue
+    _hosts_loopback_names_cache = (stamp_t, frozenset(names))
+    return names
+
+
+def _is_loopback_hosts_alias(host: str) -> bool:
+    """True when ``host`` is a local hosts-file loopback alias.
+
+    ``/browser connect http://dock-chrome:9333`` is this machine when
+    ``/etc/hosts`` maps that name to 127/8 — not only when the name equals
+    ``gethostname()``. A hosts name mapped to a LAN IP is another Chrome.
+    """
+    text = (host or "").strip().lower().strip("[]").rstrip(".")
+    if not text:
+        return False
+    ours = _loopback_hosts_file_names()
+    if not ours:
+        return False
+    if text in ours:
+        return True
+    return text.split(".", 1)[0] in ours
+
+
 def _is_loopback_cdp_host(host: str) -> bool:
     """True for this machine's CDP hosts, including 127/8, IPv4-mapped, and hostname.
 
     A closed hostname set missed Debian's ``127.0.1.1``, ``::ffff:127.0.0.1``,
-    and this process's own hostname (``/etc/hosts`` ``127.0.1.1 <name>``,
-    Chromium advertising ``ws://<hostname>:port``). Leftover attach then
-    treated the dock as another Chrome (admit None) even after
-    ``dock-cdp-port`` was stamped — persist cannot match a port it never
-    extracted. Remote / LAN / other hostnames stay another browser. Do not
-    resolve DNS here: leftover identity must stay a local parse.
+    this process's own hostname, and extra ``/etc/hosts`` loopback aliases
+    (``127.0.0.1 dock-chrome``). Leftover attach then treated the dock as
+    another Chrome (admit None) even after ``dock-cdp-port`` was stamped —
+    persist cannot match a port it never extracted. Remote / LAN / other
+    hostnames stay another browser. Do not resolve DNS here: leftover
+    identity must stay a local parse.
     """
     text = (host or "").strip().lower().strip("[]").rstrip(".")
     if not text:
@@ -728,16 +825,13 @@ def _is_loopback_cdp_host(host: str) -> bool:
         or text.endswith(".localhost")
     ):
         return True
-    if _is_this_machine_hostname(text):
+    if _is_this_machine_hostname(text) or _is_loopback_hosts_alias(text):
         return True
     try:
         addr = ipaddress.ip_address(text)
     except ValueError:
         return False
-    if addr.is_loopback or addr.is_unspecified:
-        return True
-    mapped = getattr(addr, "ipv4_mapped", None)
-    return bool(mapped and (mapped.is_loopback or mapped.is_unspecified))
+    return _ip_is_this_machine_loopback(addr)
 
 
 def _loopback_cdp_port(url: str) -> Optional[int]:
@@ -770,6 +864,7 @@ _last_dock_cdp_port: Dict[str, int] = {}
 
 def _reset_dock_port_memory_for_tests() -> None:
     _last_dock_cdp_port.clear()
+    _reset_loopback_hosts_cache_for_tests()
     _reset_inflight_dock_cli_for_tests()
     _reset_reserved_dock_harness_for_tests()
     try:
