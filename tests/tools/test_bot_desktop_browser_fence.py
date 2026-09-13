@@ -1346,6 +1346,104 @@ def test_vault_fill_origin_probe_preserves_human_has_control(monkeypatch, tmp_pa
     assert "could not determine" not in (result.get("error") or "").lower()
 
 
+def _vault_focus_remint():
+    return {
+        "success": False,
+        "code": "human_has_control",
+        "error": "A human has control of this bot's screen.",
+    }
+
+
+def test_focus_bound_origin_propagates_handoff(monkeypatch):
+    """A reminted focus hop must not become a miss for the origin-probe fallback."""
+    from tools import browser_vault_tool as vault
+
+    monkeypatch.setattr(vault, "_session_info_for_shared_browser_fence", lambda *_a, **_k: {
+        "session_name": "review", "cdp_url": None, "features": {"local": True}})
+    monkeypatch.setattr(
+        vault, "_bracket_bot_desktop_browser",
+        lambda *_a, **_k: _vault_focus_remint(),
+    )
+    focused = vault._focus_bound_origin("review", "https://example.com", "login")
+    assert isinstance(focused, dict)
+    assert focused.get("code") == "human_has_control"
+
+
+def test_vault_fill_does_not_origin_probe_after_focus_remint(monkeypatch, tmp_path):
+    """Focus remint used to look like a miss; origin_probe then read the handed-back page."""
+    from agent.vault_store import VaultStore
+    from tools import browser_vault_tool as vault
+
+    store = VaultStore(base_dir=tmp_path / "vault")
+    meta = store.add_item(
+        kind="login",
+        label="Example login",
+        origin="https://example.com",
+        secret={
+            "identifier_type": "email",
+            "identifier": "user@example.com",
+            "password": "s3cret-pw",
+            "origin": "https://example.com",
+        },
+    )
+    monkeypatch.setattr(session_mod, "_get_session_info", lambda *a, **k: {
+        "session_name": "review", "cdp_url": None, "features": {"local": True}})
+    monkeypatch.setattr("agent.vault_store.get_vault_store", lambda: store)
+    monkeypatch.setattr(vault, "_focus_bound_origin", lambda *a, **k: _vault_focus_remint())
+    probed: list = []
+
+    def probe(*_a, **_k):
+        probed.append("origin")
+        return "https://example.com", None
+
+    monkeypatch.setattr(vault, "_origin_probe", probe)
+    injected: list = []
+    monkeypatch.setattr(
+        vault, "_eval_js_secret",
+        lambda *_a, **_k: injected.append("secret") or {"success": True, "result": "{}"},
+    )
+    result = json.loads(vault.browser_vault_fill(meta.id, task_id="review"))
+    assert probed == [], f"origin_probe ran after a reminted focus: {probed}"
+    assert injected == [], f"password was injected after a reminted focus: {injected}"
+    assert result.get("code") == "human_has_control"
+    assert result.get("success") is not True
+    assert "WHAT-THE-HUMAN-TYPED" not in json.dumps(result)
+
+
+def test_vault_save_login_does_not_origin_probe_after_focus_remint(monkeypatch):
+    from tools import browser_vault_tool as vault
+
+    monkeypatch.setattr(session_mod, "_get_session_info", lambda *a, **k: {
+        "session_name": "review", "cdp_url": None, "features": {"local": True}})
+    monkeypatch.setattr(vault, "_focus_bound_origin", lambda *a, **k: _vault_focus_remint())
+    probed: list = []
+    monkeypatch.setattr(
+        vault, "_origin_probe",
+        lambda *_a, **_k: probed.append("origin") or ("https://example.com", None),
+    )
+    result = json.loads(vault.browser_vault_save_login(task_id="review"))
+    assert probed == [], f"origin_probe ran after a reminted focus: {probed}"
+    assert result.get("code") == "human_has_control"
+    assert result.get("success") is not True
+
+
+def test_vault_enter_code_does_not_origin_probe_after_focus_remint(monkeypatch):
+    from tools import browser_vault_tool as vault
+
+    monkeypatch.setattr(session_mod, "_get_session_info", lambda *a, **k: {
+        "session_name": "review", "cdp_url": None, "features": {"local": True}})
+    monkeypatch.setattr(vault, "_focus_bound_origin", lambda *a, **k: _vault_focus_remint())
+    probed: list = []
+    monkeypatch.setattr(
+        vault, "_origin_probe",
+        lambda *_a, **_k: probed.append("origin") or ("https://example.com", None),
+    )
+    result = json.loads(vault.browser_vault_enter_code(task_id="review"))
+    assert probed == [], f"origin_probe ran after a reminted focus: {probed}"
+    assert result.get("code") == "human_has_control"
+    assert result.get("success") is not True
+
+
 def test_vault_eval_and_save_login_are_fenced_while_human_controls(monkeypatch):
     from tools import browser_vault_tool as vault
 

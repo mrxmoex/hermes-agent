@@ -258,10 +258,13 @@ _TAB_PROBES = {
 }
 
 
-def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[str]:
+def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[Any]:
     """Point the supervisor's page session at the open tab on ``origin`` that holds a ``kind`` form
     (browser_exec sessions open their own tabs, so the tab the supervisor attached to first is rarely the
-    login page). Returns the origin when a tab was focused, else None (caller falls back to the current page)."""
+    login page). Returns the origin when a tab was focused, a remint dict when the hop
+    handed off, else None (caller falls back to the current page). Independently-fenced
+    get/eval remints must not become a miss — that used to let ``_origin_probe``
+    read the page after a completed take-over / hand-back."""
     effective = _non_nav_session_key(task_id)
     def _run():
         try:
@@ -276,6 +279,8 @@ def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[str]:
         return (origin or focused.get("url")) if focused.get("ok") else None
 
     boxed = _bracket_bot_desktop_browser(_session_info_for_shared_browser_fence(effective), _run)
+    if isinstance(boxed, dict) and boxed.get("code") == "human_has_control":
+        return boxed
     if isinstance(boxed, dict):
         return None
     return boxed
@@ -366,7 +371,10 @@ def browser_vault_save_login(label: str = "", task_id: Optional[str] = None) -> 
         return json.dumps(refuse)
     # The supervisor's default page session is whatever tab it attached to first (on Browser Use that is
     # the daemon's blank tab); the login form lives in the tab with a password field, so focus that one.
-    _focus_bound_origin(effective_task_id, "", "login")
+    focused = _focus_bound_origin(effective_task_id, "", "login")
+    handed = _json_if_handoff(focused if isinstance(focused, dict) else None)
+    if handed:
+        return handed
     origin, refuse = _origin_probe(effective_task_id)
     moved = _json_if_lease_moved(admitted)
     if moved:
@@ -431,7 +439,10 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
     admitted, refuse = _shared_browser_fence(effective_task_id)
     if refuse:
         return json.dumps(refuse)
-    _focus_bound_origin(effective_task_id, "", "otp")
+    focused = _focus_bound_origin(effective_task_id, "", "otp")
+    handed = _json_if_handoff(focused if isinstance(focused, dict) else None)
+    if handed:
+        return handed
     origin, refuse = _origin_probe(effective_task_id)
     moved = _json_if_lease_moved(admitted)
     if moved:
@@ -566,7 +577,11 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
 
     # ── Origin binding pre-check (cheap early exit; the authoritative check
     # runs synchronously inside the fill script itself) ──────────────────────
-    page_origin = _focus_bound_origin(effective_task_id, str(meta.origin), meta.kind)
+    focused = _focus_bound_origin(effective_task_id, str(meta.origin), meta.kind)
+    handed = _json_if_handoff(focused if isinstance(focused, dict) else None)
+    if handed:
+        return handed
+    page_origin = focused if isinstance(focused, str) else None
     if page_origin is None:
         page_origin, refuse = _origin_probe(effective_task_id)
         if refuse:
