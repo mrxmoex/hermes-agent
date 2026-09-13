@@ -12,6 +12,7 @@ import os
 import re
 import shutil
 import signal
+import socket
 import subprocess
 import threading
 import uuid
@@ -661,19 +662,73 @@ def _run_browser_command(
     return _run_browser_command_unfenced(task_id, command, args, timeout, _engine_override, browser_cmd, session_info)
 
 
-def _is_loopback_cdp_host(host: str) -> bool:
-    """True for this machine's loopback CDP hosts, including 127/8 and IPv4-mapped.
+def _this_machine_cdp_hostnames() -> set[str]:
+    """Short + FQDN-looking names this process reports for itself.
 
-    A closed hostname set missed Debian's ``127.0.1.1`` and ``::ffff:127.0.0.1``.
-    Leftover attach then treated the dock as another Chrome (admit None) even
-    after ``dock-cdp-port`` was stamped — persist cannot match a port it never
-    extracted. Remote / LAN hosts stay another browser. Do not resolve DNS
-    here: leftover identity must stay a local parse.
+    Leftover identity must not call ``getfqdn()`` (DNS + rebinding).
+    ``os.uname().nodename`` can differ from ``gethostname()`` on the same box.
     """
-    text = (host or "").strip().lower().strip("[]")
+    names: set[str] = set()
+    candidates: list[str] = []
+    try:
+        candidates.append(socket.gethostname())
+    except OSError:
+        pass
+    try:
+        nodename = os.uname().nodename
+        if nodename:
+            candidates.append(nodename)
+    except (AttributeError, OSError):
+        pass
+    for raw in candidates:
+        text = (raw or "").strip().lower().strip("[]").rstrip(".")
+        if not text:
+            continue
+        names.add(text)
+        short = text.split(".", 1)[0]
+        if short:
+            names.add(short)
+    return names
+
+
+def _is_this_machine_hostname(host: str) -> bool:
+    """True when ``host`` is this process's hostname (or its short name).
+
+    Chromium on Debian often advertises ``hostname`` / ``hostname.localdomain``
+    in ``webSocketDebuggerUrl``. An arbitrary other hostname with the same
+    port is another Chrome and must not be compared to this profile's dock.
+    """
+    text = (host or "").strip().lower().strip("[]").rstrip(".")
     if not text:
         return False
-    if text in {"localhost", "localhost.localdomain"} or text.endswith(".localhost"):
+    ours = _this_machine_cdp_hostnames()
+    if not ours:
+        return False
+    if text in ours:
+        return True
+    return text.split(".", 1)[0] in ours
+
+
+def _is_loopback_cdp_host(host: str) -> bool:
+    """True for this machine's CDP hosts, including 127/8, IPv4-mapped, and hostname.
+
+    A closed hostname set missed Debian's ``127.0.1.1``, ``::ffff:127.0.0.1``,
+    and this process's own hostname (``/etc/hosts`` ``127.0.1.1 <name>``,
+    Chromium advertising ``ws://<hostname>:port``). Leftover attach then
+    treated the dock as another Chrome (admit None) even after
+    ``dock-cdp-port`` was stamped — persist cannot match a port it never
+    extracted. Remote / LAN / other hostnames stay another browser. Do not
+    resolve DNS here: leftover identity must stay a local parse.
+    """
+    text = (host or "").strip().lower().strip("[]").rstrip(".")
+    if not text:
+        return False
+    if (
+        text in {"localhost", "localhost.localdomain", "ip6-localhost", "ip6-loopback"}
+        or text.endswith(".localhost")
+    ):
+        return True
+    if _is_this_machine_hostname(text):
         return True
     try:
         addr = ipaddress.ip_address(text)
@@ -686,10 +741,10 @@ def _is_loopback_cdp_host(host: str) -> bool:
 
 
 def _loopback_cdp_port(url: str) -> Optional[int]:
-    """Port if ``url`` is a loopback CDP endpoint, else ``None``.
+    """Port if ``url`` is this machine's CDP endpoint, else ``None``.
 
-    Remote / cloud CDP hosts are another browser and must not be compared to
-    this profile's dock Chromium.
+    Remote / cloud / other-hostname CDP hosts are another browser and must
+    not be compared to this profile's dock Chromium.
     """
     text = (url or "").strip()
     if not text:

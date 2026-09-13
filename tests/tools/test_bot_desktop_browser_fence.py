@@ -952,6 +952,78 @@ def test_debian_and_mapped_loopback_hosts_still_fence_after_devtools_miss(monkey
     assert _admit_resolved_cdp_for_attach(lan) is True
 
 
+def test_this_machine_hostname_still_fences_after_devtools_miss(monkeypatch):
+    """Identity treated only IP / localhost-style hosts as the dock.
+    Chromium, Debian ``127.0.1.1 <hostname>``, and
+    ``--remote-debugging-address=0.0.0.0`` advertise ``ws://<hostname>:port``.
+    Persist then could not match, leftover attach was another Chrome (admit
+    None) on the jar a human is typing into. A different hostname or LAN IP
+    stays another browser. Do not resolve DNS.
+    """
+    import os
+    import socket
+
+    import tools.bot_desktop.browser as bdb
+    from tools.bot_desktop.lease import HumanHasControl
+    from tools.browser_tool_session import (
+        _admit_resolved_cdp_for_attach,
+        _admit_shared_browser,
+        _cdp_url_is_bot_desktop_browser,
+        _last_dock_cdp_port,
+        _loopback_cdp_port,
+    )
+
+    class _Uname:
+        nodename = "testbox"
+
+    monkeypatch.setattr(socket, "gethostname", lambda: "testbox")
+    monkeypatch.setattr(os, "uname", lambda: _Uname)
+
+    host = "ws://testbox:9333/devtools/browser/x"
+    fqdn = "ws://testbox.example:9333/devtools/browser/x"
+    other = "ws://otherbox:9333/devtools/browser/x"
+    other_port = "ws://testbox:9222/devtools/browser/x"
+    debian = "ws://127.0.1.1:9333/devtools/browser/x"
+    lan = "ws://192.168.1.5:9333/devtools/browser/x"
+    ip6 = "ws://ip6-localhost:9333/devtools/browser/x"
+
+    assert _loopback_cdp_port(host) == 9333
+    assert _loopback_cdp_port(fqdn) == 9333
+    assert _loopback_cdp_port(other) is None
+    assert _loopback_cdp_port(lan) is None
+    assert _loopback_cdp_port(debian) == 9333
+    assert _loopback_cdp_port(ip6) == 9333
+
+    monkeypatch.setattr(socket, "gethostname", lambda: "testbox.example")
+    assert _loopback_cdp_port(host) == 9333
+    monkeypatch.setattr(socket, "gethostname", lambda: "testbox")
+
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: 9333)
+    assert _cdp_url_is_bot_desktop_browser(host) is True
+    _last_dock_cdp_port.clear()
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: None)
+    lease.acquire("human-viewer")
+    assert _cdp_url_is_bot_desktop_browser(host) is True
+    assert _cdp_url_is_bot_desktop_browser(fqdn) is True
+    assert _cdp_url_is_bot_desktop_browser(ip6) is True
+    assert _cdp_url_is_bot_desktop_browser(other) is False
+    assert _cdp_url_is_bot_desktop_browser(other_port) is False
+    assert _cdp_url_is_bot_desktop_browser(lan) is False
+    assert _cdp_url_is_bot_desktop_browser(debian) is True
+    with pytest.raises(HumanHasControl):
+        _admit_shared_browser(cdp_url=host)
+    with pytest.raises(HumanHasControl):
+        _admit_shared_browser(cdp_url=fqdn)
+    assert _admit_resolved_cdp_for_attach(host) is False
+    assert _admit_resolved_cdp_for_attach(fqdn) is False
+    assert _admit_resolved_cdp_for_attach(ip6) is False
+    assert _admit_shared_browser(cdp_url=other) is None
+    assert _admit_resolved_cdp_for_attach(other) is True
+    assert _admit_resolved_cdp_for_attach(other_port) is True
+    assert _admit_resolved_cdp_for_attach(lan) is True
+    assert _admit_resolved_cdp_for_attach(debian) is False
+
+
 def test_persisted_dock_port_does_not_leak_to_a_sibling_profile(monkeypatch, tmp_path):
     """A dock port stamped under one HERMES_HOME must not fence another bot's Chrome."""
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
