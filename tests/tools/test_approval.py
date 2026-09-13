@@ -1101,6 +1101,113 @@ class TestHermesBotDesktopWriteProtection:
             dangerous, key, desc = detect_dangerous_command(command, cwd=cwd)
             assert dangerous is False, (command, cwd)
 
+    def test_dirname_of_pwd_dest_from_screen_subdir(self):
+        """Finding 60: ``${PWD%/*}`` was excluded as dirname-of-PWD (not
+        ``$PWD``). From ``bot-desktop/browser-profile`` that parent *is*
+        the screen — ``echo … > ${PWD%/*}/lease.json`` forges holder=agent.
+        ``$(dirname $PWD)`` / ``$(realpath ..)`` / ``$(cd .. && pwd)``
+        and the ``$OLDPWD`` twins after ``cd`` away are the same class.
+        From the tree root the parent is ``~/.hermes`` — stay SAFE.
+        """
+        for command in (
+            "cd ~/.hermes/bot-desktop/browser-profile && echo '{\"holder\":\"agent\"}' > ${PWD%/*}/lease.json",
+            "cd ~/.hermes/bot-desktop/browser-profile && echo x > ${PWD%/*}/lease.json",
+            'cd ~/.hermes/bot-desktop/browser-profile && echo x > "${PWD%/*}/lease.json"',
+            "cd ~/.hermes/bot-desktop/browser-profile && echo x > $(dirname $PWD)/lease.json",
+            'cd ~/.hermes/bot-desktop/browser-profile && echo x > $(dirname "$PWD")/lease.json',
+            "cd ~/.hermes/bot-desktop/browser-profile && echo x > $(dirname -- $PWD)/lease.json",
+            'cd ~/.hermes/bot-desktop/browser-profile && echo x > $(dirname -- "$PWD")/lease.json',
+            "cd ~/.hermes/bot-desktop/browser-profile && echo x > $(builtin dirname $PWD)/lease.json",
+            "cd ~/.hermes/bot-desktop/browser-profile && echo x > `dirname $PWD`/lease.json",
+            "cd ~/.hermes/bot-desktop/browser-profile && echo x > $(realpath ..)/lease.json",
+            "cd ~/.hermes/bot-desktop/browser-profile && echo x > $(realpath -e ..)/lease.json",
+            "cd ~/.hermes/bot-desktop/browser-profile && echo x > $(readlink -f ..)/lease.json",
+            "cd ~/.hermes/bot-desktop/browser-profile && echo x > $(cd .. && pwd)/lease.json",
+            "cd ~/.hermes/bot-desktop/browser-profile && echo x > $(cd ..; pwd)/lease.json",
+            "cd ~/.hermes/bot-desktop/browser-profile && echo x > $(cd ../ && pwd -P)/lease.json",
+            "cd ~/.hermes/bot-desktop/pairing && echo x > ${PWD%/*}/dock-cdp-port",
+            "cd $HERMES_HOME/bot-desktop/browser-profile && echo x > ${PWD%/*}/lease.json",
+            "cd ~/.hermes/bot-desktop/browser-profile && cp /tmp/e ${PWD%/*}/lease.json",
+            "cd ~/.hermes/bot-desktop/browser-profile && dd of=${PWD%/*}/lease.json",
+            "cd ~/.hermes/bot-desktop/browser-profile && tee ${PWD%/*}/lease.json",
+            "cd ~/.hermes/bot-desktop/browser-profile && rm -f ${PWD%/*}/lease.json",
+            "cd ~/.hermes/bot-desktop/browser-profile && cd /tmp && echo x > ${OLDPWD%/*}/lease.json",
+            'cd ~/.hermes/bot-desktop/browser-profile && cd /tmp && echo x > $(dirname "$OLDPWD")/lease.json',
+        ):
+            dangerous, key, desc = detect_dangerous_command(command)
+            assert dangerous is True, command
+            assert key is not None, command
+
+        for cwd in (
+            "~/.hermes",
+            os.path.expanduser("~/.hermes"),
+            str(get_hermes_home()),
+            "$HERMES_HOME",
+        ):
+            for command in (
+                "cd bot-desktop/browser-profile && echo '{\"holder\":\"agent\"}' > ${PWD%/*}/lease.json",
+                "cd ./bot-desktop/browser-profile && echo x > $(dirname $PWD)/lease.json",
+                "cd -- bot-desktop/pairing && echo x > ${PWD%/*}/dock-cdp-port",
+                "pushd bot-desktop/browser-profile && echo x > $(realpath ..)/lease.json",
+            ):
+                dangerous, key, desc = detect_dangerous_command(command, cwd=cwd)
+                assert dangerous is True, (command, cwd)
+                assert key is not None, (command, cwd)
+
+        for command in (
+            "CDPATH=~/.hermes cd bot-desktop/browser-profile && echo x > ${PWD%/*}/lease.json",
+            "CDPATH=$HERMES_HOME cd bot-desktop/browser-profile && echo x > $(dirname $PWD)/lease.json",
+        ):
+            dangerous, key, desc = detect_dangerous_command(command, cwd="/tmp")
+            assert dangerous is True, command
+            assert key is not None, command
+
+        for cwd in (
+            "~/.hermes/bot-desktop/browser-profile",
+            "$HERMES_HOME/bot-desktop/browser-profile",
+            os.path.expanduser("~/.hermes/bot-desktop/browser-profile"),
+            str(get_hermes_home() / "bot-desktop" / "browser-profile"),
+            "~/.hermes/bot-desktop/pairing",
+        ):
+            for command in (
+                'echo \'{"holder":"agent"}\' > ${PWD%/*}/lease.json',
+                "echo x > $(dirname $PWD)/lease.json",
+                'echo x > $(dirname "$PWD")/lease.json',
+                "echo x > $(realpath ..)/lease.json",
+                "echo x > $(cd .. && pwd)/lease.json",
+                "dd of=${PWD%/*}/lease.json",
+                "cp /tmp/e ${PWD%/*}/lease.json",
+                "rm ${PWD%/*}/lease.json",
+                "cd /tmp && echo x > ${OLDPWD%/*}/lease.json",
+                "cd /tmp && echo x > $(dirname $OLDPWD)/lease.json",
+                "env -C /tmp echo x > ${PWD%/*}/lease.json",
+            ):
+                dangerous, key, desc = detect_dangerous_command(command, cwd=cwd)
+                assert dangerous is True, (command, cwd)
+                assert key is not None, (command, cwd)
+
+        for cwd, command in (
+            ("~/.hermes/bot-desktop", "echo x > ${PWD%/*}/lease.json"),
+            ("~/.hermes/bot-desktop", "echo x > $(dirname $PWD)/lease.json"),
+            ("~/.hermes/bot-desktop", "echo x > $(realpath ..)/lease.json"),
+            ("~/.hermes/bot-desktop", "echo x > $(cd .. && pwd)/lease.json"),
+            (None, "cd ~/.hermes/bot-desktop && echo x > ${PWD%/*}/lease.json"),
+            (None, "cd ~/.hermes/bot-desktop && echo x > $(dirname $PWD)/lease.json"),
+            ("~/.hermes/bot-desktop", "cd /tmp && echo x > ${OLDPWD%/*}/lease.json"),
+            ("~/.hermes/bot-desktop", "cd /tmp && echo x > $(dirname $OLDPWD)/lease.json"),
+            ("/tmp", "echo x > ${PWD%/*}/lease.json"),
+            ("/tmp", "echo x > $(dirname $PWD)/lease.json"),
+            ("~/.hermes/bot-desktop-backup/browser-profile", "echo x > ${PWD%/*}/lease.json"),
+            ("~/.hermes/bot-desktop", "cat ${PWD%/*}/lease.json"),
+            ("~/.hermes/bot-desktop/browser-profile", "cat ${PWD%/*}/lease.json"),
+            ("~/.hermes/bot-desktop/browser-profile", "echo x > /tmp/out"),
+            ("/tmp", "CDPATH=/var cd bot-desktop/browser-profile && echo x > ${PWD%/*}/lease.json"),
+            ("~/.hermes/bot-desktop/browser-profile", "env -C /tmp echo x > ${OLDPWD%/*}/lease.json"),
+            (None, "cd ~/.hermes/bot-desktop/browser-profile && cat ${PWD%/*}/lease.json"),
+        ):
+            dangerous, key, desc = detect_dangerous_command(command, cwd=cwd)
+            assert dangerous is False, (command, cwd)
+
     def test_delete_or_move_away_of_lease_requires_approval(self):
         """Missing lease.json fail-opens to agent hold; auto-approve must not
         drop a human's hold the way ``echo > lease.json`` forges one."""
