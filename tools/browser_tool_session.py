@@ -166,6 +166,12 @@ def _create_local_session(task_id: str, allow_real_profile: bool = True) -> Dict
     ``allow_real_profile=False``: the user's cookie jar must not reach an arbitrary
     internal host the model chose.
     """
+    from tools.bot_desktop import lease as _bd_lease
+
+    if _bd_lease.human_holds():
+        raise RuntimeError(
+            "A human holds the bot's screen; refusing to launch the shared local browser."
+        )
     if allow_real_profile:
         cdp_url, err = _real_profile._real_profile_cdp()
         if err:
@@ -569,21 +575,28 @@ def _run_browser_command(
         return preflight
     browser_cmd = preflight["browser_cmd"]
 
+    # Admit BEFORE session create/recycle. ``_get_session_info`` can launch real-profile
+    # Chromium, spawn Lightpanda, attach a CDP supervisor, or tear down a suspect session
+    # — all of that must stay off the shared screen while a human holds the lease.
+    admitted, refuse = _shared_browser_fence(task_id)
+    if refuse:
+        return refuse
+
     try:
         session_info = _get_session_info(task_id)
     except Exception as e:
         _bt.logger.warning("Failed to create browser session for task=%s: %s", task_id, e)
         return {"success": False, "error": f"Failed to create browser session: {str(e)}"}
-    # The bot's LOCAL browser lives on its Bot Desktop screen, in the same profile a human who took
-    # over is typing into. While the human holds the lease every action AND read against it is
-    # refused (the page may show their credential); the fence brackets the whole run so a takeover
-    # mid-command also voids the result. Cloud / user-supplied CDP sessions are a different browser.
-    return _bracket_bot_desktop_browser(
-        session_info,
-        lambda: _run_browser_command_unfenced(
-            task_id, command, args, timeout, _engine_override, browser_cmd, session_info
-        ),
+    # Predicted-cloud can still fall back to local Chromium. Re-admit on that
+    # provenance without reminting a ticket we already hold.
+    if admitted is None and _shares_bot_desktop_browser(session_info):
+        admitted, refuse = _admit_bot_desktop_browser(session_info)
+        if refuse:
+            return refuse
+    result = _run_browser_command_unfenced(
+        task_id, command, args, timeout, _engine_override, browser_cmd, session_info
     )
+    return _discard_if_lease_moved(admitted) or result
 
 
 _HUMAN_TOOK_OVER = (
@@ -592,22 +605,48 @@ _HUMAN_TOOK_OVER = (
 )
 
 
-def _session_info_for_shared_browser_fence(task_id: str) -> Dict[str, Any]:
-    """Session info for the lease bracket.
+def _peek_active_session(task_id: str) -> Optional[Dict[str, Any]]:
+    """Cached session dict, or None. Does not create, recycle, or attach anything."""
+    with _bt._cleanup_lock:
+        existing = _bt._active_sessions.get(task_id)
+    return dict(existing) if existing is not None else None
 
-    Skip the lookup when this profile has no screen and no human lease (so
-    existing Lightpanda unit tests do not spawn a daemon). If a screen is
-    published or a human holds and the lookup fails, assume local — the temp
-    Chrome fallback still lands on that DISPLAY.
+
+def _predicted_local_shared_browser(task_id: str) -> bool:
+    """True when a *new* session for ``task_id`` would be the Bot Desktop Chromium.
+
+    Mirrors ``_create_session_for_key`` precedence without launching: a CDP
+    override or a configured cloud provider is another browser; everything else
+    (including a sidecar ``::local`` key) lands on this profile's DISPLAY.
+    """
+    force_local = _bt._is_local_sidecar_key(task_id)
+    if not force_local and _cdp._get_cdp_override_raw():
+        return False
+    if not force_local and _cloud._get_cloud_provider() is not None:
+        return False
+    return True
+
+
+def _session_info_for_shared_browser_fence(task_id: str) -> Dict[str, Any]:
+    """Session info for the lease bracket — never creates or recycles a session.
+
+    Skip even a cache peek when this profile has no screen and no human lease
+    (so existing Lightpanda unit tests do not start cleanup threads). If a
+    screen is published or a human holds, peek the cache; on a miss assume
+    local unless config already names a cloud / user-CDP backend. A failed
+    cloud session can still fall back to local later — ``_run_browser_command``
+    re-admits on that provenance.
     """
     from tools.bot_desktop import lease as _bd_lease, runtime as _bd_runtime
 
     if not (_bd_runtime.published_env().get("DISPLAY") or _bd_lease.human_holds()):
         return {}
-    try:
-        return _get_session_info(task_id)
-    except Exception:
+    cached = _peek_active_session(task_id)
+    if cached is not None:
+        return cached
+    if _predicted_local_shared_browser(task_id):
         return {"features": {"local": True}}
+    return {}
 
 
 def _admit_bot_desktop_browser(session_info: Dict[str, Any]):
@@ -638,15 +677,23 @@ def _discard_if_lease_moved(admitted) -> Optional[Dict[str, Any]]:
 def _bracket_bot_desktop_browser(session_info: Dict[str, Any], run):
     """Refuse or discard a shared-browser result the same way ``computer_use`` does.
 
-    Used by ``_run_browser_command`` and by the Lightpanda Chrome fallback, which
-    otherwise pops a temp Chromium outside that wrapper (vision preroute, and
-    any future caller of ``_run_chrome_fallback_command``).
+    Used by callers that already have session info (Lightpanda Chrome fallback,
+    vault eval). ``_run_browser_command`` admits first, then creates the session,
+    so a human hold cannot launch or recycle the shared Chromium.
     """
     admitted, refuse = _admit_bot_desktop_browser(session_info)
     if refuse:
         return refuse
     result = run()
     return _discard_if_lease_moved(admitted) or result
+
+
+def _defer_shared_browser_teardown(session_info: Optional[Dict[str, Any]]) -> bool:
+    """True when janitor/recycle must not close the shared Chromium (human holds it)."""
+    if not session_info or not _shares_bot_desktop_browser(session_info):
+        return False
+    from tools.bot_desktop import lease as _bd_lease
+    return _bd_lease.human_holds()
 
 
 def _shares_bot_desktop_browser(session_info: Dict[str, Any]) -> bool:

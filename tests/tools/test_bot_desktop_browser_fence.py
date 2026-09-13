@@ -233,14 +233,21 @@ def test_browser_exec_without_screen_skips_session_lookup(monkeypatch):
 
 def test_browser_exec_cloud_session_is_not_fenced(monkeypatch):
     """Cloud / user CDP is another browser; a lease on this screen must not block it."""
+    from tools import browser_tool as browser
+
     monkeypatch.setattr(runtime, "published_env", lambda: {})
-    bu, ran = _wire_browser_exec(monkeypatch, session_info={
+    cloud_info = {
         "session_name": "cloud",
         "cdp_url": "wss://cloud.example/devtools/browser/x",
         "features": {"local": False},
-    })
+    }
+    bu, ran = _wire_browser_exec(monkeypatch, session_info=cloud_info)
+    browser._active_sessions["cloud"] = cloud_info
     lease.acquire("human-viewer")
-    result = json.loads(bu.browser_exec("print(1)", task_id="cloud"))
+    try:
+        result = json.loads(bu.browser_exec("print(1)", task_id="cloud"))
+    finally:
+        browser._active_sessions.pop("cloud", None)
     assert ran, "cloud browser_exec was fenced by a Bot Desktop lease"
     assert result.get("success") is True
     assert result.get("code") != "human_has_control"
@@ -641,3 +648,97 @@ def test_browser_navigate_does_not_return_snapshot_from_a_later_epoch(monkeypatc
     assert "WHAT-THE-HUMAN-TYPED" not in text
     assert parsed.get("code") == "human_has_control"
     assert "snapshot" not in calls, f"auto-snapshot ran after a completed takeover: {calls}"
+
+
+def test_human_hold_does_not_create_or_recycle_shared_session(monkeypatch):
+    """Admit before session create: a human lease must not launch or tear down Chromium."""
+    looked: list = []
+    created: list = []
+    browser, session = _wire(monkeypatch, [])
+    monkeypatch.setattr(
+        session, "_get_session_info",
+        lambda *a, **k: looked.append(a) or {
+            "session_name": "review", "cdp_url": None, "features": {"local": True}})
+    monkeypatch.setattr(
+        session, "_create_local_session",
+        lambda *a, **k: created.append(a) or {"session_name": "spawned", "features": {"local": True}})
+    lease.acquire("human-viewer")
+    result = json.loads(browser.browser_click("e1", task_id="review"))
+    assert looked == [], f"session lookup ran while human holds: {looked}"
+    assert created == [], f"local session was created while human holds: {created}"
+    assert result.get("code") == "human_has_control"
+
+
+def test_create_local_session_refuses_while_human_holds():
+    lease.acquire("human-viewer")
+    with pytest.raises(RuntimeError, match="human holds"):
+        session_mod._create_local_session("review")
+
+
+def test_fence_peeks_cache_and_does_not_create(monkeypatch):
+    from tools import browser_tool as browser
+
+    looked: list = []
+    monkeypatch.setattr(
+        session_mod, "_get_session_info",
+        lambda *a, **k: looked.append("get") or {"features": {"local": True}})
+    browser._active_sessions["review"] = {
+        "session_name": "review", "cdp_url": None, "features": {"local": True}}
+    try:
+        info = session_mod._session_info_for_shared_browser_fence("review")
+        assert info.get("session_name") == "review"
+        assert looked == [], f"fence created a session instead of peeking: {looked}"
+    finally:
+        browser._active_sessions.pop("review", None)
+
+
+def test_predicted_cloud_backend_is_not_treated_as_shared(monkeypatch):
+    """A configured cloud provider is another browser even before the session cache exists."""
+    monkeypatch.setattr(session_mod._cdp, "_get_cdp_override_raw", lambda: "")
+    monkeypatch.setattr(session_mod._cloud, "_get_cloud_provider", lambda: object())
+    assert session_mod._predicted_local_shared_browser("cloud-task") is False
+    lease.acquire("human-viewer")
+    admitted, refuse = session_mod._shared_browser_fence("cloud-task")
+    assert refuse is None
+    assert admitted is None
+
+
+def test_local_sidecar_is_predicted_shared_even_with_cloud_provider(monkeypatch):
+    monkeypatch.setattr(session_mod._cloud, "_get_cloud_provider", lambda: object())
+    monkeypatch.setattr(session_mod._cdp, "_get_cdp_override_raw", lambda: "http://127.0.0.1:9222")
+    assert session_mod._predicted_local_shared_browser("task::local") is True
+    lease.acquire("human-viewer")
+    _admitted, refuse = session_mod._shared_browser_fence("task::local")
+    assert refuse is not None
+    assert refuse.get("code") == "human_has_control"
+
+
+def test_janitor_does_not_reap_shared_browser_while_human_holds(monkeypatch):
+    """Refused agent commands no longer refresh the idle clock; teardown must wait."""
+    from tools import browser_tool as browser
+    from tools import browser_tool_lifecycle as life
+
+    reaped: list = []
+    prior_sessions = dict(browser._active_sessions)
+    prior_activity = dict(browser._session_last_activity)
+    browser._active_sessions.clear()
+    browser._session_last_activity.clear()
+    browser._active_sessions["review"] = {
+        "session_name": "review", "cdp_url": None, "features": {"local": True}}
+    browser._session_last_activity["review"] = 0
+    monkeypatch.setattr(life, "_release_session_resources", lambda *a, **k: reaped.append("release"))
+    monkeypatch.setattr(life._cdp, "_stop_cdp_supervisor", lambda *_a, **_k: reaped.append("stop-sup"))
+    monkeypatch.setattr(session_mod, "_run_browser_command", lambda *a, **k: reaped.append("close"))
+    lease.acquire("human-viewer")
+    try:
+        life._cleanup_single_browser_session("review")
+        life._force_reap_browser_session("review")
+        life._cleanup_inactive_browser_sessions()
+        assert reaped == [], f"shared browser was torn down while human holds: {reaped}"
+        assert "review" in browser._active_sessions
+        assert "review" in browser._session_last_activity
+    finally:
+        browser._active_sessions.clear()
+        browser._active_sessions.update(prior_sessions)
+        browser._session_last_activity.clear()
+        browser._session_last_activity.update(prior_activity)
