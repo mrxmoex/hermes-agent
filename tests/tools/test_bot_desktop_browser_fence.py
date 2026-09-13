@@ -1715,6 +1715,123 @@ def test_local_sidecar_is_predicted_shared_even_with_cloud_provider(monkeypatch)
     assert refuse.get("code") == "human_has_control"
 
 
+def _bind_hybrid_sidecar(browser, task_id="review"):
+    """Last navigate landed on the hybrid local sidecar (private-URL auto-route)."""
+    sidecar = f"{task_id}{browser._LOCAL_SUFFIX}"
+    prior_sessions = dict(browser._active_sessions)
+    prior_last = dict(browser._last_active_session_key)
+    browser._active_sessions[sidecar] = {
+        "session_name": "sidecar",
+        "cdp_url": None,
+        "features": {"local": True},
+        "session_key": sidecar,
+        "owner_task_id": task_id,
+    }
+    browser._last_active_session_key[task_id] = sidecar
+    return sidecar, prior_sessions, prior_last
+
+
+def _restore_hybrid_sidecar(browser, prior_sessions, prior_last):
+    browser._active_sessions.clear()
+    browser._active_sessions.update(prior_sessions)
+    browser._last_active_session_key.clear()
+    browser._last_active_session_key.update(prior_last)
+
+
+def test_non_nav_session_key_follows_hybrid_sidecar_binding(monkeypatch):
+    """Non-nav tools must fence the sidecar, not the bare task the cloud provider owns."""
+    from tools import browser_tool as browser
+
+    sidecar, prior_sessions, prior_last = _bind_hybrid_sidecar(browser)
+    try:
+        assert session_mod._non_nav_session_key("review") == sidecar
+        assert session_mod._non_nav_session_key(sidecar) == sidecar
+    finally:
+        _restore_hybrid_sidecar(browser, prior_sessions, prior_last)
+
+
+def test_non_nav_wrappers_fence_hybrid_sidecar_when_bare_task_predicts_cloud(monkeypatch):
+    """Vault / dialog / CDP supervisor used to fence the raw task id. Predicted
+    cloud skipped that key while they drove ``{task}::local`` — the shared Chromium."""
+    from tools import browser_dialog_tool as dialog
+    from tools import browser_tool as browser
+    from tools import browser_vault_tool as vault
+
+    _predict_cloud(monkeypatch)
+    sidecar, prior_sessions, prior_last = _bind_hybrid_sidecar(browser)
+    ran: list = []
+
+    class _Sup:
+        def evaluate_runtime(self, expr):
+            ran.append(("eval", expr))
+            return {"ok": True, "result": "WHAT-THE-HUMAN-TYPED"}
+
+        def respond_to_dialog(self, **_k):
+            ran.append("dialog")
+            return {"ok": True, "dialog": {}}
+
+    monkeypatch.setattr(
+        "tools.browser_supervisor.SUPERVISOR_REGISTRY",
+        type("R", (), {"get": staticmethod(lambda tid: _Sup() if tid == sidecar else None)})(),
+    )
+    monkeypatch.setattr(
+        dialog, "SUPERVISOR_REGISTRY",
+        type("R", (), {"get": staticmethod(lambda tid: _Sup() if tid == sidecar else None)})(),
+    )
+    monkeypatch.setattr(
+        browser_cdp_tool, "_browser_cdp_via_supervisor_unfenced",
+        lambda *a, **k: ran.append("cdp") or json.dumps({
+            "success": True, "result": {"secret": "WHAT-THE-HUMAN-TYPED"},
+        }),
+    )
+    monkeypatch.setattr(browser_cdp_tool, "_browser_cdp_private_guard", lambda **_k: None)
+    lease.acquire("human-viewer")
+    try:
+        vault_result = vault._eval_js("review", "window.location.href")
+        secret = vault._eval_js_secret("review", "document.querySelector('input').value='s3cret-pw'")
+        dialog_result = json.loads(dialog.browser_dialog("accept", task_id="review"))
+        cdp_result = json.loads(browser_cdp_tool.browser_cdp(
+            method="Runtime.evaluate", params={"expression": "1"},
+            frame_id="oopif", task_id="review",
+        ))
+        assert ran == [], f"human holds the sidecar, yet a non-nav wrapper ran: {ran}"
+        assert vault_result.get("code") == "human_has_control"
+        assert secret.get("code") == "human_has_control"
+        assert dialog_result.get("code") == "human_has_control"
+        assert cdp_result.get("code") == "human_has_control"
+        assert "WHAT-THE-HUMAN-TYPED" not in json.dumps([vault_result, secret, dialog_result, cdp_result])
+    finally:
+        _restore_hybrid_sidecar(browser, prior_sessions, prior_last)
+
+
+def test_vault_secret_eval_discards_sidecar_takeover_when_bare_task_skipped(monkeypatch):
+    """Predicted-cloud skip on the bare task left ``admitted=None`` while
+    ``_ensure_supervisor`` attached the sidecar CDP. A takeover during the
+    secret write then had no ticket to discard against."""
+    from tools import browser_tool as browser
+    from tools import browser_vault_tool as vault
+
+    _predict_cloud(monkeypatch)
+    sidecar, prior_sessions, prior_last = _bind_hybrid_sidecar(browser)
+    ran: list = []
+
+    class _Sup:
+        def evaluate_runtime(self, expr):
+            lease.acquire("human-viewer")
+            lease.release("human-viewer")
+            ran.append(expr)
+            return {"ok": True, "result": "WHAT-THE-HUMAN-TYPED"}
+
+    monkeypatch.setattr(vault, "_ensure_supervisor", lambda tid: _Sup() if tid == sidecar else None)
+    try:
+        result = vault._eval_js_secret("review", "document.querySelector('input').value='s3cret-pw'")
+        assert "WHAT-THE-HUMAN-TYPED" not in json.dumps(result)
+        assert result.get("code") == "human_has_control"
+        assert result.get("success") is not True
+    finally:
+        _restore_hybrid_sidecar(browser, prior_sessions, prior_last)
+
+
 def test_janitor_does_not_reap_shared_browser_while_human_holds(monkeypatch):
     """Refused agent commands no longer refresh the idle clock; teardown must wait."""
     from tools import browser_tool as browser

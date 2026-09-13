@@ -638,6 +638,17 @@ def _peek_active_session(task_id: str) -> Optional[Dict[str, Any]]:
     return dict(existing) if existing is not None else None
 
 
+def _non_nav_session_key(task_id: Optional[str] = None) -> str:
+    """Session key a non-nav tool must fence and attach: last navigation, not the raw task id.
+
+    Hybrid routing records ``{task}::local`` after a private-URL navigate. Fencing the
+    bare task id predicted-cloud-skips (another browser) while the sidecar is this
+    profile's Bot Desktop Chromium — the same skip that left ``admitted=None`` so a
+    reminted sidecar write was delivered or rewritten.
+    """
+    return _bt._last_session_key(task_id or "default")
+
+
 def _predicted_local_shared_browser(task_id: str) -> bool:
     """True when a *new* session for ``task_id`` would be the Bot Desktop Chromium.
 

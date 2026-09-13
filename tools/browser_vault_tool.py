@@ -34,6 +34,7 @@ from typing import Any, Dict, Optional
 from tools.browser_tool_session import (
     _bracket_bot_desktop_browser,
     _discard_if_lease_moved,
+    _non_nav_session_key,
     _session_info_for_shared_browser_fence,
     _shared_browser_fence,
 )
@@ -98,11 +99,12 @@ def _eval_js(task_id: str, expression: str) -> Dict[str, Any]:
     embed secret values — the fallback places the expression in subprocess
     argv. Use :func:`_eval_js_secret` for secret-bearing expressions.
     """
+    effective = _non_nav_session_key(task_id)
     def _run():
         try:
             from tools.browser_supervisor import SUPERVISOR_REGISTRY
 
-            supervisor = SUPERVISOR_REGISTRY.get(task_id)
+            supervisor = SUPERVISOR_REGISTRY.get(effective)
             if supervisor is not None:
                 sup = supervisor.evaluate_runtime(expression)
                 if sup.get("ok"):
@@ -115,17 +117,15 @@ def _eval_js(task_id: str, expression: str) -> Dict[str, Any]:
         except Exception as exc:  # pragma: no cover — defensive
             logger.debug("vault fill: supervisor eval unavailable (%s)", exc)
 
-        from tools.browser_tool import _last_session_key
         from tools.browser_tool_session import _run_browser_command
 
-        effective = _last_session_key(task_id)
         result = _run_browser_command(effective, "eval", [expression])
         if not result.get("success"):
             out = {"success": False, "error": result.get("error", "eval failed")}
             return _with_handoff_code(out, result)
         return {"success": True, "result": result.get("data", {}).get("result")}
 
-    return _bracket_bot_desktop_browser(_session_info_for_shared_browser_fence(task_id), _run)
+    return _bracket_bot_desktop_browser(_session_info_for_shared_browser_fence(effective), _run)
 
 
 def _ensure_supervisor(task_id: str):
@@ -137,14 +137,14 @@ def _ensure_supervisor(task_id: str):
     Returns None when no endpoint is reachable; the fill then refuses rather than touching argv."""
     from tools.browser_supervisor import SUPERVISOR_REGISTRY
 
-    supervisor = SUPERVISOR_REGISTRY.get(task_id)
+    effective = _non_nav_session_key(task_id)
+    supervisor = SUPERVISOR_REGISTRY.get(effective)
     if supervisor is not None:
         return supervisor
-    from tools.browser_tool import _last_session_key
     from tools.browser_tool_cdp import _get_dialog_policy_config, _resolve_cdp_override
     from tools.browser_tool_session import _run_browser_command
 
-    res = _run_browser_command(_last_session_key(task_id), "get", ["cdp-url"])
+    res = _run_browser_command(effective, "get", ["cdp-url"])
     # Independently-fenced get remints; do not rewrite as "no supervisor".
     if (res or {}).get("code") == "human_has_control":
         return res
@@ -153,8 +153,8 @@ def _ensure_supervisor(task_id: str):
         return None
     policy, timeout_s = _get_dialog_policy_config()
     try:
-        return SUPERVISOR_REGISTRY.get_or_start(task_id=task_id, cdp_url=_resolve_cdp_override(cdp_url),
-                                                dialog_policy=policy, dialog_timeout_s=timeout_s)
+        return SUPERVISOR_REGISTRY.get_or_start(task_id=effective, cdp_url=_resolve_cdp_override(cdp_url),
+                                         dialog_policy=policy, dialog_timeout_s=timeout_s)
     except Exception as exc:
         logger.debug("vault fill: supervisor attach to local session failed (%s)", exc)
         return None
@@ -172,8 +172,9 @@ def _eval_js_secret(task_id: str, expression: str, *, admitted=None) -> Dict[str
     ``admitted`` is the caller's lease ticket when this write is one hop of a
     larger inspect→fill. Reminting here would authorize a completed takeover.
     """
+    effective = _non_nav_session_key(task_id)
     if admitted is None:
-        admitted, refuse = _shared_browser_fence(task_id)
+        admitted, refuse = _shared_browser_fence(effective)
         if refuse:
             return refuse
     else:
@@ -181,7 +182,7 @@ def _eval_js_secret(task_id: str, expression: str, *, admitted=None) -> Dict[str
         if stole:
             return stole
     try:
-        supervisor = _ensure_supervisor(task_id)
+        supervisor = _ensure_supervisor(effective)
     except Exception as exc:
         logger.debug("vault fill: supervisor unavailable (%s)", exc)
         supervisor = None
@@ -264,9 +265,10 @@ def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[str]:
     """Point the supervisor's page session at the open tab on ``origin`` that holds a ``kind`` form
     (browser_exec sessions open their own tabs, so the tab the supervisor attached to first is rarely the
     login page). Returns the origin when a tab was focused, else None (caller falls back to the current page)."""
+    effective = _non_nav_session_key(task_id)
     def _run():
         try:
-            supervisor = _ensure_supervisor(task_id)
+            supervisor = _ensure_supervisor(effective)
         except Exception:
             supervisor = None
         if supervisor is None:
@@ -276,7 +278,7 @@ def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[str]:
         focused = supervisor.focus_page(origin, accept=_TAB_PROBES.get(kind))
         return (origin or focused.get("url")) if focused.get("ok") else None
 
-    boxed = _bracket_bot_desktop_browser(_session_info_for_shared_browser_fence(task_id), _run)
+    boxed = _bracket_bot_desktop_browser(_session_info_for_shared_browser_fence(effective), _run)
     if isinstance(boxed, dict):
         return None
     return boxed
@@ -361,7 +363,7 @@ def browser_vault_save_login(label: str = "", task_id: Optional[str] = None) -> 
     from agent.vault_backends.unlock import can_prompt_here, get_save_login_prompt_callback
     from agent.vault_store import get_vault_store
 
-    effective_task_id = task_id or "default"
+    effective_task_id = _non_nav_session_key(task_id)
     admitted, refuse = _shared_browser_fence(effective_task_id)
     if refuse:
         return json.dumps(refuse)
@@ -428,7 +430,7 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
     from agent.vault_backends.unlock import can_prompt_here, get_code_prompt_callback
     from agent.vault_login_classifier import LoginControl, build_fill_js, build_inspection_js, build_otp_fills, classify_otp_controls
 
-    effective_task_id = task_id or "default"
+    effective_task_id = _non_nav_session_key(task_id)
     admitted, refuse = _shared_browser_fence(effective_task_id)
     if refuse:
         return json.dumps(refuse)
@@ -531,7 +533,7 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
     from agent.vault_backends import UnlockRequired, backend_for_handle
     from agent.vault_store import ADDRESS_FIELDS, PAYMENT_FIELDS, scrub_secret_from_text
 
-    effective_task_id = task_id or "default"
+    effective_task_id = _non_nav_session_key(task_id)
     backend = backend_for_handle(handle)
     if backend is not None and backend.needs_unlock and not backend.is_unlocked():
         unlocked = json.loads(browser_vault_unlock(backend.name))

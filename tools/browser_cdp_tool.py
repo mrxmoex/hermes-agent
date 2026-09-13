@@ -19,6 +19,7 @@ from tools.bot_desktop.browser import cdp_url_is_running_instance
 from tools.browser_tool_session import (
     _admit_bot_desktop_browser,
     _discard_if_lease_moved,
+    _non_nav_session_key,
     _shared_browser_fence,
 )
 
@@ -285,7 +286,7 @@ def browser_cdp(method: str, params: Optional[Dict[str, Any]] = None, target_id:
     WebSocket instead — the only reliable way to evaluate inside an iframe where fresh per-call connections
     hit signed-URL expiry (Browserbase). Both paths share the same private-page/SSRF guard. Returns JSON
     ``{"success": True, "method", "result"}`` or ``{"error": ...}``."""
-    effective_task_id = task_id or "default"
+    effective_task_id = _non_nav_session_key(task_id)
 
     if frame_id:
         blocked = _browser_cdp_private_guard(task_id=effective_task_id, method=method, params=params or {})
