@@ -432,6 +432,119 @@ def test_browser_exec_refuses_unadmitted_dock_resolve_while_human_holds(monkeypa
     assert result.get("success") is not True
 
 
+def test_browser_exec_readmits_local_session_resolved_after_cloud_skip(monkeypatch):
+    """Predicted-cloud skip + a newly launched local Chromium (not the dock icon)
+    still put a headed browser on this screen. CDP-identity-only re-admit missed it."""
+    from tools import browser_tool as browser
+
+    ran: list = []
+    local_cdp = "ws://127.0.0.1:9333/devtools/browser/new-local"
+    key = bu_cli._backend_cache_key("review", "")
+    _predict_cloud(monkeypatch)
+    monkeypatch.setattr(bu_cli, "_find_cli", lambda: ["/usr/bin/browser-use"])
+    monkeypatch.setattr(bu_cli, "_attach_vault_supervisor", lambda *a, **k: None)
+
+    def route(env, *_a, **_k):
+        env["BU_CDP_WS"] = local_cdp
+        browser._active_sessions[key] = {
+            "session_name": "review",
+            "cdp_url": local_cdp,
+            "features": {"local": True},
+        }
+        return None
+
+    monkeypatch.setattr(bu_cli, "_route_backend", route)
+    monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", _is_dock_cdp)
+
+    def run_then_takeover(*_a, **_k):
+        ran.append("cli")
+        lease.acquire("human-viewer")
+        lease.release("human-viewer")
+        return subprocess.CompletedProcess(["browser-use"], 0, "WHAT-THE-HUMAN-TYPED\n", "")
+
+    monkeypatch.setattr(bu_cli, "_run_cli_killing_process_group", run_then_takeover)
+    try:
+        result = json.loads(bu_cli.browser_exec("print(1)", task_id="review"))
+    finally:
+        browser._active_sessions.pop(key, None)
+    assert "WHAT-THE-HUMAN-TYPED" not in json.dumps(result)
+    assert result.get("code") == "human_has_control"
+    assert result.get("success") is not True
+
+
+def test_browser_exec_refuses_local_session_resolved_after_cloud_skip_while_human_holds(monkeypatch):
+    """Human already holds: a local Chromium resolve after a predicted-cloud skip must not run."""
+    from tools import browser_tool as browser
+
+    ran: list = []
+    local_cdp = "ws://127.0.0.1:9333/devtools/browser/new-local"
+    key = bu_cli._backend_cache_key("review", "")
+    _predict_cloud(monkeypatch)
+    monkeypatch.setattr(bu_cli, "_find_cli", lambda: ["/usr/bin/browser-use"])
+    monkeypatch.setattr(bu_cli, "_attach_vault_supervisor", lambda *a, **k: None)
+
+    def route(env, *_a, **_k):
+        env["BU_CDP_WS"] = local_cdp
+        browser._active_sessions[key] = {
+            "session_name": "review",
+            "cdp_url": local_cdp,
+            "features": {"local": True},
+        }
+        return None
+
+    monkeypatch.setattr(bu_cli, "_route_backend", route)
+    monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", _is_dock_cdp)
+    monkeypatch.setattr(
+        bu_cli, "_run_cli_killing_process_group",
+        lambda *a, **k: ran.append("cli") or subprocess.CompletedProcess(["browser-use"], 0, "ok\n", ""),
+    )
+    lease.acquire("human-viewer")
+    try:
+        result = json.loads(bu_cli.browser_exec("print(1)", task_id="review"))
+    finally:
+        browser._active_sessions.pop(key, None)
+    assert ran == [], f"human holds the lease, yet local-resolved exec ran: {ran}"
+    assert result.get("code") == "human_has_control"
+    assert result.get("success") is not True
+
+
+def test_browser_exec_does_not_overlay_dock_supervisor_on_cloud_route(monkeypatch):
+    """A leftover dock supervisor must not fence a harness that routed to cloud."""
+    from tools import browser_tool as browser
+
+    ran: list = []
+    cloud_cdp = "wss://cloud.example/devtools/browser/x"
+    key = bu_cli._backend_cache_key("review", "")
+    _predict_cloud(monkeypatch)
+    monkeypatch.setattr(bu_cli, "_find_cli", lambda: ["/usr/bin/browser-use"])
+    monkeypatch.setattr(bu_cli, "_attach_vault_supervisor", lambda *a, **k: None)
+
+    def route(env, *_a, **_k):
+        env["BU_CDP_WS"] = cloud_cdp
+        browser._active_sessions[key] = {
+            "session_name": "review",
+            "cdp_url": cloud_cdp,
+            "features": {"local": False},
+        }
+        # Supervisor appears only after route, the way a leftover dock attach would.
+        # Re-calling ``_shared_browser_fence`` here would overlay it and refuse.
+        _install_supervisor(monkeypatch, _DOCK_CDP, task_id="review")
+        return None
+
+    monkeypatch.setattr(bu_cli, "_route_backend", route)
+    monkeypatch.setattr(
+        bu_cli, "_run_cli_killing_process_group",
+        lambda *a, **k: ran.append("cli") or subprocess.CompletedProcess(["browser-use"], 0, "ok\n", ""),
+    )
+    lease.acquire("human-viewer")
+    try:
+        result = json.loads(bu_cli.browser_exec("print(1)", task_id="review"))
+    finally:
+        browser._active_sessions.pop(key, None)
+    assert ran, "cloud-routed exec was fenced by a leftover dock supervisor"
+    assert result.get("success") is True
+
+
 def test_browser_exec_keeps_human_has_control_when_unadmitted_cdp_resolve_remints(monkeypatch):
     """Predicted-other-browser skip leaves admitted=None, so ``_lease_moved_error``
     cannot recover a reminted get. The resolve must raise, not stringify."""

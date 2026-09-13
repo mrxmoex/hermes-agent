@@ -618,11 +618,13 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
                               "dashes, or underscores (e.g. 'r7k2').")
         env["BU_NAME"] = session
     # Late import: browser_tool_session → lightpanda fallback → this module.
+    from tools.browser_tool import _active_sessions
     from tools.browser_tool_session import (
         _admit_bot_desktop_browser,
         _discard_if_lease_moved,
         _discard_shared_browser_captures,
         _shared_browser_fence,
+        _shares_bot_desktop_browser,
     )
     # ``get cdp-url`` is already fenced; the harness then talks CDP directly
     # (clicks, capture_screenshot) and must be bracketed the same way.
@@ -655,9 +657,17 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     # Same class as ``_session_after_shared_fence``: a predicted-cloud skip
     # plus a successful dock / local resolve used to leave ``admitted=None``,
     # so the harness's direct CDP traffic had no ticket to discard against.
+    # Admit the *routed* identity only — do not overlay a leftover dock
+    # supervisor onto a cloud cache entry (that would fence the wrong browser).
     if admitted is None:
         routed_cdp = env.get("BU_CDP_WS") or env.get("BU_CDP_URL") or ""
-        admitted, refuse = _admit_bot_desktop_browser({"cdp_url": routed_cdp})
+        routed_info: dict = {"cdp_url": routed_cdp}
+        cached = _active_sessions.get(_backend_cache_key(task_id, session)) or {}
+        if cached and _shares_bot_desktop_browser(cached):
+            routed_info = dict(cached)
+            if routed_cdp:
+                routed_info["cdp_url"] = routed_cdp
+        admitted, refuse = _admit_bot_desktop_browser(routed_info)
         if refuse:
             return tool_error(
                 refuse.get("error") or "Human has control of this bot's screen.",
