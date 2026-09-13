@@ -97,6 +97,28 @@ def test_thumbnail_is_suppressed_while_a_human_holds_the_lease(monkeypatch, _fre
     assert _call(server, "display.thumbnail", {})["result"]["data_url"].endswith("SECRET")
 
 
+def test_acquire_requires_a_live_screen_and_a_minted_viewer_id(monkeypatch, tmp_path, _fresh_lease):
+    """A client-chosen id (or any id while the screen is down) must not take the
+    lease: computer_use would sit on human_has_control with nobody at a desktop."""
+    from tools.bot_desktop import runtime
+    import tui_gateway.server as server
+
+    monkeypatch.setattr(runtime, "rfb_socket_path", lambda: None)
+    refused = _call(server, "display.lease.acquire", {"viewer_id": "any-id"})
+    assert "error" in refused, refused
+    assert _fresh_lease.get().holder == _fresh_lease.AGENT
+
+    monkeypatch.setattr(runtime, "rfb_socket_path", lambda: tmp_path / "rfb.sock")
+    unminted = _call(server, "display.lease.acquire", {"viewer_id": "any-id"})
+    assert unminted["error"]["data"]["code"] == "viewer_unminted"
+    assert _fresh_lease.get().holder == _fresh_lease.AGENT
+
+    observed = _rpc(server, "display.observe", {})["result"]
+    taken = _rpc(server, "display.lease.acquire", {"viewer_id": observed["viewer_id"]})["result"]
+    assert taken["lease"]["holder"] == _fresh_lease.HUMAN
+    assert observed["viewer_id"] not in json.dumps(taken)
+
+
 def test_release_without_viewer_id_cannot_yank_another_viewers_lease(_fresh_lease):
     """lease.release(None) skips the holder check, so a client that lost its viewer id (or a bare RPC)
     must be refused unless it forces; a matching viewer id and force keep working."""

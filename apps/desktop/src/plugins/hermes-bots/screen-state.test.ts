@@ -58,4 +58,11 @@ describe('lease epoch ordering', () => {
     setScreenLease(bot, legacy)
     expect(screenStateFor($screenState.get(), bot)?.lease).toEqual(legacy)
   })
+
+  it('applies a same-holder refresh when reason or epoch changes', () => {
+    setScreenLease(bot, human)
+    const updated = { ...human, reason: 'Step 2 — approve the device', epoch: 5 }
+    setScreenLease(bot, updated)
+    expect(screenStateFor($screenState.get(), bot)?.lease).toEqual(updated)
+  })
 })

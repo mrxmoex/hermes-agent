@@ -34,4 +34,16 @@ describe('portalTone', () => {
   it('stays live when the agent holds and nobody asked for help', () => {
     expect(portalTone(status, agent, viewer)).toBe('live')
   })
+
+  it('still surfaces a pending handoff when the launcher is already down', () => {
+    const stopped = { ...status, running: false, pid: null, display: null, socket: null }
+    expect(portalTone(stopped, { ...agent, pending_handoff: 'Finish 2FA' }, viewer)).toBe('handoff')
+  })
+
+  it('still surfaces a leftover human lease when the launcher is already down', () => {
+    const stopped = { ...status, running: false, pid: null, display: null, socket: null }
+    const human: DisplayLease = { holder: 'human', viewer_id: 'v1', viewer_hash: 'abc', pending_handoff: null, since: 1, reason: 'Sign in' }
+    expect(portalTone(stopped, human, viewer)).toBe('human')
+    expect(portalTone(stopped, agent, viewer)).toBe('off')
+  })
 })

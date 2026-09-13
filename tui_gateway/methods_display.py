@@ -118,20 +118,36 @@ _minted_viewer_ids: "weakref.WeakKeyDictionary[object, set[str]]" = weakref.Weak
 _minted_viewer_ids_by_id: dict[int, set[str]] = {}
 
 
+def _ids_for_current_transport(*, create: bool):
+    """Per-connection minted-id set. WeakKeyDictionary for normal peers; id() fallback
+    for StdioTransport / other slotted objects that cannot be weakly referenced."""
+    transport = current_transport()
+    try:
+        if create:
+            return _minted_viewer_ids.setdefault(transport, set())
+        return _minted_viewer_ids.get(transport)
+    except TypeError:
+        key = id(transport)
+        if create:
+            return _minted_viewer_ids_by_id.setdefault(key, set())
+        return _minted_viewer_ids_by_id.get(key)
+
+
 def _mint_viewer_id(requested: str) -> str:
     """Server-minted viewer identity. ``requested`` is honoured only when THIS connection minted it
     earlier; anything else (including a holder id read off display.status) gets a fresh id."""
     import secrets
-    transport = current_transport()
-    try:
-        mine = _minted_viewer_ids.setdefault(transport, set())
-    except TypeError:
-        mine = _minted_viewer_ids_by_id.setdefault(id(transport), set())
+    mine = _ids_for_current_transport(create=True)
     if requested in mine:
         return requested
     viewer_id = secrets.token_urlsafe(16)
     mine.add(viewer_id)
     return viewer_id
+
+
+def _this_connection_minted(viewer_id: str) -> bool:
+    mine = _ids_for_current_transport(create=False)
+    return bool(mine and viewer_id in mine)
 
 
 @method("display.observe")
@@ -203,10 +219,19 @@ def _(rid, params: dict) -> dict:
 @method("display.lease.acquire")
 @_profile_scoped
 def _(rid, params: dict) -> dict:
-    from tools.bot_desktop import lease as _bd_lease
+    from tools.bot_desktop import lease as _bd_lease, runtime as _bd_runtime
     viewer_id = str(params.get("viewer_id") or "").strip()
     if not viewer_id:
         return _err(rid, _DISPLAY_ERR, "viewer_id required")
+    # A client-chosen id with no live screen used to succeed and wedge computer_use
+    # on human_has_control with nobody at a desktop. Take over is an observing
+    # viewer's capability: the screen must be up, and the id must be one this
+    # connection minted via display.observe.
+    if _bd_runtime.rfb_socket_path() is None:
+        return _err(rid, _DISPLAY_ERR, "this profile's Bot Desktop is not running; call display.start first")
+    if not _this_connection_minted(viewer_id):
+        return _err(rid, _DISPLAY_ERR, "viewer_id must be the id display.observe minted for this connection",
+                    data={"code": "viewer_unminted"})
     lease = _bd_lease.acquire(viewer_id, reason=str(params.get("reason") or ""))
     return _ok(rid, {"lease": _lease_view(lease)})
 

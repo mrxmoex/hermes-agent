@@ -42,16 +42,19 @@ export function portalTone(status: DisplayStatus | null, lease: DisplayLease | n
     return 'missing'
   }
 
-  if (!status.running) {
-    return 'off'
-  }
-
+  // A leftover human lease / pending handoff outlives a crashed or stopped
+  // launcher (dead Xvnc still fences computer_use). Surface that on the portal
+  // so the user can open the pane and Hand back — do not hide it behind "off".
   if (lease?.holder === 'human') {
     return leaseHeldBy(lease, viewer) ? 'human' : 'other'
   }
 
   if (lease?.pending_handoff) {
     return 'handoff'
+  }
+
+  if (!status.running) {
+    return 'off'
   }
 
   return 'live'
