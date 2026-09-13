@@ -56,7 +56,8 @@ def test_thumbnail_is_suppressed_while_a_human_holds_the_lease(monkeypatch, _fre
     from tools.bot_desktop import thumbnail
 
     grabs = []
-    monkeypatch.setattr(thumbnail, "thumbnail_data_url", lambda: grabs.append(1) or "data:image/jpeg;base64,SECRET")
+        monkeypatch.setattr(thumbnail, "thumbnail_data_url",
+                            lambda **_: grabs.append(1) or "data:image/jpeg;base64,SECRET")
     _fresh_lease.acquire("viewer-1")
     result = _call(server, "display.thumbnail", {})["result"]
     assert result["data_url"] is None and result["suppressed"] == "human_has_control"
