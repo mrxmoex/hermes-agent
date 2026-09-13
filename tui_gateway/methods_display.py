@@ -29,15 +29,9 @@ _lease_listener_installed = threading.Event()
 
 
 def _lease_view(lease) -> dict:
-    """The lease as clients may see it: the holder's viewer id is a capability (whoever presents it
-    co-drives or releases the lease), so it is replaced by a short hash the holder can match against
-    its own id to know it is the one in control."""
-    import hashlib
-    d = lease.as_dict()
-    vid = d.pop("viewer_id")
-    d["viewer_id"] = None
-    d["viewer_hash"] = hashlib.sha256(vid.encode()).hexdigest()[:12] if vid else None
-    return d
+    """Outbound lease snapshot: same redaction as tool results and the CLI (``lease.public_view``)."""
+    from tools.bot_desktop.lease import public_view
+    return public_view(lease)
 
 
 def _display_snapshot() -> dict:
@@ -79,7 +73,11 @@ def _(rid, params: dict) -> dict:
         if _bd_lease.human_holds():
             return _ok(rid, {"data_url": None, "suppressed": "human_has_control"})
         from tools.bot_desktop.thumbnail import thumbnail_data_url
-        return _ok(rid, {"data_url": thumbnail_data_url()})
+        data_url = thumbnail_data_url()
+        # Takeover mid-grab: thumbnail_data_url discards the frame; tell the hero why.
+        if data_url is None and _bd_lease.human_holds():
+            return _ok(rid, {"data_url": None, "suppressed": "human_has_control"})
+        return _ok(rid, {"data_url": data_url})
     except Exception as e:
         return _err(rid, _DISPLAY_ERR, str(e))
 
@@ -111,21 +109,34 @@ def _(rid, params: dict) -> dict:
 # viewer ids minted per connection (keyed by the transport that asked), so a reconnecting pane can
 # keep its identity — and its lease — while nobody can claim an id minted for another connection.
 _minted_viewer_ids: "weakref.WeakKeyDictionary[object, set[str]]" = weakref.WeakKeyDictionary()
+# stdio / handle_request transports cannot be WeakKey'd; one process-wide bucket so observe+acquire
+# in the same process still works, without letting a WS peer reuse another connection's id.
+_process_minted_viewer_ids: set[str] = set()
+
+
+def _minted_bucket() -> set[str]:
+    try:
+        return _minted_viewer_ids.setdefault(current_transport(), set())
+    except TypeError:  # stdio / slotted transports cannot be weakly referenced
+        return _process_minted_viewer_ids
 
 
 def _mint_viewer_id(requested: str) -> str:
     """Server-minted viewer identity. ``requested`` is honoured only when THIS connection minted it
     earlier; anything else (including a holder id read off display.status) gets a fresh id."""
     import secrets
-    try:
-        mine = _minted_viewer_ids.setdefault(current_transport(), set())
-    except TypeError:  # stdio / slotted transports cannot be weakly referenced: always mint
-        mine = set()
+    mine = _minted_bucket()
     if requested in mine:
         return requested
     viewer_id = secrets.token_urlsafe(16)
     mine.add(viewer_id)
     return viewer_id
+
+
+def _viewer_id_minted_here(viewer_id: str) -> bool:
+    """True when THIS connection minted ``viewer_id``. A client must ``display.observe`` before
+    Take over; a guessed or transcript-stolen id must not flip the lease."""
+    return bool(viewer_id) and viewer_id in _minted_bucket()
 
 
 @method("display.observe")
@@ -199,6 +210,9 @@ def _(rid, params: dict) -> dict:
     viewer_id = str(params.get("viewer_id") or "").strip()
     if not viewer_id:
         return _err(rid, _DISPLAY_ERR, "viewer_id required")
+    if not _viewer_id_minted_here(viewer_id):
+        return _err(rid, _DISPLAY_ERR, "viewer_id was not minted on this connection; call display.observe first",
+                    data={"code": "viewer_unminted"})
     lease = _bd_lease.acquire(viewer_id, reason=str(params.get("reason") or ""))
     return _ok(rid, {"lease": _lease_view(lease)})
 

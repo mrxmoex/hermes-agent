@@ -330,6 +330,7 @@ def _spawn_and_wait(sd: Path, num: int, wait_seconds: float) -> DesktopStatus:
     from tools.bot_desktop.browser import dock_command, dock_launch
     if (browser := dock_launch()) is not None:
         child_env["HERMES_BD_BROWSER_EXEC"] = dock_command(*browser)
+        child_env["HERMES_BD_BROWSER_BIN"] = browser[0]  # existence check; Exec may be quoted
     # Truncated per start: the log is a diagnostic for THIS launch, and nothing rotates it otherwise.
     log = open(sd / "launcher.log", "wb")  # noqa: SIM115 — handed to the child, closed by it
     proc = subprocess.Popen(  # windows-footgun: ok — Linux-only runtime (is_supported_host)

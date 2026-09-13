@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import glob
 import os
+import shlex
 import shutil
 import socket
 from pathlib import Path
@@ -59,8 +60,8 @@ def dock_command(exe: str, user_data_dir: str) -> str:
     first-run / default-browser dialogs would sit between the human and the bot's tabs."""
     # --test-type hides the "Chrome for Testing is only for automated testing" and unsupported-flag
     # (--no-sandbox as root) infobars, which otherwise sit at the top of the human's takeover view.
-    return (f"{exe} --user-data-dir={user_data_dir} --remote-debugging-port=0 --no-first-run "
-            f"--no-default-browser-check --test-type")
+    return (f"{shlex.quote(exe)} --user-data-dir={shlex.quote(user_data_dir)} --remote-debugging-port=0 "
+            f"--no-first-run --no-default-browser-check --test-type")
 
 
 def running_instance_cdp_port(user_data_dir: str, *, exclude_session: Optional[str] = None) -> Optional[int]:

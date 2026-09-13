@@ -6,9 +6,17 @@ from __future__ import annotations
 import os
 import threading
 
+import pytest
 from PIL import Image, ImageGrab
 
-from tools.bot_desktop import runtime, thumbnail
+from tools.bot_desktop import lease, runtime, thumbnail
+
+
+@pytest.fixture(autouse=True)
+def _fresh_lease():
+    lease._reset_for_tests()
+    yield
+    lease._reset_for_tests()
 
 
 def test_concurrent_grabs_each_see_their_own_xauthority(monkeypatch):
@@ -39,3 +47,19 @@ def test_concurrent_grabs_each_see_their_own_xauthority(monkeypatch):
         t.join(5)
     assert seen == {":91": "/tmp/xauth-a", ":92": "/tmp/xauth-b"}
     assert "XAUTHORITY" not in os.environ
+
+
+def test_thumbnail_discards_a_frame_grabbed_across_takeover(monkeypatch):
+    """display.thumbnail's pre-check is not enough: a human can take over between the
+    check and ImageGrab. The grab site must fence on epoch so a mid-grab takeover
+    (or a completed acquire→release cycle) never returns the human's frame."""
+    monkeypatch.setattr(runtime, "published_env", lambda: {"DISPLAY": ":37", "XAUTHORITY": "/tmp/xauth"})
+    monkeypatch.setattr(runtime, "_launcher_pid", lambda: 4242)
+
+    def grab_during_handoff(xdisplay=None):
+        lease.acquire("human-viewer")
+        lease.release("human-viewer")
+        return Image.new("RGB", (16, 16), color=(255, 0, 0))
+
+    monkeypatch.setattr(ImageGrab, "grab", grab_during_handoff)
+    assert thumbnail.thumbnail_data_url() is None

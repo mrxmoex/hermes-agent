@@ -10,11 +10,13 @@ from pathlib import Path
 
 import pytest
 
+from tools.bot_desktop.browser import dock_command
+
 LAUNCHER = Path(__file__).resolve().parents[2] / "tools" / "bot_desktop" / "launcher.sh"
 pytestmark = pytest.mark.linux_only
 
 
-def _seed(tmp_path: Path, fake_bins: list[str], browser_exec: str = "") -> Path:
+def _seed(tmp_path: Path, fake_bins: list[str], browser_exec: str = "", browser_bin: str = "") -> Path:
     bindir = tmp_path / "bin"
     bindir.mkdir()
     for name in fake_bins:
@@ -36,6 +38,7 @@ def _seed(tmp_path: Path, fake_bins: list[str], browser_exec: str = "") -> Path:
         "HERMES_BD_ENV_FILE": str(tmp_path / "env"), "HERMES_BD_CONFIG_HOME": str(cfg),
         "HERMES_BD_SEED_ONLY": "1",
         **({"HERMES_BD_BROWSER_EXEC": browser_exec} if browser_exec else {}),
+        **({"HERMES_BD_BROWSER_BIN": browser_bin} if browser_bin else {}),
     }
     subprocess.run(["bash", str(LAUNCHER)], env=env, check=True, stdin=subprocess.DEVNULL, capture_output=True, timeout=30)
     return cfg
@@ -53,6 +56,29 @@ def test_dock_lists_only_programs_present_on_path(tmp_path):
         if line.startswith("Exec=")
     )
     assert execs == [f"{chrome} --user-data-dir={tmp_path}/bp", "xfce4-terminal"]
+
+
+def test_dock_keeps_a_browser_whose_paths_contain_spaces(tmp_path):
+    """Quoted Exec + HERMES_BD_BROWSER_BIN: a Chrome / HERMES_HOME with spaces must still
+    appear on the dock (first-token PATH lookup would look up ``'/opt/Chrome`` and skip it)."""
+    spaced = tmp_path / "Chrome Beta"
+    spaced.mkdir()
+    chrome = spaced / "chrome"
+    chrome.write_text("#!/bin/sh\n", encoding="utf-8")
+    chrome.chmod(0o755)
+    profile = tmp_path / "My Home" / "bp"
+    profile.mkdir(parents=True)
+    cfg = _seed(tmp_path, ["xfce4-terminal"],
+                browser_exec=dock_command(str(chrome), str(profile)),
+                browser_bin=str(chrome))
+    execs = []
+    for path in (cfg / "xfce4/panel").rglob("hermes.desktop"):
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.startswith("Exec="):
+                execs.append(line.split("=", 1)[1])
+    browser_execs = [e for e in execs if "user-data-dir" in e]
+    assert browser_execs, execs
+    assert str(chrome) in browser_execs[0] and str(profile) in browser_execs[0]
 
 
 def test_look_is_seeded_with_wallpaper_and_theme(tmp_path):
