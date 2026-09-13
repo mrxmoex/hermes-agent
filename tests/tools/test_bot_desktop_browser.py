@@ -211,6 +211,22 @@ def test_chromium_cmdline_accepts_spaced_user_data_dir_and_port():
     assert browser._user_data_dir_from_cmdline(
         ["chrome", "--user-data-dir=/p/dir"]
     ) == "/p/dir"
+    # Chromium last-wins. First scratch dir must not hide the dock.
+    assert browser._user_data_dir_from_cmdline(
+        ["chrome", "--user-data-dir=/scratch", "--user-data-dir=/p/dir"]
+    ) == "/p/dir"
+    assert browser._user_data_dir_from_cmdline(
+        ["chrome", "--user-data-dir", "/scratch", "--user-data-dir=/p/dir"]
+    ) == "/p/dir"
+    assert browser._user_data_dir_from_cmdline(
+        ["chrome", "--user-data-dir=/p/dir", "--user-data-dir", "/other"]
+    ) == "/other"
+    assert browser._remote_debugging_port_from_cmdline(
+        ["chrome", "--remote-debugging-port=0", "--remote-debugging-port=9333"]
+    ) == 9333
+    assert browser._remote_debugging_port_from_cmdline(
+        ["chrome", "--remote-debugging-port=9333", "--remote-debugging-port=0"]
+    ) is None
 
 
 def test_running_instance_recovers_port_when_devtools_file_is_gone(tmp_path, monkeypatch):
@@ -595,6 +611,41 @@ def test_persist_configured_listen_accepts_chrome_user_data_dir_env(tmp_path, mo
     try:
         assert browser.persist_live_dock_cdp_port() == port
         assert browser.last_known_dock_cdp_port() == port
+    finally:
+        listener.close()
+
+
+def test_running_instance_recovers_last_user_data_dir(tmp_path, monkeypatch):
+    """Chromium last-wins. A leading scratch ``--user-data-dir`` hid the dock."""
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+    os.symlink(f"host-{os.getpid()}", tmp_path / "SingletonLock")
+    monkeypatch.setattr(
+        browser,
+        "_chromium_cmdline_tokens",
+        lambda pid: [
+            "chrome",
+            "--user-data-dir=/scratch",
+            f"--user-data-dir={tmp_path}",
+            "--remote-debugging-port=0",
+        ],
+    )
+    monkeypatch.setattr(browser, "_loopback_listen_ports_for_pid", lambda pid: {port})
+    try:
+        assert browser.running_instance_cdp_port(str(tmp_path)) == port
+        monkeypatch.setattr(
+            browser,
+            "_chromium_cmdline_tokens",
+            lambda pid: [
+                "chrome",
+                f"--user-data-dir={tmp_path}",
+                "--user-data-dir=/other",
+                "--remote-debugging-port=0",
+            ],
+        )
+        assert browser.running_instance_cdp_port(str(tmp_path)) is None
     finally:
         listener.close()
 

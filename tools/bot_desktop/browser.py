@@ -109,20 +109,33 @@ def _chromium_switch_value(tokens: list[str], name: str) -> Optional[str]:
     the same jar with the spaced form; recover / configured-listen then
     missed ``user-data-dir`` and leftover identity treated the jar as
     another Chrome. A following flag is not a value.
+
+    Chromium's CommandLine keeps the *last* value when a switch repeats.
+    First-wins treated ``--user-data-dir=/scratch --user-data-dir=<dock>``
+    as another Chrome (admit ``None`` → leftover HTTP).
     """
     key = f"--{name}"
     prefix = key + "="
-    for i, token in enumerate(tokens):
-        raw = token if isinstance(token, str) else str(token)
+    found: Optional[str] = None
+    i = 0
+    n = len(tokens)
+    while i < n:
+        raw = tokens[i] if isinstance(tokens[i], str) else str(tokens[i])
         if raw.startswith(prefix):
-            return raw.split("=", 1)[1] or None
-        if raw == key and i + 1 < len(tokens):
-            nxt = tokens[i + 1]
-            nxt = nxt if isinstance(nxt, str) else str(nxt)
-            if nxt.startswith("-"):
-                return None
-            return nxt or None
-    return None
+            found = raw.split("=", 1)[1] or None
+        elif raw == key:
+            if i + 1 < n:
+                nxt = tokens[i + 1]
+                nxt = nxt if isinstance(nxt, str) else str(nxt)
+                if nxt.startswith("-"):
+                    found = None
+                else:
+                    found = nxt or None
+                    i += 1
+            else:
+                found = None
+        i += 1
+    return found
 
 
 def _user_data_dir_from_cmdline(tokens: list[str]) -> Optional[str]:
