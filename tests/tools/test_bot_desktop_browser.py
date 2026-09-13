@@ -36,6 +36,17 @@ def test_dock_browser_advertises_a_devtools_port():
     assert "--remote-debugging-port=" in browser.dock_command("/opt/chrome", "/p/dir").split()[2]
 
 
+def test_dock_command_quotes_paths_with_spaces():
+    """HERMES_HOME and Playwright Chrome paths commonly contain spaces; an unquoted Exec
+    line splits the user-data-dir and the human lands in a different profile."""
+    import shlex
+    cmd = browser.dock_command("/opt/Chrome Beta/chrome", "/home/Jane Doe/.hermes/bot-desktop/browser-profile")
+    argv = shlex.split(cmd)
+    assert argv[0] == "/opt/Chrome Beta/chrome"
+    assert argv[1] == "--user-data-dir=/home/Jane Doe/.hermes/bot-desktop/browser-profile"
+    assert any(part.startswith("--remote-debugging-port=") for part in argv)
+
+
 def _fake_running_instance(user_data_dir, pid: int, port: int) -> None:
     (user_data_dir / "DevToolsActivePort").write_text(f"{port}\n/devtools/browser/abc\n", encoding="utf-8")
     os.symlink(f"host-{pid}", user_data_dir / "SingletonLock")

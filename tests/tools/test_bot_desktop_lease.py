@@ -46,6 +46,20 @@ def test_rfb_filter_forwards_input_only_from_the_lease_holder_across_arbitrary_c
     assert lease.release("v2").holder == lease.AGENT
 
 
+def test_public_view_never_discloses_the_raw_viewer_id():
+    """Tool results, CLI snapshots and RPC payloads must share one redaction: viewer_id is a
+    capability. Persistence still stores the raw id; only outbound views go through public_view."""
+    import hashlib
+    held = lease.acquire("SECRET-VIEWER-ID")
+    view = lease.public_view(held)
+    dumped = json.dumps(view)
+    assert "SECRET-VIEWER-ID" not in dumped
+    assert view["viewer_id"] is None
+    assert view["holder"] == lease.HUMAN
+    assert view["viewer_hash"] == hashlib.sha256(b"SECRET-VIEWER-ID").hexdigest()[:12]
+    assert lease.get().viewer_id == "SECRET-VIEWER-ID"
+
+
 def test_computer_use_refuses_every_action_while_a_human_holds_the_screen(monkeypatch):
     from tools.computer_use import tool
 

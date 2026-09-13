@@ -19,7 +19,12 @@ _grab_lock = threading.Lock()
 
 
 def thumbnail_data_url(max_size: tuple[int, int] = THUMB_MAX, quality: int = 72) -> Optional[str]:
-    """``data:image/jpeg;base64,...`` of the running screen, or ``None`` when no screen is up."""
+    """``data:image/jpeg;base64,...`` of the running screen, or ``None`` when no screen is up
+    or a human took over across the grab (the frame may show what they typed)."""
+    from tools.bot_desktop import lease as _bd_lease
+    admitted = _bd_lease.get()
+    if admitted.holder == _bd_lease.HUMAN:
+        return None
     env = runtime.published_env()
     display = env.get("DISPLAY")
     if not display or runtime._launcher_pid() is None:
@@ -40,6 +45,10 @@ def thumbnail_data_url(max_size: tuple[int, int] = THUMB_MAX, quality: int = 72)
                 os.environ.pop("XAUTHORITY", None)
             else:
                 os.environ["XAUTHORITY"] = previous
+        # Epoch fence before the JPEG exists: a takeover mid-grab belongs to the human's turn,
+        # including a completed acquire→release cycle (same rule as computer_use capture).
+        if _bd_lease.get().epoch != admitted.epoch:
+            return None
     image.thumbnail(max_size)
     buf = io.BytesIO()
     image.convert("RGB").save(buf, "JPEG", quality=quality, optimize=True)
