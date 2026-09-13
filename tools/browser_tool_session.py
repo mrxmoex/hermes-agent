@@ -971,43 +971,103 @@ def interrupt_reserved_browser_cli(home: Optional[str] = None) -> None:
 
 
 _NPX_LAUNCHERS = frozenset({"npx", "pnpx", "bunx"})
+_UVX_LAUNCHERS = frozenset({"uvx", "uv"})
 
 
-def _token_basename_is_agent_browser(token: str) -> bool:
-    """True when this argv token *is* the agent-browser binary or package.
+def _token_basename_is(token: str, name: str) -> bool:
+    """True when this argv token *is* ``name`` (binary or package@ver).
 
-    Token-match only — never ``\"agent-browser\" in cmdline``. A path
-    substring such as ``cat agent-browser.log`` or
-    ``chrome --user-data-dir=…/agent-browser`` is not an invocation.
+    Token-match only — never ``name in cmdline``. A path substring such as
+    ``cat agent-browser.log`` or ``chrome --user-data-dir=…/agent-browser``
+    is not an invocation.
     """
     raw = (token or "").strip().strip("\"'")
-    if not raw:
+    if not raw or not name:
         return False
-    name = Path(raw).name
-    pkg = name.split("@", 1)[0]
+    pkg = Path(raw).name.split("@", 1)[0]
     lower = pkg.lower()
     if lower.endswith((".exe", ".cmd", ".bat")):
         lower = Path(lower).stem.lower()
-    return lower == "agent-browser"
+    return lower == name.lower()
+
+
+def _token_basename_is_agent_browser(token: str) -> bool:
+    return _token_basename_is(token, "agent-browser")
+
+
+def _launcher_basename(token: str) -> str:
+    name0 = Path((token or "").strip().strip("\"'")).name.lower()
+    if name0.endswith((".exe", ".cmd", ".bat")):
+        name0 = Path(name0).stem.lower()
+    return name0
+
+
+_LAUNCHER_VALUE_FLAGS = frozenset({"--from"})
+
+
+def _first_non_flag_tokens(tokens: List[str], skip: int = 1) -> List[str]:
+    """Non-flag argv after the launcher, skipping values of known launcher flags.
+
+    ``uvx --from browser-use==1 browser-use`` must see ``browser-use`` as the
+    command, not the pin. ``npx -p agent-browser@latest agent-browser`` is
+    the same shape.
+    """
+    out: List[str] = []
+    expect_value = False
+    for tok in tokens[skip:]:
+        raw = str(tok) if tok is not None else ""
+        if expect_value:
+            expect_value = False
+            continue
+        if not raw or raw.startswith("-"):
+            key = raw.split("=", 1)[0]
+            if key in _LAUNCHER_VALUE_FLAGS and "=" not in raw:
+                expect_value = True
+            continue
+        out.append(raw)
+    return out
 
 
 def _is_agent_browser_invocation(tokens: List[str]) -> bool:
     """True when argv launches agent-browser (direct binary or npx/pnpx/bunx)."""
     if not tokens:
         return False
-    argv0 = tokens[0]
-    if _token_basename_is_agent_browser(argv0):
+    if _token_basename_is_agent_browser(tokens[0]):
         return True
-    name0 = Path((argv0 or "").strip().strip("\"'")).name.lower()
-    if name0.endswith((".exe", ".cmd", ".bat")):
-        name0 = Path(name0).stem.lower()
-    if name0 not in _NPX_LAUNCHERS:
+    if _launcher_basename(tokens[0]) not in _NPX_LAUNCHERS:
         return False
-    for tok in tokens[1:]:
-        if not tok or str(tok).startswith("-"):
-            continue
-        return _token_basename_is_agent_browser(str(tok))
+    rest = _first_non_flag_tokens(tokens)
+    return bool(rest) and _token_basename_is_agent_browser(rest[0])
+
+
+def _is_browser_use_invocation(tokens: List[str]) -> bool:
+    """True when argv launches the browser-use CLI (direct, uvx, or uv run).
+
+    Token-match only. ``cat browser-use.log`` and ``uvx ruff`` are not
+    invocations. Finding 42 only tracks Hermes-spawned ``browser_exec``.
+    """
+    if not tokens:
+        return False
+    if _token_basename_is(tokens[0], "browser-use"):
+        return True
+    name0 = _launcher_basename(tokens[0])
+    if name0 not in _UVX_LAUNCHERS:
+        return False
+    rest = _first_non_flag_tokens(tokens)
+    if not rest:
+        return False
+    if name0 == "uvx":
+        return _token_basename_is(rest[0], "browser-use")
+    # uv tool run browser-use / uv run browser-use
+    if rest[0] == "tool" and len(rest) >= 3 and rest[1] == "run":
+        return _token_basename_is(rest[2], "browser-use")
+    if rest[0] == "run" and len(rest) >= 2:
+        return _token_basename_is(rest[1], "browser-use")
     return False
+
+
+def _is_unregistered_dock_cli_invocation(tokens: List[str]) -> bool:
+    return _is_agent_browser_invocation(tokens) or _is_browser_use_invocation(tokens)
 
 
 def _cdp_arg_from_argv(tokens: List[str]) -> Optional[str]:
@@ -1031,14 +1091,28 @@ def _unregistered_cli_aims_at_dock(
     Explicit ``--cdp`` wins: another loopback Chrome, a LAN endpoint, or a
     cloud URL is not the dock even if ``AGENT_BROWSER_PROFILE`` is pinned.
     ``--session`` without ``--cdp`` and without the env pin stays unknown.
+
+    browser-use leftover writers (finding 78) aim via ``BU_CDP_*`` /
+    ``BROWSER_CDP_URL``. No CDP env stays unknown (cloud / own Chrome).
     """
+    env = environ or {}
+    if _is_browser_use_invocation(tokens) and not _is_agent_browser_invocation(tokens):
+        for key in ("BU_CDP_WS", "BU_CDP_URL", "BROWSER_CDP_URL"):
+            val = (env.get(key) or "").strip()
+            if not val:
+                continue
+            if _cdp_url_is_bot_desktop_browser(val):
+                return True
+            port = _loopback_cdp_port(val)
+            return dock_port is not None and port == dock_port
+        return False
     cdp = _cdp_arg_from_argv(tokens)
     if cdp:
         if _cdp_url_is_bot_desktop_browser(cdp):
             return True
         port = _loopback_cdp_port(cdp)
         return dock_port is not None and port == dock_port
-    pinned = ((environ or {}).get("AGENT_BROWSER_PROFILE") or "").strip()
+    pinned = (env.get("AGENT_BROWSER_PROFILE") or "").strip()
     if not pinned or profile is None:
         return False
     try:
@@ -1101,10 +1175,11 @@ def interrupt_unregistered_dock_cli(
 
     Finding 42 only tracks Hermes-spawned CLIs (``_spawn_and_collect`` /
     ``browser_exec``). ``terminal()`` ``agent-browser`` / ``npx agent-browser``
-    never enters ``_inflight_dock_cli``, so Take over would wait those
-    writers out — leftover *action* in the field the human is typing into,
-    the same class as leftover ``ws.send``. This is not a lease-gated
-    terminal fence: ``terminal()`` still runs the CLI; Take over drops a
+    and ``browser-use`` / ``uvx browser-use`` never enter
+    ``_inflight_dock_cli``, so Take over would wait those writers out —
+    leftover *action* in the field the human is typing into, the same
+    class as leftover ``ws.send``. This is not a lease-gated terminal
+    fence: ``terminal()`` still runs the CLI; Take over drops a
     dock-aimed leftover.
 
     Never ``killpg`` / tree-kill. Skip the shared Chromium and the daemon
@@ -1180,7 +1255,7 @@ def interrupt_unregistered_dock_cli(
             if not raw_cmd:
                 continue
             tokens = [str(t) for t in raw_cmd]
-            if not _is_agent_browser_invocation(tokens):
+            if not _is_unregistered_dock_cli_invocation(tokens):
                 continue
             try:
                 environ = proc.environ() if callable(getattr(proc, "environ", None)) else {}

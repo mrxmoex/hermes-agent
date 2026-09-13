@@ -240,7 +240,10 @@ class _FakeProc:
 
 
 def test_agent_browser_invocation_is_token_match_not_substring():
-    from tools.browser_tool_session import _is_agent_browser_invocation
+    from tools.browser_tool_session import (
+        _is_agent_browser_invocation,
+        _is_browser_use_invocation,
+    )
 
     assert _is_agent_browser_invocation(["/usr/bin/agent-browser", "open"])
     assert _is_agent_browser_invocation(["agent-browser.exe", "fill", "@e1", "x"])
@@ -251,6 +254,13 @@ def test_agent_browser_invocation_is_token_match_not_substring():
         ["chrome", "--user-data-dir=/tmp/agent-browser"])
     assert not _is_agent_browser_invocation(["npx", "playwright", "install"])
     assert not _is_agent_browser_invocation(["agent-browser-mcp", "serve"])
+    assert _is_browser_use_invocation(["browser-use", "exec"])
+    assert _is_browser_use_invocation(["uvx", "browser-use"])
+    assert _is_browser_use_invocation(["uvx", "--from", "browser-use==1", "browser-use"])
+    assert _is_browser_use_invocation(["uv", "tool", "run", "browser-use"])
+    assert _is_browser_use_invocation(["uv", "run", "browser-use"])
+    assert not _is_browser_use_invocation(["/usr/bin/cat", "browser-use.log"])
+    assert not _is_browser_use_invocation(["uvx", "ruff", "check"])
 
 
 def test_unregistered_cdp_dock_cli_killed_on_takeover():
@@ -439,6 +449,43 @@ def test_unregistered_does_not_use_killpg(monkeypatch):
     )
     assert leftover.killed == 1
     assert killed_pg == []
+
+
+def test_unregistered_browser_use_dock_env_killed_on_takeover():
+    """terminal()-spawned browser-use with BU_CDP_* on the dock is leftover action."""
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    bdb.remember_dock_cdp_port(9333)
+    leftover = _FakeProc(
+        8600, ["browser-use", "exec"],
+        {"BU_CDP_URL": "http://127.0.0.1:9333"},
+    )
+    uvx = _FakeProc(
+        8601, ["uvx", "browser-use"],
+        {"BU_CDP_WS": "ws://127.0.0.1:9333/devtools/browser/x"},
+    )
+    other = _FakeProc(
+        8602, ["browser-use", "exec"],
+        {"BU_CDP_URL": "http://127.0.0.1:9222"},
+    )
+    unknown = _FakeProc(8603, ["browser-use", "exec"], {})
+    lan = _FakeProc(
+        8604, ["browser-use", "exec"],
+        {"BU_CDP_URL": "http://10.0.0.5:9333"},
+    )
+    lease.acquire("human")
+    n = interrupt_unregistered_dock_cli(
+        processes=[leftover, uvx, other, unknown, lan],
+        chromium_pid=9999,
+        owner_daemon_pid=9998,
+    )
+    assert n == 2
+    assert leftover.killed == 1
+    assert uvx.killed == 1
+    assert other.killed == 0
+    assert unknown.killed == 0
+    assert lan.killed == 0
 
 
 def test_stop_reserved_calls_unregistered_interrupt(monkeypatch):
