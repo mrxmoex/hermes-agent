@@ -1011,11 +1011,22 @@ def _eval_supervisor_fast_path(effective_task_id: str, expression: str) -> Optio
     JS-side exception — NOT retried via subprocess, that would just reproduce it slower);
     None to fall through to the subprocess path."""
     try:
+        from tools.bot_desktop.lease import HumanHasControl
         from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
         supervisor = SUPERVISOR_REGISTRY.get(effective_task_id)
         if supervisor is None:
             return None
+        admitted = None
+        info = _active_sessions.get(effective_task_id)
+        if info:
+            try:
+                admitted = _session._admit_shared_browser(info)
+            except HumanHasControl as e:
+                return json.dumps({"success": False, "error": str(e), "code": "human_has_control"})
         sup_result = supervisor.evaluate_runtime(expression)
+        moved = _session._lease_moved_result(admitted)
+        if moved:
+            return json.dumps(moved)
         if sup_result.get("ok"):
             return _eval_result_or_blocked(
                 effective_task_id, _parse_eval_value(sup_result.get("result")), {}, method="cdp_supervisor")
@@ -1242,6 +1253,17 @@ from tools import browser_tool_vision as _vision
 def _capture_vision_screenshot(effective_task_id: str, annotate: bool, screenshot_path: Path, lp_prerouted: bool):
     """Take (or adopt the pre-routed) screenshot; returns ``(result, path, error_json_or_None)``."""
     if lp_prerouted and screenshot_path.exists():
+        info = _active_sessions.get(effective_task_id)
+        if info:
+            from tools.bot_desktop.lease import HumanHasControl
+            try:
+                admitted = _session._admit_shared_browser(info)
+            except HumanHasControl as e:
+                refused = {"success": False, "code": "human_has_control", "error": str(e)}
+                return refused, screenshot_path, json.dumps(refused)
+            moved = _session._lease_moved_result(admitted)
+            if moved:
+                return moved, screenshot_path, json.dumps(moved)
         result = _lp._annotate_lightpanda_fallback(
             {"success": True, "data": {"path": str(screenshot_path)}}, _LP_VISION_FALLBACK_REASON)
     else:

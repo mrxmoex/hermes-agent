@@ -606,6 +606,15 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     route_err = _route_backend(env, session, task_id, bool(local))
     if route_err:
         return tool_error(route_err)
+    admitted = None
+    cdp = env.get("BU_CDP_WS") or env.get("BU_CDP_URL") or ""
+    if cdp:
+        try:
+            from tools.bot_desktop.lease import HumanHasControl
+            from tools.browser_tool_session import _admit_shared_browser
+            admitted = _admit_shared_browser(cdp_url=cdp)
+        except HumanHasControl as e:
+            return tool_error(str(e), code="human_has_control")
     _attach_vault_supervisor(env, task_id)
 
     # SHARED browser (/browser connect CDP override): pin each named session to its own tab (see
@@ -645,6 +654,11 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     if stderr:
         result["stderr"] = stderr
     screenshot = _find_screenshot(proc.stdout, started)
+    if admitted is not None:
+        from tools.browser_tool_session import _lease_moved_result
+        moved = _lease_moved_result(admitted)
+        if moved:
+            return tool_error(moved["error"], code="human_has_control")
     if screenshot:
         result["screenshot_path"] = screenshot
         native = _native_screenshot_result(result, screenshot)

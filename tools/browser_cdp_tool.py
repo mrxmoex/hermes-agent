@@ -255,24 +255,27 @@ def _browser_cdp_via_supervisor(task_id: str, frame_id: str, method: str, params
                        "result": result_msg.get("result", {})}, ensure_ascii=False)
 
 
-def _refuse_bot_desktop_cdp_while_human_holds(endpoint: str = "") -> Optional[str]:
-    """Raw CDP is an observation channel on the dock Chromium. Same lease as browser_*."""
-    from tools.browser_tool_session import _cdp_url_is_bot_desktop_browser
+def _admit_bot_desktop_cdp(endpoint: str = ""):
+    """Admit raw CDP against the dock Chromium. Returns ``(admitted, error_json_or_None)``."""
+    from tools.bot_desktop.lease import HumanHasControl
+    from tools.browser_tool_session import _admit_shared_browser
     raw = (endpoint or "").strip()
     if not raw:
         try:
             from tools.browser_tool_cdp import _get_cdp_override_raw
             raw = _get_cdp_override_raw()
         except Exception:
-            return None
-    if not _cdp_url_is_bot_desktop_browser(raw):
-        return None
-    from tools.bot_desktop import lease as _bd_lease
+            return None, None
     try:
-        _bd_lease.assert_agent_may_act()
-    except _bd_lease.HumanHasControl as e:
-        return json.dumps({"success": False, "error": str(e), "code": "human_has_control"})
-    return None
+        return _admit_shared_browser(cdp_url=raw), None
+    except HumanHasControl as e:
+        return None, json.dumps({"success": False, "error": str(e), "code": "human_has_control"})
+
+
+def _refuse_bot_desktop_cdp_while_human_holds(endpoint: str = "") -> Optional[str]:
+    """Raw CDP is an observation channel on the dock Chromium. Same lease as browser_*."""
+    _admitted, refused = _admit_bot_desktop_cdp(endpoint)
+    return refused
 
 
 def browser_cdp(method: str, params: Optional[Dict[str, Any]] = None, target_id: Optional[str] = None,
@@ -283,7 +286,7 @@ def browser_cdp(method: str, params: Optional[Dict[str, Any]] = None, target_id:
     hit signed-URL expiry (Browserbase). Both paths share the same private-page/SSRF guard. Returns JSON
     ``{"success": True, "method", "result"}`` or ``{"error": ...}``."""
     effective_task_id = task_id or "default"
-    refused = _refuse_bot_desktop_cdp_while_human_holds()
+    admitted, refused = _admit_bot_desktop_cdp()
     if refused:
         return refused
 
@@ -291,8 +294,11 @@ def browser_cdp(method: str, params: Optional[Dict[str, Any]] = None, target_id:
         blocked = _browser_cdp_private_guard(task_id=effective_task_id, method=method, params=params or {})
         if blocked:
             return blocked
-        return _browser_cdp_via_supervisor(task_id=effective_task_id, frame_id=frame_id, method=method,
-                                           params=params, timeout=timeout)
+        out = _browser_cdp_via_supervisor(task_id=effective_task_id, frame_id=frame_id, method=method,
+                                          params=params, timeout=timeout)
+        from tools.browser_tool_session import _lease_moved_result
+        moved = _lease_moved_result(admitted)
+        return json.dumps(moved) if moved else out
 
     if not method or not isinstance(method, str):
         return tool_error("'method' is required (e.g. 'Target.getTargets')", cdp_docs=CDP_DOCS_URL)
@@ -339,6 +345,10 @@ def browser_cdp(method: str, params: Optional[Dict[str, Any]] = None, target_id:
         flagged_paths=_CDP_FLAGGED_BINARY_PATHS.get(method, ()))}
     if target_id:
         payload["target_id"] = target_id
+    from tools.browser_tool_session import _lease_moved_result
+    moved = _lease_moved_result(admitted)
+    if moved:
+        return json.dumps(moved)
     return json.dumps(payload, ensure_ascii=False)
 
 

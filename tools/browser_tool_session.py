@@ -647,6 +647,37 @@ def _cdp_url_is_bot_desktop_browser(cdp_url: str) -> bool:
     return live is not None and live == want
 
 
+_LEASE_MOVED_ERROR = (
+    "A human took over the bot's screen while this browser command ran; its result was "
+    "discarded. Call computer_use action='wait_for_human' to block until they hand back."
+)
+
+
+def _admit_shared_browser(session_info: Optional[Dict[str, Any]] = None, *, cdp_url: str = ""):
+    """Admit a call against the Bot Desktop's shared Chromium.
+
+    Returns the lease snapshot when this *is* that browser (so the caller can
+    discard a mid-flight result). Returns ``None`` for another browser.
+    Raises ``HumanHasControl`` while a human holds.
+    """
+    if session_info is None and cdp_url:
+        session_info = {"cdp_url": cdp_url, "features": {"cdp_override": True}}
+    if not session_info or not _shares_bot_desktop_browser(session_info):
+        return None
+    from tools.bot_desktop import lease as _bd_lease
+    return _bd_lease.assert_agent_may_act()
+
+
+def _lease_moved_result(admitted) -> Optional[Dict[str, Any]]:
+    """Refuse payload when the lease epoch moved after ``admitted``, else ``None``."""
+    if admitted is None:
+        return None
+    from tools.bot_desktop import lease as _bd_lease
+    if _bd_lease.get().epoch != admitted.epoch:
+        return {"success": False, "code": "human_has_control", "error": _LEASE_MOVED_ERROR}
+    return None
+
+
 def _is_shared_bot_desktop_session(session_info: Dict[str, Any]) -> bool:
     """Same Chromium as the Bot Desktop dock / agent-browser profile, any transport."""
     if (session_info.get("features") or {}).get("local"):

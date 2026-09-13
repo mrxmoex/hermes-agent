@@ -29,10 +29,21 @@ def _lightpanda_vision_preroute(
     engine = _cloud._get_browser_engine()
     if engine != "lightpanda" or not _cloud._should_inject_engine(engine):
         return False, None, screenshot_path
+    from tools.bot_desktop.lease import HumanHasControl
+    from tools import browser_tool_session as _session
+    admitted = None
+    info = _bt._active_sessions.get(effective_task_id)
+    if info:
+        try:
+            admitted = _session._admit_shared_browser(info)
+        except HumanHasControl:
+            return False, None, screenshot_path
     _bt.logger.debug("browser_vision: pre-routing screenshot to Chrome (engine=lightpanda)")
     screenshot_args = ["--annotate"] if annotate else []
     fb_result = _lp._chrome_fallback_screenshot(effective_task_id, screenshot_args, _bt._get_command_timeout())
     fb_result = _lp._annotate_lightpanda_fallback(fb_result, _bt._LP_VISION_FALLBACK_REASON)
+    if _session._lease_moved_result(admitted):
+        return False, None, screenshot_path
     if not fb_result.get("success"):
         _bt.logger.warning("Lightpanda Chrome fallback vision screenshot failed: %s", fb_result.get("error"))
         return False, None, screenshot_path

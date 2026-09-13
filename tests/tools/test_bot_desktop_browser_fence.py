@@ -329,6 +329,122 @@ def test_cdp_override_to_unrelated_browser_is_not_the_dock_jar(monkeypatch):
     assert session._shares_bot_desktop_browser(remote) is False
 
 
+def test_eval_supervisor_fast_path_is_fenced_while_human_holds(monkeypatch):
+    """Runtime.evaluate on the live CDP socket skipped _run_browser_command entirely."""
+    from unittest.mock import MagicMock
+    from tools import browser_tool as bt
+    from tools.bot_desktop import lease
+
+    commands: list = []
+    _wire(monkeypatch, commands)
+    monkeypatch.setattr(bt, "_is_camofox_mode", lambda: False)
+    monkeypatch.setattr(bt, "_last_session_key", lambda task_id: "review")
+    saved = bt._active_sessions.copy()
+    try:
+        bt._active_sessions["review"] = {
+            "session_name": "h_review", "features": {"local": True},
+        }
+        sup = MagicMock()
+        sup.evaluate_runtime.return_value = {"ok": True, "result": "SECRET-FROM-PAGE"}
+        import tools.browser_supervisor as bs
+        registry = MagicMock()
+        registry.get.return_value = sup
+        monkeypatch.setattr(bs, "SUPERVISOR_REGISTRY", registry)
+        lease.acquire("human-viewer")
+        out = json.loads(bt._browser_eval("document.body.innerText", task_id="review"))
+        assert out.get("code") == "human_has_control"
+        assert "SECRET-FROM-PAGE" not in json.dumps(out)
+        sup.evaluate_runtime.assert_not_called()
+    finally:
+        bt._active_sessions.clear()
+        bt._active_sessions.update(saved)
+
+
+def test_eval_supervisor_fast_path_discards_result_after_takeover(monkeypatch):
+    from unittest.mock import MagicMock
+    from tools import browser_tool as bt
+    from tools.bot_desktop import lease
+
+    _wire(monkeypatch, [])
+    monkeypatch.setattr(bt, "_is_camofox_mode", lambda: False)
+    monkeypatch.setattr(bt, "_last_session_key", lambda task_id: "review")
+    saved = bt._active_sessions.copy()
+    try:
+        bt._active_sessions["review"] = {
+            "session_name": "h_review", "features": {"local": True},
+        }
+        sup = MagicMock()
+
+        def _eval(_expr):
+            lease.acquire("human-viewer")
+            lease.release("human-viewer")
+            return {"ok": True, "result": "SECRET-FROM-PAGE"}
+
+        sup.evaluate_runtime.side_effect = _eval
+        import tools.browser_supervisor as bs
+        registry = MagicMock()
+        registry.get.return_value = sup
+        monkeypatch.setattr(bs, "SUPERVISOR_REGISTRY", registry)
+        out = json.loads(bt._browser_eval("document.body.innerText", task_id="review"))
+        assert out.get("code") == "human_has_control"
+        assert "SECRET-FROM-PAGE" not in json.dumps(out)
+    finally:
+        bt._active_sessions.clear()
+        bt._active_sessions.update(saved)
+
+
+def test_lightpanda_vision_preroute_does_not_persist_while_human_holds(monkeypatch, tmp_path):
+    """Chrome fallback for Lightpanda vision must not copy a PNG after Take over."""
+    from tools import browser_tool_vision as vision
+    from tools.bot_desktop import lease
+    from tools import browser_tool as bt
+
+    png = tmp_path / "shot.png"
+    png.write_bytes(b"PNG")
+    monkeypatch.setattr(vision._cloud, "_get_browser_engine", lambda: "lightpanda")
+    monkeypatch.setattr(vision._cloud, "_should_inject_engine", lambda _e: True)
+    monkeypatch.setattr(
+        vision._lp, "_chrome_fallback_screenshot",
+        lambda *a, **k: {"success": True, "data": {"path": str(png)}},
+    )
+    dest = tmp_path / "out.png"
+    saved = bt._active_sessions.copy()
+    try:
+        bt._active_sessions["review"] = {"session_name": "lp_1", "features": {"local": True, "lightpanda": True}}
+        lease.acquire("human-viewer")
+        prerouted, _warn, path = vision._lightpanda_vision_preroute("review", False, dest)
+        assert prerouted is False
+        assert path == dest
+        assert not dest.exists()
+    finally:
+        bt._active_sessions.clear()
+        bt._active_sessions.update(saved)
+
+
+def test_browser_cdp_discards_result_after_takeover(monkeypatch):
+    import tools.bot_desktop.browser as bdb
+    from tools.bot_desktop import lease
+    from tools import browser_cdp_tool as cdp
+
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: 9333)
+    monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override_raw", lambda: "http://127.0.0.1:9333")
+    monkeypatch.setattr(cdp, "_resolve_cdp_endpoint", lambda: "ws://127.0.0.1:9333/devtools/browser/x")
+    monkeypatch.setattr(cdp, "_WS_AVAILABLE", True)
+    monkeypatch.setattr(cdp, "_browser_cdp_private_guard", lambda **k: None)
+
+    def _call(*_a, **_k):
+        lease.acquire("human-viewer")
+        lease.release("human-viewer")
+        return {"data": "SECRET"}
+
+    monkeypatch.setattr(cdp, "_run_async", _call)
+    monkeypatch.setattr(cdp, "_cdp_call", lambda *a, **k: None)
+    monkeypatch.setattr(runtime, "published_env", lambda: {"DISPLAY": ":37"})
+    out = json.loads(cdp.browser_cdp("Runtime.evaluate", {"expression": "1"}))
+    assert out.get("code") == "human_has_control"
+    assert "SECRET" not in json.dumps(out)
+
+
 def test_sibling_profile_browser_connect_does_not_override_this_home(monkeypatch, tmp_path):
     """``/browser connect`` writes BROWSER_CDP_URL; a multiplex sibling must not inherit it."""
     from hermes_constants import hermes_home_key, reset_hermes_home_override, set_hermes_home_override
