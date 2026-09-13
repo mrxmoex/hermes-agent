@@ -108,20 +108,30 @@ def _(rid, params: dict) -> dict:
         return _err(rid, _DISPLAY_ERR, str(e))
 
 
-# viewer ids minted per (connection, profile). A reconnecting pane keeps its identity on
-# the same transport, but a multiplexed client must not take over bot B with an id
-# observe minted for bot A on the same socket.
+# viewer ids minted per (caller, profile). A multiplexed client must not take over
+# bot B with an id observe minted for bot A on the same socket. The caller's
+# identity is the WS-upgrade auth when present (survives /api/ws reconnect —
+# a new WSTransport object is not a new person) and the transport object otherwise.
 _minted_viewer_ids: "weakref.WeakKeyDictionary[object, dict[str, set[str]]]" = weakref.WeakKeyDictionary()
 # Transports that cannot be weak-referenced (stdio / slotted / handle_request with no
 # transport) still need a durable bucket: otherwise observe returns an id that acquire
 # cannot recognise, and Take over from those callers would always fail closed.
 _minted_fallback: dict[int, dict[str, set[str]]] = {}
+# (provider, user_id) → profile → ids. Same authenticated Desktop after a
+# socket replace must still be able to release the lease it holds.
+_minted_by_auth: dict[tuple[str, str], dict[str, set[str]]] = {}
 
 
 def _caller_minted_ids() -> set[str]:
     # get_hermes_home is on server.py; _profile_scoped has already bound the requested profile.
     profile = str(get_hermes_home())
     transport = current_transport()
+    identity = getattr(transport, "auth_identity", None) if transport is not None else None
+    if isinstance(identity, dict):
+        user_id = str(identity.get("user_id") or "").strip()
+        provider = str(identity.get("provider") or "").strip()
+        if user_id and provider:
+            return _minted_by_auth.setdefault((provider, user_id), {}).setdefault(profile, set())
     try:
         by_profile = _minted_viewer_ids.setdefault(transport, {})
     except TypeError:
@@ -136,6 +146,7 @@ def _viewer_id_is_minted(viewer_id: str) -> bool:
 def _reset_minted_for_tests() -> None:
     _minted_viewer_ids.clear()
     _minted_fallback.clear()
+    _minted_by_auth.clear()
 
 
 def _mint_viewer_id(requested: str) -> str:

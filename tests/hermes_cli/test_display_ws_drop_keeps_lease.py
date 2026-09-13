@@ -57,9 +57,13 @@ async def _bridge_once(close_code: int, home: str) -> lease.Lease:
     return lease.get(profile_key=home)
 
 
-# 1005 (no status code) is what noVNC's code-less socket.close() AND some proxies produce on a drop, so
-# the server keeps the lease; the Desktop sends an explicit 1000 when the pane is closed on purpose.
-@pytest.mark.parametrize(("close_code", "human_keeps_control"), [(1006, True), (1005, True), (1000, False)])
+# 1005 (no status code) is what noVNC's code-less socket.close() AND some proxies produce on a drop;
+# 4002 is this window replacing its own stream (Reconnect). Neither hands the screen back.
+# The Desktop sends an explicit 1000 when the pane is closed on purpose.
+@pytest.mark.parametrize(
+    ("close_code", "human_keeps_control"),
+    [(1006, True), (1005, True), (display._CLOSE_STREAM_REPLACE, True), (1000, False)],
+)
 def test_only_a_clean_viewer_close_hands_the_screen_back(monkeypatch, close_code, human_keeps_control):
     lease._reset_for_tests()
     with tempfile.TemporaryDirectory() as home:
@@ -119,10 +123,10 @@ def test_a_takeover_made_by_another_process_stops_input_within_the_refresh_inter
                 await asyncio.sleep(0.01)
             assert captured["allow"]() is True
             # Another process takes over: the file changes, no listener in this process is told.
+            # Do not poll allow() after this — that is the input-gated path. An idle /
+            # viewOnly holder never sends KeyEvent, so eviction must come from the timer.
             lease._write(lease._path(home), lease.Lease(holder=lease.HUMAN, viewer_id="desk-2", epoch=2))
             t0 = asyncio.get_running_loop().time()
-            while captured["allow"]() and asyncio.get_running_loop().time() - t0 < 2.0:
-                await asyncio.sleep(0.02)
             while ws.close_code is None and asyncio.get_running_loop().time() - t0 < 2.0:
                 await asyncio.sleep(0.02)
             return asyncio.get_running_loop().time() - t0, ws.close_code, ws.close_reason

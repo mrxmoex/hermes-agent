@@ -168,6 +168,31 @@ it('discards a late thumbnail from the previous owner and retains a same-owner f
   view.unmount()
 })
 
+it('ages a running screen with no frame into last-seen instead of resetting freshness', async () => {
+  vi.useFakeTimers()
+  setScreenStatus(botA, status)
+  let thumbs = 0
+  vi.mocked(host.requestProfile).mockImplementation(async (_route, method) => {
+    if (method === 'display.thumbnail') {
+      thumbs += 1
+      return thumbs === 1 ? { data_url: 'data:image/jpeg;base64,LAST_GOOD' } : { data_url: null }
+    }
+
+    return status
+  })
+  const view = render(<ScreenHero bot={botA} />)
+  await act(async () => {})
+  expect(view.container.querySelector('img')?.getAttribute('src')).toContain('LAST_GOOD')
+  expect(view.getByRole('button').getAttribute('aria-label')).toContain('Live')
+
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(16_000)
+  })
+  expect(view.container.querySelector('img')?.getAttribute('src')).toContain('LAST_GOOD')
+  expect(view.getByRole('button').getAttribute('aria-label')).toContain('Last seen')
+  view.unmount()
+})
+
 it('captions a suppressed thumbnail as hidden-while-controlled and never ages it into stale', async () => {
   vi.useFakeTimers()
   setScreenStatus(botA, status)

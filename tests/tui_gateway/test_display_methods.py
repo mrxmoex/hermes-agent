@@ -200,6 +200,36 @@ def test_acquire_refuses_a_viewer_id_minted_for_another_profile(monkeypatch, tmp
     assert minted_b not in json.dumps(taken)
 
 
+def test_minted_viewer_id_survives_a_new_transport_with_the_same_auth(monkeypatch, tmp_path, _fresh_lease):
+    """A Desktop /api/ws reconnect is a new WSTransport. The holder still has the minted
+    id in the pane; acquire/release on the replacement socket must recognise it."""
+    from tools.bot_desktop import runtime
+    import tui_gateway.server as server
+
+    class _Authed:
+        def __init__(self, user):
+            self.auth_identity = {"user_id": user, "provider": "dashboard"}
+
+        def write(self, obj):
+            return True
+
+    monkeypatch.setattr(runtime, "rfb_socket_path", lambda: tmp_path / "rfb.sock")
+    first, second, stranger = _Authed("desk-1"), _Authed("desk-1"), _Authed("desk-2")
+    minted = server.dispatch({"jsonrpc": "2.0", "id": 8, "method": "display.observe", "params": {}}, first)["result"]["viewer_id"]
+    reused = server.dispatch({"jsonrpc": "2.0", "id": 9, "method": "display.observe",
+                              "params": {"viewer_id": minted}}, second)["result"]["viewer_id"]
+    assert reused == minted
+    stolen = server.dispatch({"jsonrpc": "2.0", "id": 10, "method": "display.observe",
+                              "params": {"viewer_id": minted}}, stranger)["result"]["viewer_id"]
+    assert stolen != minted
+    taken = server.dispatch({"jsonrpc": "2.0", "id": 11, "method": "display.lease.acquire",
+                             "params": {"viewer_id": minted}}, second)
+    assert taken["result"]["lease"]["holder"] == _fresh_lease.HUMAN
+    released = server.dispatch({"jsonrpc": "2.0", "id": 12, "method": "display.lease.release",
+                                "params": {"viewer_id": minted}}, second)
+    assert released["result"]["lease"]["holder"] == _fresh_lease.AGENT
+
+
 def test_thumbnail_discards_a_frame_grabbed_across_a_lease_epoch_change(monkeypatch, _fresh_lease):
     """human_holds() is checked before ImageGrab; a takeover during the grab is the same
     class as a capture admitted before takeover — the frame must not ship."""

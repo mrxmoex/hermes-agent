@@ -102,3 +102,39 @@ def test_screen_started_or_stopped_by_another_process_is_broadcast_as_status(tmp
     server._poll_runtime_files()
     assert len([e for e in events if e[0] == "display.status"]) == 2
     assert [p for e, p in events if e == "display.status"][-1]["running"] is False
+
+
+def test_launcher_crash_without_unlinking_files_is_broadcast_as_stopped(tmp_path, monkeypatch):
+    """runtime.stop() unlinks env/pid; a crash leaves both. The portal only listens
+    after the first status, so a dead launcher must still move the runtime mark."""
+    import tui_gateway.server as server
+    from tools.bot_desktop import runtime
+
+    home = tmp_path / "home"
+    (home / "bot-desktop").mkdir(parents=True)
+    events = _watching(server, home, monkeypatch)
+    server._poll_runtime_files()
+
+    (home / "bot-desktop" / "launcher.pid").write_text("424242 1.5")
+    (home / "bot-desktop" / "env").write_text("DISPLAY=:77\n")
+    monkeypatch.setattr(runtime, "status", lambda: runtime.DesktopStatus(
+        profile="default", supported=True, installed=True, missing=[],
+        running=True, pid=424242, display=":77", socket=None, geometry="1440x900",
+        install_command=None,
+    ))
+    server._poll_runtime_files()
+    assert [p for e, p in events if e == "display.status"][-1]["running"] is True
+
+    before = len([e for e in events if e[0] == "display.status"])
+    server._poll_runtime_files()  # files unchanged, still alive: no re-broadcast
+    assert len([e for e in events if e[0] == "display.status"]) == before
+
+    monkeypatch.setattr(runtime, "status", lambda: runtime.DesktopStatus(
+        profile="default", supported=True, installed=True, missing=[],
+        running=False, pid=None, display=None, socket=None, geometry="1440x900",
+        install_command=None,
+    ))
+    server._poll_runtime_files()
+    statuses = [p for e, p in events if e == "display.status"]
+    assert len(statuses) == before + 1
+    assert statuses[-1]["running"] is False

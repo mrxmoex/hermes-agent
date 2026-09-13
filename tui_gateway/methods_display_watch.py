@@ -23,8 +23,8 @@ _lease_watcher_started = threading.Event()
 # made by THIS process is not re-broadcast when its file write is noticed a tick later).
 _lease_epochs: dict[str, int] = {}
 _lease_mtimes: dict[str, int | None] = {}
-# profile key → (env mtime, launcher.pid mtime): the screen's running/display identity. A start,
-# stop or crash made by another process (CLI, gateway auto-start) moves one of these.
+# profile key → (env mtime, launcher.pid mtime, running): start/stop rewrite the
+# files; a crash leaves them in place and only the live-pid bit flips.
 _runtime_marks: dict[str, tuple] = {}
 
 
@@ -45,13 +45,29 @@ def _mtime(path: Path):
         return None
 
 
+def _runtime_mark(home: Path) -> tuple:
+    """File mtimes plus whether the launcher is actually alive.
+
+    ``runtime.stop()`` unlinks ``env`` / ``launcher.pid``; a crash leaves both,
+    so an mtime-only mark stays put and the Desktop portal keeps saying Live.
+    """
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.bot_desktop import runtime as _bd_runtime
+    sd = home / "bot-desktop"
+    token = set_hermes_home_override(home)
+    try:
+        running = bool(_bd_runtime.status().running)
+    finally:
+        reset_hermes_home_override(token)
+    return (_mtime(sd / "env"), _mtime(sd / "launcher.pid"), running)
+
+
 def _poll_runtime_files() -> None:
     """Broadcast ``display.status`` when a home's screen started/stopped outside this process."""
     from hermes_constants import hermes_home_key, reset_hermes_home_override, set_hermes_home_override
     for home in _watched_lease_homes():
         key = hermes_home_key(home)
-        sd = home / "bot-desktop"
-        mark = (_mtime(sd / "env"), _mtime(sd / "launcher.pid"))
+        mark = _runtime_mark(home)
         first = key not in _runtime_marks
         if _runtime_marks.get(key) == mark:
             continue

@@ -26,8 +26,12 @@ router = APIRouter()
 
 _READ_CHUNK = 64 * 1024
 _CLOSE_CONTROL_TAKEN = 4000
+# 1000/1001 = the viewer closed the pane on purpose. 4002 = this window replaced
+# its own stream (Reconnect). A code-less close is 1005; a dropped link is 1006.
+# Only the first pair hands the screen back to the agent.
 _CLEAN_CLOSE = frozenset({1000, 1001})
 _CLOSE_DESKTOP_GONE = 4001
+_CLOSE_STREAM_REPLACE = 4002
 _CLOSE_BAD_TICKET = 4401
 _CLOSE_NOT_ALLOWED = 4403
 _CLOSE_PROTOCOL = 1003
@@ -163,8 +167,18 @@ async def _bridge(ws: WebSocket, info: dict) -> None:
         await evicted.wait()
         await ws.close(code=_CLOSE_CONTROL_TAKEN, reason="control-taken")
 
+    async def poll_lease() -> None:
+        # _refresh_allowed used to run only on in-process on_change or when the
+        # viewer sent input (the filter consults allow_input for Key/Pointer only).
+        # A cross-process takeover plus an idle or viewOnly holder never hit
+        # either path, so the previous viewer kept the framebuffer. Drive the
+        # same disk refresh on a timer so eviction does not depend on input.
+        while True:
+            await asyncio.sleep(_LEASE_REFRESH_S)
+            _refresh_allowed()
+
     tasks = [asyncio.create_task(rfb_to_ws()), asyncio.create_task(ws_to_rfb()),
-             asyncio.create_task(watch_eviction())]
+             asyncio.create_task(watch_eviction()), asyncio.create_task(poll_lease())]
     try:
         done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         for t in pending:
