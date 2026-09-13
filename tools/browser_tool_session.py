@@ -592,6 +592,24 @@ _HUMAN_TOOK_OVER = (
 )
 
 
+def _session_info_for_shared_browser_fence(task_id: str) -> Dict[str, Any]:
+    """Session info for the lease bracket.
+
+    Skip the lookup when this profile has no screen and no human lease (so
+    existing Lightpanda unit tests do not spawn a daemon). If a screen is
+    published or a human holds and the lookup fails, assume local — the temp
+    Chrome fallback still lands on that DISPLAY.
+    """
+    from tools.bot_desktop import lease as _bd_lease, runtime as _bd_runtime
+
+    if not (_bd_runtime.published_env().get("DISPLAY") or _bd_lease.human_holds()):
+        return {}
+    try:
+        return _get_session_info(task_id)
+    except Exception:
+        return {"features": {"local": True}}
+
+
 def _admit_bot_desktop_browser(session_info: Dict[str, Any]):
     """Admit a shared-browser run. Returns ``(lease_or_None, refuse_dict_or_None)``."""
     if not _shares_bot_desktop_browser(session_info):

@@ -14,7 +14,6 @@ from tools import browser_tool_cdp as _cdp
 from tools import browser_tool_cloud as _cloud
 from tools import browser_tool_install as _install
 from tools import browser_tool_session as _session
-from tools.bot_desktop import lease as _bd_lease, runtime as _bd_runtime
 
 # Commands where Chrome can meaningfully produce a different result. Session-management
 # commands (close, record) are tied to the engine's daemon and can't be retried elsewhere.
@@ -126,16 +125,10 @@ def _run_chrome_fallback_command(task_id: str, command: str, args: List[str], ti
     apply the same Bot Desktop lease bracket or a vision preroute can return
     pixels captured while a human holds the shared profile.
     """
-    might_share = bool(_bd_runtime.published_env().get("DISPLAY")) or _bd_lease.human_holds()
-    if might_share:
-        try:
-            session_info = _session._get_session_info(task_id)
-        except Exception:
-            session_info = {}
-        return _session._bracket_bot_desktop_browser(
-            session_info, lambda: _run_chrome_fallback_command_unfenced(task_id, command, args, timeout)
-        )
-    return _run_chrome_fallback_command_unfenced(task_id, command, args, timeout)
+    return _session._bracket_bot_desktop_browser(
+        _session._session_info_for_shared_browser_fence(task_id),
+        lambda: _run_chrome_fallback_command_unfenced(task_id, command, args, timeout),
+    )
 
 
 def _run_chrome_fallback_command_unfenced(task_id: str, command: str, args: List[str], timeout: int) -> Dict[str, Any]:

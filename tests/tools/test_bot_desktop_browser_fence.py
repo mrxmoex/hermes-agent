@@ -133,6 +133,21 @@ def test_chrome_fallback_result_crossing_a_takeover_is_discarded(monkeypatch, tm
     assert result.get("code") == "human_has_control"
 
 
+def test_chrome_fallback_lookup_miss_fails_closed_while_human_holds(monkeypatch):
+    """A broken session lookup must not unfence temp Chrome on a published DISPLAY."""
+    from tools import browser_tool_lightpanda_fallback as lp
+    from tools import browser_tool_session as session
+
+    spawned: list = []
+    monkeypatch.setattr(session, "_get_session_info", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no session")))
+    monkeypatch.setattr(session, "_popen_agent_browser", lambda *a, **k: spawned.append(a) or (_ for _ in ()).throw(AssertionError("unfenced")))
+    monkeypatch.setattr(session, "_run_browser_command", lambda *a, **k: spawned.append(("get-url",)) or {"success": True, "data": {"url": "https://example.com/"}})
+    lease.acquire("human-viewer")
+    result = lp._run_chrome_fallback_command("review", "screenshot", [], timeout=10)
+    assert spawned == [], f"lookup failed open and chrome fallback ran: {spawned}"
+    assert result.get("code") == "human_has_control"
+
+
 def test_browser_vision_preroute_is_fenced_while_human_controls(monkeypatch, tmp_path):
     """Lightpanda vision preroute must not adopt a frame after the human takes over."""
     commands: list = []

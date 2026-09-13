@@ -1181,23 +1181,12 @@ def _capture_vision_screenshot(effective_task_id: str, annotate: bool, screensho
     if lp_prerouted and screenshot_path.exists():
         # Adopting the prerouted PNG skips ``_run_browser_command``. Re-apply
         # the lease bracket so a takeover after the preroute cannot deliver it.
-        from tools.bot_desktop import lease as _bd_lease, runtime as _bd_runtime
-
-        if _bd_runtime.published_env().get("DISPLAY") or _bd_lease.human_holds():
-            try:
-                session_info = _session._get_session_info(effective_task_id)
-            except Exception:
-                session_info = {}
-            result = _session._bracket_bot_desktop_browser(
-                session_info,
-                lambda: _lp._annotate_lightpanda_fallback(
-                    {"success": True, "data": {"path": str(screenshot_path)}}, _LP_VISION_FALLBACK_REASON
-                ),
-            )
-        else:
-            result = _lp._annotate_lightpanda_fallback(
+        result = _session._bracket_bot_desktop_browser(
+            _session._session_info_for_shared_browser_fence(effective_task_id),
+            lambda: _lp._annotate_lightpanda_fallback(
                 {"success": True, "data": {"path": str(screenshot_path)}}, _LP_VISION_FALLBACK_REASON
-            )
+            ),
+        )
     else:
         screenshot_args = (["--annotate"] if annotate else []) + ["--full", str(screenshot_path)]
         # A failed Lightpanda pre-route forces Chrome so _run_browser_command
@@ -1237,17 +1226,11 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
     if blocked is not None:
         return blocked
 
-    from tools.bot_desktop import lease as _bd_lease, runtime as _bd_runtime
-
-    admitted = None
-    if _bd_runtime.published_env().get("DISPLAY") or _bd_lease.human_holds():
-        try:
-            session_info = _session._get_session_info(effective_task_id)
-        except Exception:
-            session_info = {}
-        admitted, refuse = _session._admit_bot_desktop_browser(session_info)
-        if refuse:
-            return _dumps(refuse)
+    admitted, refuse = _session._admit_bot_desktop_browser(
+        _session._session_info_for_shared_browser_fence(effective_task_id)
+    )
+    if refuse:
+        return _dumps(refuse)
 
     def _guard(payload):
         stole = _session._discard_if_lease_moved(admitted)
