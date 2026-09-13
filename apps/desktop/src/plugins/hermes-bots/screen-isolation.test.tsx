@@ -3,6 +3,12 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import type { RosterRow } from './types'
 
+const $testGateway = vi.hoisted(() => {
+  const { atom } = require('nanostores') as typeof import('nanostores')
+
+  return atom('open')
+})
+
 vi.mock('@hermes/plugin-sdk', async () => {
   const { useStore } = await import('@nanostores/react')
   const { onGatewayEvent } = await import('../../contrib/events')
@@ -11,7 +17,7 @@ vi.mock('@hermes/plugin-sdk', async () => {
     Codicon: () => null,
     useValue: useStore,
     resolveSiblingWsUrl: vi.fn(),
-    host: { onEvent: vi.fn(onGatewayEvent), requestProfile: vi.fn() }
+    host: { onEvent: vi.fn(onGatewayEvent), requestProfile: vi.fn(), state: { gateway: $testGateway } }
   }
 })
 vi.mock('./data', async () => {
@@ -75,6 +81,7 @@ const status: DisplayStatus = {
 beforeEach(() => {
   $screenState.set({})
   $lastRoster.set([])
+  $testGateway.set('open')
   vi.mocked(host.requestProfile).mockReset()
   vi.mocked(openBotScreen).mockClear()
   vi.spyOn(globalThis.document, 'hidden', 'get').mockReturnValue(false)
@@ -212,4 +219,22 @@ it('a sidebar group portal keeps its lease subscription across parent re-renders
   await act(async () => {})
   expect(vi.mocked(host.onEvent).mock.calls.length).toBe(subscriptions)
   view.unmount()
+})
+
+it('refetches display.status on gateway reconnect even when the cache is already warm', async () => {
+  setScreenStatus(botA, { ...status, running: false, pid: null, display: null, socket: null })
+  vi.mocked(host.requestProfile).mockResolvedValue(status)
+  const hook = renderHook(() => useScreenPortalState(botA))
+  await act(async () => {})
+  expect(vi.mocked(host.requestProfile)).not.toHaveBeenCalled()
+
+  await act(async () => {
+    $testGateway.set('idle')
+  })
+  await act(async () => {
+    $testGateway.set('open')
+  })
+  expect(vi.mocked(host.requestProfile)).toHaveBeenCalledWith(expect.anything(), 'display.status', {})
+  expect(hook.result.current.status?.running).toBe(true)
+  hook.unmount()
 })

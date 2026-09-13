@@ -11,15 +11,15 @@
 
 import { Codicon, useValue } from '@hermes/plugin-sdk'
 import type { ProfileGroupRoute } from '@hermes/plugin-sdk'
-import { useEffect, useMemo } from 'react'
+import { useCallback, useEffect, useMemo } from 'react'
 
 import { $lastRoster } from './data'
 import { useBots } from './i18n'
 import { resolveBotConnectionRoute } from './routing'
-import { type DisplayLease, displayRequest, type DisplayStatus, isDisplayUnavailable, leaseHeldBy, type ScreenViewer } from './screen-connection'
-import { useScreenBackendEvents } from './screen-events'
+import { type DisplayLease, type DisplayStatus, leaseHeldBy, type ScreenViewer } from './screen-connection'
+import { pullScreenStatus, useOnGatewayOpen, useScreenBackendEvents } from './screen-events'
 import { openBotScreen } from './screen-open'
-import { $screenState, screenStateFor, setScreenStatus, setScreenUnavailable } from './screen-state'
+import { $screenState, screenStateFor } from './screen-state'
 import type { BotMeta, RosterRow } from './types'
 
 export type PortalTone = 'live' | 'handoff' | 'human' | 'other' | 'off' | 'missing' | 'unsupported' | 'unavailable' | 'unknown'
@@ -91,30 +91,18 @@ export function useScreenPortalState(bot: RosterRow) {
 
   useScreenBackendEvents(bot)
 
+  const resync = useCallback(() => {
+    void pullScreenStatus(bot)
+  }, [bot])
+
+  useOnGatewayOpen(resync)
+
   useEffect(() => {
     if (status || state?.unavailable) {
       return
     }
 
-    let cancelled = false
-
-    void displayRequest<DisplayStatus>(bot, 'display.status')
-      .then(next => {
-        if (!cancelled) {
-          setScreenStatus(bot, next)
-        }
-      })
-      .catch((error: unknown) => {
-        // An older Hermes without display.* is a settled answer (hide the surface);
-        // an offline bot is transient and stays in its unknown state.
-        if (!cancelled && isDisplayUnavailable(error)) {
-          setScreenUnavailable(bot)
-        }
-      })
-
-    return () => {
-      cancelled = true
-    }
+    void pullScreenStatus(bot)
   }, [bot, state?.unavailable, status])
 
   return { status, lease: state?.lease ?? null, tone: portalTone(status, state?.lease ?? null, state?.viewer ?? null, state?.unavailable) }

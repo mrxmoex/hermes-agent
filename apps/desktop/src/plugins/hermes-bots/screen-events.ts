@@ -12,16 +12,18 @@
 
 import { host, useValue } from '@hermes/plugin-sdk'
 import type { RpcEvent } from '@hermes/plugin-sdk'
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 
 import { botSelectionKey } from './data'
 import {
   type DisplayLease,
   type DisplayStatus,
+  displayRequest,
+  isDisplayUnavailable,
   isEventForBotScreen,
   isEventOnBotConnection
 } from './screen-connection'
-import { $screenState, screenStateFor, setScreenLease, setScreenStatus } from './screen-state'
+import { $screenState, screenStateFor, setScreenLease, setScreenStatus, setScreenUnavailable } from './screen-state'
 import type { RosterRow } from './types'
 
 const MAX_BUFFERED = 16
@@ -29,6 +31,32 @@ const pending = new Map<string, RpcEvent[]>()
 
 export function resetScreenEventBufferForTests(): void {
   pending.clear()
+}
+
+/** One `display.status` RPC into the per-bot cache. Offline stays as-is; method-not-found settles unavailable. */
+export async function pullScreenStatus(bot: RosterRow): Promise<void> {
+  try {
+    setScreenStatus(bot, await displayRequest<DisplayStatus>(bot, 'display.status'))
+  } catch (error) {
+    if (isDisplayUnavailable(error)) {
+      setScreenUnavailable(bot)
+    }
+  }
+}
+
+/** Run `callback` when the gateway socket becomes `open` (SSH reconnect, sleep/wake). */
+export function useOnGatewayOpen(callback: () => void): void {
+  const gatewayUp = useValue(host.state.gateway) === 'open'
+  const wasUp = useRef(gatewayUp)
+
+  useEffect(() => {
+    const rose = gatewayUp && !wasUp.current
+    wasUp.current = gatewayUp
+
+    if (rose) {
+      callback()
+    }
+  }, [callback, gatewayUp])
 }
 
 export function applyScreenBackendEvent(

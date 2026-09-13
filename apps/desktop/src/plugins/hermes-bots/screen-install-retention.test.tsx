@@ -12,14 +12,21 @@ import type { DisplayStatus } from './screen-connection'
 import type { RosterRow } from './types'
 
 const calls = vi.hoisted(() => [] as string[])
+const $testGateway = vi.hoisted(() => {
+  const { atom } = require('nanostores') as typeof import('nanostores')
+
+  return atom('open')
+})
 
 vi.mock('@hermes/plugin-sdk', async () => {
+  const { useStore } = await import('@nanostores/react')
   const { onGatewayEvent } = await import('../../contrib/events')
 
   return {
     Button: ({ children, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) => <button {...props}>{children}</button>,
     Codicon: () => null,
     GlyphSpinner: () => null,
+    useValue: useStore,
     resolveSiblingWsUrl: vi.fn(),
     host: {
       onEvent: onGatewayEvent,
@@ -34,7 +41,8 @@ vi.mock('@hermes/plugin-sdk', async () => {
         return () => {
           calls.push('release')
         }
-      })
+      }),
+      state: { gateway: $testGateway }
     }
   }
 })
@@ -80,6 +88,7 @@ const status: DisplayStatus = {
 
 beforeEach(() => {
   calls.length = 0
+  $testGateway.set('open')
 })
 
 it('retains the bot socket before display.install and releases it when the done event lands', async () => {
@@ -104,4 +113,20 @@ it('retains the bot socket before display.install and releases it when the done 
   view.unmount()
   // Unmount after done must not double-release.
   expect(calls.filter(call => call === 'release')).toHaveLength(1)
+})
+
+it('leaves Installing and releases the socket when the gateway drops mid-install', async () => {
+  const view = render(<ScreenInstallCard bot={bot} onInstalled={vi.fn()} status={status} />)
+
+  await act(async () => {
+    fireEvent.click(view.getByText('Install on host'))
+  })
+  expect(view.getByText('Installing')).toBeTruthy()
+
+  await act(async () => {
+    $testGateway.set('idle')
+  })
+  expect(view.getByText('Failed')).toBeTruthy()
+  expect(calls.filter(call => call === 'release')).toHaveLength(1)
+  view.unmount()
 })
