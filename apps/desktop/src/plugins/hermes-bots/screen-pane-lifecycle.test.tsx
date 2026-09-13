@@ -218,6 +218,35 @@ it('transfers the lease onto the reminted viewer id when reconnecting while hold
   view.unmount()
 })
 
+it('does not steal the lease back if another viewer took over during reconnect', async () => {
+  let observes = 0
+  vi.mocked(displayRequest).mockImplementation(async (_bot, method) => {
+    if (method === 'display.observe') {
+      observes += 1
+
+      return {
+        ...status,
+        ticket: `t${observes}`,
+        viewer_id: observes === 1 ? 'this-viewer' : 'this-viewer-2',
+        lease:
+          observes === 1
+            ? status.lease
+            : { ...status.lease, holder: 'human', viewer_id: 'other-viewer' }
+      }
+    }
+
+    return { ...status }
+  })
+
+  const view = render(<BotScreenPane bot={bot} />)
+  await waitFor(() => expect(sockets).toHaveLength(1))
+  await act(async () => {})
+  fireEvent.click(view.getByTitle('Reconnect'))
+  await waitFor(() => expect(sockets).toHaveLength(2))
+  expect(vi.mocked(displayRequest)).not.toHaveBeenCalledWith(bot, 'display.lease.acquire', expect.anything())
+  view.unmount()
+})
+
 it('offers force hand-back on the stopped pane when a human lease survived the crash', async () => {
   vi.mocked(displayRequest).mockResolvedValue({
     ...status,

@@ -146,7 +146,9 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
 
       const minted = { id: observe.viewer_id, hash: await viewerHash(observe.viewer_id) }
       setScreenStatus(bot, observe)
-      if (heldBefore && observe.viewer_id) {
+      // Last-writer-wins acquire would steal from a viewer who took over
+      // during this reconnect. Transfer only while OUR old id still holds.
+      if (heldBefore && observe.viewer_id && leaseHeldBy(observe.lease, prior?.viewer ?? null)) {
         const transferred = await displayRequest<{ lease: DisplayLease }>(bot, 'display.lease.acquire', {
           viewer_id: observe.viewer_id
         })
