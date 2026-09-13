@@ -756,6 +756,75 @@ class TestHermesBotDesktopWriteProtection:
             "~/.hermes/bot-desktop"
         )
 
+    def test_relative_cd_bot_desktop_from_hermes_home(self):
+        """Messaging ``TERMINAL_CWD`` is often ``~/.hermes``. ``cd bot-desktop
+        && echo … > lease.json`` then writes the screen while the command
+        string never names ``~/.hermes/bot-desktop``. ``cd bot-desktop``
+        from ``/tmp`` is a project folder and stays unflagged.
+        ``CDPATH=~/.hermes cd bot-desktop`` from ``/tmp`` still lands in
+        the tree. ``${PWD%/}`` is ``$PWD`` when PWD has no trailing slash.
+        """
+        for cwd in (
+            "~/.hermes",
+            os.path.expanduser("~/.hermes"),
+            str(get_hermes_home()),
+            "$HERMES_HOME",
+        ):
+            for command in (
+                "cd bot-desktop && echo '{\"holder\":\"agent\"}' > lease.json",
+                "cd ./bot-desktop && echo x > lease.json",
+                "cd ./bot-desktop/ && echo x > lease.json",
+                "cd -- bot-desktop && echo x > lease.json",
+                "pushd bot-desktop && echo x > lease.json",
+                "cd bot-desktop && echo x > $PWD/lease.json",
+                "cd bot-desktop && cp /tmp/e lease.json",
+                "cd bot-desktop && dd of=lease.json",
+                "cd bot-desktop && rm -f lease.json",
+            ):
+                dangerous, key, desc = detect_dangerous_command(command, cwd=cwd)
+                assert dangerous is True, (command, cwd)
+                assert key is not None, (command, cwd)
+
+        sessions = os.path.join(os.path.expanduser("~/.hermes"), "sessions")
+        dangerous, key, desc = detect_dangerous_command(
+            "cd ../bot-desktop && echo x > lease.json", cwd=sessions
+        )
+        assert dangerous is True
+        assert key is not None
+
+        for command in (
+            "CDPATH=~/.hermes cd bot-desktop && echo x > lease.json",
+            "CDPATH=$HERMES_HOME cd bot-desktop && echo x > lease.json",
+            "CDPATH=/tmp:~/.hermes cd bot-desktop && echo x > lease.json",
+        ):
+            dangerous, key, desc = detect_dangerous_command(command, cwd="/tmp")
+            assert dangerous is True, command
+            assert key is not None, command
+
+        for command in (
+            "cd ~/.hermes/bot-desktop && echo x > ${PWD%/}/lease.json",
+            "cd ~/.hermes/bot-desktop && echo x > ${PWD%%/}/lease.json",
+        ):
+            dangerous, key, desc = detect_dangerous_command(command)
+            assert dangerous is True, command
+            assert key is not None, command
+
+        cwd = os.path.expanduser("~/.hermes/bot-desktop")
+        dangerous, key, desc = detect_dangerous_command("echo x > ${PWD%/}/lease.json", cwd=cwd)
+        assert dangerous is True
+
+        for cwd, command in (
+            ("/tmp", "cd bot-desktop && echo x > lease.json"),
+            ("~/.hermes", "cd bot-desktop && cat lease.json"),
+            ("~/.hermes", "cd bot-desktop && echo x > /tmp/out"),
+            ("~/.hermes", "cd bot-desktop-backup && echo x > lease.json"),
+            ("~/.hermes", "echo x > lease.json"),
+            (None, "cd bot-desktop && echo x > lease.json"),
+            ("/tmp", "CDPATH=/var cd bot-desktop && echo x > lease.json"),
+        ):
+            dangerous, key, desc = detect_dangerous_command(command, cwd=cwd)
+            assert dangerous is False, (command, cwd)
+
     def test_pwd_dest_after_chdir_or_session_cwd(self):
         """``$PWD/lease.json`` starts with ``$`` so the relative-dest
         exclusion treated it as already-covered (``$HOME`` / ``$HERMES_HOME``).

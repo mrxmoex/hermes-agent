@@ -1637,12 +1637,14 @@ _DIRS_STACK_CMD = (
     _DIRS_BIN + _DIRS_FLAGS + r'\s+(?:\+0*[1-9][0-9]*|-0*[1-9][0-9]*)'
 )
 # ``${PWD}`` / ``${PWD:0}`` / ``${PWD:0:N}`` / empty ``#``/``%`` strip /
-# ``${PWD-}`` / ``${PWD:-word}``. Do not take ``${PWD:1}`` (drops a prefix)
+# ``${PWD%/}`` (trailing slash only) / ``${PWD-}`` / ``${PWD:-word}``.
+# Do not take ``${PWD:1}`` (drops a prefix), ``${PWD%/*}`` (dirname),
 # or ``${PWD:+word}`` (expands to word, not the path).
 _PWD_PARAM = (
     r'\$\{PWD(?:'
     r':0(?::\d+)?'
     r'|\#\#?'
+    r'|%%?/'
     r'|%%?'
     r'|(?:-|:-)[^}]*'
     r')?\}'
@@ -1651,6 +1653,7 @@ _OLDPWD_PARAM = (
     r'\$\{OLDPWD(?:'
     r':0(?::\d+)?'
     r'|\#\#?'
+    r'|%%?/'
     r'|%%?'
     r'|(?:-|:-)[^}]*'
     r')?\}'
@@ -1724,6 +1727,38 @@ _DIRSTACK_WRITE_DEST = (
 )
 _CHDIR_BOT_DESKTOP_RE = re.compile(
     rf'(?:(?:\bcd\b|\bpushd\b)\s+|\benv\b[^\n]*\s(?:-C|--chdir)[=\s]*)["\']?{_HERMES_BOT_DESKTOP_PATH}',
+    _RE_FLAGS,
+)
+# ``cd bot-desktop`` from session cwd ``~/.hermes`` (messaging
+# ``TERMINAL_CWD``) lands in the screen. The prefix pattern above only
+# sees ``cd ~/.hermes/bot-desktop``. Walk ``cd``/``pushd``/``env -C``
+# targets against the starting cwd so a relative hop is joined the same
+# way the shell does. ``cd --`` / ``cd -P`` / ``cd -L`` are flags.
+_CHDIR_TARGET_RE = re.compile(
+    r'(?:'
+    r'(?:\bcd\b|\bpushd\b)(?:\s+(?:--|-P|-L))*\s+'
+    r'|\benv\b[^\n]*\s(?:-C|--chdir)[=\s]*'
+    r')'
+    r'["\']?'
+    r'(?P<target>[^\s;&|<>"\']+)'
+    r'["\']?',
+    _RE_FLAGS,
+)
+# ``CDPATH=~/.hermes cd bot-desktop`` from ``/tmp`` still lands in the
+# screen — CDPATH is searched before the starting cwd.
+_CDPATH_HERMES_RE = re.compile(
+    r'\bCDPATH=(?:["\']?)(?:[^;\s]*:)?'
+    r'(?:'
+    r'~\/\.hermes'
+    r'|(?:\$home|\$\{home\})/\.hermes'
+    r'|(?:\$hermes_home|\$\{hermes_home\})'
+    r')'
+    r'(?:/|:|(?=[\s;"\']|$))',
+    _RE_FLAGS,
+)
+_RELATIVE_BOT_DESKTOP_CHDIR_RE = re.compile(
+    r'(?:(?:\bcd\b|\bpushd\b)(?:\s+(?:--|-P|-L))*\s+|\benv\b[^\n]*\s(?:-C|--chdir)[=\s]*)'
+    r'["\']?(?:\./)?bot-desktop(?:/|(?=[\s;"\']|$))',
     _RE_FLAGS,
 )
 # Same-shell ``cd``/``pushd``/``popd`` (not ``env -C``) updates ``$OLDPWD``
@@ -1800,8 +1835,38 @@ def _cwd_is_hermes_bot_desktop(cwd: Optional[str]) -> bool:
     return bool(_BOT_DESKTOP_CWD_RE.search(folded))
 
 
-def _command_chdirs_into_bot_desktop(command: str) -> bool:
-    return bool(_CHDIR_BOT_DESKTOP_RE.search(command))
+def _join_chdir_target(cwd: str, target: str) -> str:
+    """Resolve one ``cd``/``pushd``/``env -C`` target against *cwd*."""
+    expanded = os.path.expanduser(target)
+    if os.path.isabs(expanded) or expanded.startswith(("$", "~")):
+        return expanded.rstrip("/\\") or expanded
+    base = os.path.expanduser(cwd.rstrip("/\\")) if cwd.startswith("~") else cwd.rstrip("/\\")
+    return os.path.normpath(os.path.join(base, expanded))
+
+
+def _command_chdirs_into_bot_desktop(command: str, cwd: Optional[str] = None) -> bool:
+    """True when the command ``cd``/``pushd``s into this profile's screen.
+
+    Absolute / ``~/.hermes/bot-desktop`` dests hit ``_CHDIR_BOT_DESKTOP_RE``.
+    ``cd bot-desktop`` from session cwd ``~/.hermes`` (or ``cd ../bot-desktop``
+    from a sibling) is joined against *cwd*. ``CDPATH=~/.hermes cd bot-desktop``
+    lands in the tree even when *cwd* is ``/tmp``.
+    """
+    if _CHDIR_BOT_DESKTOP_RE.search(command):
+        return True
+    if _CDPATH_HERMES_RE.search(command) and _RELATIVE_BOT_DESKTOP_CHDIR_RE.search(command):
+        return True
+    if not cwd or not isinstance(cwd, str):
+        return False
+    sim = cwd
+    for match in _CHDIR_TARGET_RE.finditer(command):
+        target = match.group("target")
+        if target in (".", "-", "--"):
+            continue
+        sim = _join_chdir_target(sim, target)
+        if _cwd_is_hermes_bot_desktop(sim):
+            return True
+    return False
 
 
 def _command_shell_chdirs(command: str) -> bool:
@@ -1837,7 +1902,7 @@ def detect_dangerous_command(command: str, *, cwd: Optional[str] = None) -> tupl
     if _is_verification_artifact_cleanup(command):
         return (False, None, None)
     normalized_for_cwd = _normalize_command_for_detection(command)
-    chdir_bot_desktop = _command_chdirs_into_bot_desktop(normalized_for_cwd)
+    chdir_bot_desktop = _command_chdirs_into_bot_desktop(normalized_for_cwd, cwd=cwd)
     cwd_is_bot_desktop = _cwd_is_hermes_bot_desktop(cwd)
     in_bot_desktop = cwd_is_bot_desktop or chdir_bot_desktop
     # ``$OLDPWD`` is the screen after a same-command chdir *into* it, or
