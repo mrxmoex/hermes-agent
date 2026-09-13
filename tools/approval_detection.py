@@ -328,6 +328,15 @@ DANGEROUS_PATTERNS = [
     # under auto-approve. Opening the path as a DB is not this door.
     (rf'\bsqlite3\b[^\n]*\.(?:output|once|out|o)\s+["\']?{_SENSITIVE_WRITE_TARGET}',
      "overwrite system file via sqlite3"),
+    # GNU/BSD sed `w`/`W` writes the pattern space to FILE (space or glued).
+    # `sed -i` is already gated; `sed -n '1w lease.json'` is not, and
+    # byte-writes holder=agent under auto-approve.
+    (rf'\bg?sed\b[^\n]*w\s*["\']?{_SENSITIVE_WRITE_TARGET}',
+     "overwrite system file via sed w"),
+    # ex/vim `:w` / `:w!` is the same dest write (`ex -sc 'w! DEST|q'`).
+    # Opening the path (`vim lease.json`) stays unflagged — no `w` dest.
+    (rf'\b(?:ex|n?vim?|view)\b[^\n]*\bw!?\s+["\']?{_SENSITIVE_WRITE_TARGET}',
+     "overwrite system file via ex/vim"),
     (rf'>>?\s*["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via redirection"),
     # `dd of=` with no `if=` writes stdin (or zeros) and misses the "disk copy" rule
     # (`dd … if=`). Same pairing as tee/redirect: forges lease.json holder=agent or
@@ -338,6 +347,10 @@ DANGEROUS_PATTERNS = [
     (rf'\bsponge\b\s+["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_WRITE_TARGET_BOUNDARY}', "overwrite project env/config via sponge"),
     (rf'\bsqlite3\b[^\n]*\.(?:output|once|out|o)\s+["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_WRITE_TARGET_BOUNDARY}',
      "overwrite project env/config via sqlite3"),
+    (rf'\bg?sed\b[^\n]*w\s*["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_WRITE_TARGET_BOUNDARY}',
+     "overwrite project env/config via sed w"),
+    (rf'\b(?:ex|n?vim?|view)\b[^\n]*\bw!?\s+["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_WRITE_TARGET_BOUNDARY}',
+     "overwrite project env/config via ex/vim"),
     (rf'>>?\s*["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_WRITE_TARGET_BOUNDARY}', "overwrite project env/config via redirection"),
     (r'\bxargs\s+.*\brm\b', "xargs with rm"),
     # -execdir has the same semantics as -exec (runs in each match's directory).
@@ -519,6 +532,12 @@ DEST_FIRST_SENSITIVE_PATTERNS = [
      "copy/move/link into sensitive path via --target-directory"),
     (rf'\bcurl\b[^\n]*\s(?:(?-i:-o|-O)|--output-dir|--output)[=\s]*["\']?{_DEST_FIRST_WRITE_TARGET}',
      "overwrite system file via curl --output"),
+    # `-T` / `--upload-file` to `file://DEST` writes the local file onto
+    # DEST (absolute / $HOME / $HERMES_HOME; tilde file:// is rejected by
+    # curl). `-o` is already gated. GET `file://` is a same-UID read.
+    # `-T` is case-preserved so curl `-t` (telnet-option) stays out.
+    (rf'\bcurl\b(?=[^\n]*(?:(?-i:-T)|--upload-file))(?=[^\n]*file://["\']?{_DEST_FIRST_WRITE_TARGET})',
+     "overwrite system file via curl --upload-file"),
     # `-P` is `--directory-prefix` (dest dir). `-p` is `--page-requisites`
     # and must stay out, so the short prefix flag is case-preserved.
     (rf'\bwget\b[^\n]*\s(?:(?-i:-o|-O|-P)|--output-document|--directory-prefix)[=\s]*["\']?{_DEST_FIRST_WRITE_TARGET}',

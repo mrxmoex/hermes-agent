@@ -357,6 +357,9 @@ class TestHermesConfigWriteProtection:
             "rsync /tmp/evil.yaml $HERMES_HOME/config.yaml",
             "scp /tmp/evil.yaml ~/.hermes/config.yaml",
             'sqlite3 :memory: ".output ~/.hermes/config.yaml" "select 1"',
+            "sed -n '1w ~/.hermes/config.yaml' /tmp/p",
+            "ex -sc 'w! ~/.hermes/config.yaml|q' /tmp/p",
+            "curl -T /tmp/e file://$HOME/.hermes/config.yaml",
         ):
             dangerous, key, desc = detect_dangerous_command(command)
             assert dangerous is True, command
@@ -507,6 +510,17 @@ class TestHermesBotDesktopWriteProtection:
             'sqlite3 :memory: ".once ~/.hermes/bot-desktop/lease.json" "select 1"',
             'sqlite3 :memory: ".out $HERMES_HOME/bot-desktop/lease.json" "select 1"',
             'sqlite3 :memory: ".o ~/.hermes/profiles/coder/bot-desktop/lease.json" "select 1"',
+            # sed `w` (not -i), curl -T file://, ex/vim :w!
+            "sed -n '1w ~/.hermes/bot-desktop/lease.json' /tmp/payload",
+            "sed -n 'w $HERMES_HOME/bot-desktop/dock-cdp-port' /tmp/p",
+            "sed -n '1w~/.hermes/bot-desktop/lease.json' /tmp/p",
+            "gsed -n '1w ~/.hermes/profiles/coder/bot-desktop/lease.json' /tmp/p",
+            "curl -T /tmp/payload file://$HERMES_HOME/bot-desktop/lease.json",
+            "curl --upload-file /tmp/payload file://$HOME/.hermes/bot-desktop/dock-cdp-port",
+            "curl file://$HERMES_HOME/bot-desktop/lease.json -T /tmp/payload",
+            "ex -sc 'w! ~/.hermes/bot-desktop/lease.json|q' /tmp/payload",
+            "vim -es '+w! $HERMES_HOME/bot-desktop/lease.json' '+q!' /tmp/payload",
+            "vi -e -c 'w! ~/.hermes/profiles/coder/bot-desktop/lease.json' -c q /tmp/p",
         ):
             dangerous, key, desc = detect_dangerous_command(command)
             assert dangerous is True, command
@@ -572,6 +586,12 @@ class TestHermesBotDesktopWriteProtection:
             "sqlite3 :memory: '.output /tmp/out' 'select 1'",
             "sqlite3 db 'select 1'",
             "sqlite3 ~/.hermes/bot-desktop/lease.json 'select 1'",
+            "sed 's/a/b/' /tmp/p",
+            "sed -n 'w /tmp/out' /tmp/p",
+            "curl file://$HOME/.hermes/bot-desktop/lease.json",
+            "curl -T /tmp/payload file:///tmp/out",
+            "vim ~/.hermes/bot-desktop/lease.json",
+            "ex /tmp/out",
         ):
             dangerous, key, desc = detect_dangerous_command(cmd)
             assert dangerous is False, cmd
