@@ -1100,11 +1100,74 @@ def _camofox_eval(expression: str, task_id: Optional[str] = None) -> str:
         return tool_error(str(e), success=False)
 
 
+_recording_lease_listener = None
+
+
+def _session_recording_matches_home(task_id: str, home: Optional[str] = None) -> bool:
+    """True when this session belongs to ``home`` (or the current profile).
+
+    One serve/gateway process can hold sessions for several multiplexed
+    profiles; a takeover on bot A must not stop bot B's WebM.
+    """
+    want = hermes_home_key(home) if home is not None else hermes_home_key()
+    owner = _session_owner_homes.get(task_id)
+    if owner is None:
+        return home is None or hermes_home_key() == want
+    return hermes_home_key(owner) == want
+
+
+def stop_local_browser_recordings(home: Optional[str] = None) -> None:
+    """Stop WebM recordings of the shared local browser.
+
+    ``browser.record_sessions`` is opt-in, but once started the daemon keeps
+    writing after Take over — the same observation the lease fence refuses
+    on ``browser_snapshot`` / ``browser_vision``. Called when a handoff is
+    requested or a human already holds. ``record stop`` is lease-safe.
+    Scoped to ``home`` (a HERMES_HOME / ``hermes_home_key``) so a multiplex
+    takeover does not cease a sibling profile's capture.
+    """
+    _install_recording_lease_hook()
+    with _cleanup_lock:
+        ids = list(_recording_sessions)
+    for tid in ids:
+        if not _session_recording_matches_home(tid, home):
+            continue
+        info = _active_sessions.get(tid) or {}
+        if info and not _session._is_shared_bot_desktop_session(info):
+            continue
+        _maybe_stop_recording(tid)
+
+
+def _install_recording_lease_hook() -> None:
+    """Stop this process's local WebMs the moment *this* process writes HUMAN.
+
+    Cross-process takeovers (Desktop acquire, gateway idle) are picked up by
+    the janitor's reserved-recording scan. ``lease._reset_for_tests`` drops
+    listeners, so we re-subscribe when the callback is gone.
+    """
+    global _recording_lease_listener
+    from tools.bot_desktop import lease as _bd_lease
+    if _recording_lease_listener is not None and _recording_lease_listener in _bd_lease._listeners:
+        return
+
+    def _on_lease(profile_key: str, lease) -> None:
+        if lease.holder != _bd_lease.HUMAN:
+            return
+        stop_local_browser_recordings(home=profile_key)
+
+    _recording_lease_listener = _on_lease
+    _bd_lease.on_change(_on_lease)
+
+
 def _maybe_start_recording(task_id: str):
     """Start recording if browser.record_sessions is enabled in config."""
+    _install_recording_lease_hook()
     with _cleanup_lock:
         if task_id in _recording_sessions:
             return
+        existing = _active_sessions.get(task_id)
+    if existing is not None and _session._local_browser_reserved_by_human(existing):
+        return
     try:
         from hermes_cli.config import read_raw_config
         hermes_home = get_hermes_home()

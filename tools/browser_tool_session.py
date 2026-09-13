@@ -587,6 +587,16 @@ def _run_browser_command(
         try:
             admitted = _bd_lease.assert_agent_may_act()
         except _bd_lease.HumanHasControl as e:
+            # ``record stop`` ceases observation — it must work while the human
+            # holds, or an opted-in WebM keeps capturing the credential they type.
+            # ``close`` stays refused: that tree-kills the shared Chromium.
+            if command == "record" and args and str(args[0]).strip() == "stop":
+                return _run_browser_command_unfenced(
+                    task_id, command, args, timeout, _engine_override, browser_cmd, session_info)
+            try:
+                _bt._maybe_stop_recording(task_id)
+            except Exception:
+                pass
             return {"success": False, "error": str(e), "code": "human_has_control"}
         result = _run_browser_command_unfenced(task_id, command, args, timeout, _engine_override, browser_cmd, session_info)
         if _bd_lease.get().epoch != admitted.epoch:
@@ -597,12 +607,60 @@ def _run_browser_command(
     return _run_browser_command_unfenced(task_id, command, args, timeout, _engine_override, browser_cmd, session_info)
 
 
+_LOOPBACK_CDP_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "0.0.0.0"})
+
+
+def _loopback_cdp_port(url: str) -> Optional[int]:
+    """Port if ``url`` is a loopback CDP endpoint, else ``None``.
+
+    Remote / cloud CDP hosts are another browser and must not be compared to
+    this profile's dock Chromium.
+    """
+    text = (url or "").strip()
+    if not text:
+        return None
+    if text.isdigit():
+        port = int(text)
+        return port if 1 <= port <= 65535 else None
+    from urllib.parse import urlparse
+    parsed = urlparse(text if "://" in text else f"http://{text}")
+    host = (parsed.hostname or "").lower()
+    if host not in _LOOPBACK_CDP_HOSTS:
+        return None
+    port = parsed.port
+    return port if port is not None and 1 <= port <= 65535 else None
+
+
+def _cdp_url_is_bot_desktop_browser(cdp_url: str) -> bool:
+    """True when ``cdp_url`` is this profile's live Bot Desktop Chromium.
+
+    ``/browser connect`` and ``browser.cdp_url`` create a ``cdp_override``
+    session with no ``local`` flag. If that URL is the dock (or agent-launched)
+    instance on ``bot-desktop/browser-profile``, it is the same cookie jar a
+    human types into — not "another browser".
+    """
+    want = _loopback_cdp_port(cdp_url)
+    if want is None:
+        return False
+    from tools.bot_desktop import browser as _bd_browser
+    live = _bd_browser.running_instance_cdp_port(str(_bd_browser.profile_dir()))
+    return live is not None and live == want
+
+
+def _is_shared_bot_desktop_session(session_info: Dict[str, Any]) -> bool:
+    """Same Chromium as the Bot Desktop dock / agent-browser profile, any transport."""
+    if (session_info.get("features") or {}).get("local"):
+        return True
+    return _cdp_url_is_bot_desktop_browser(str(session_info.get("cdp_url") or ""))
+
+
 def _shares_bot_desktop_browser(session_info: Dict[str, Any]) -> bool:
     """Decided by provenance, not transport: every LOCAL session (plain ``--session``, real-profile CDP
     attach, Lightpanda) is a browser Hermes launched with this profile's Bot Desktop DISPLAY, so it is the
-    screen a human who took over is typing into. Cloud / user-supplied CDP sessions are another browser.
+    screen a human who took over is typing into. A CDP override that resolves to the same live
+    dock/agent Chromium is that browser too. Cloud / unrelated user-CDP sessions are another browser.
     A human lease with the screen already gone (dead Xvnc) still fences — computer_use does the same."""
-    if not (session_info.get("features") or {}).get("local"):
+    if not _is_shared_bot_desktop_session(session_info):
         return False
     from tools.bot_desktop import lease as _bd_lease, runtime as _bd_runtime
     return bool(_bd_runtime.published_env().get("DISPLAY")) or _bd_lease.human_holds()
@@ -614,10 +672,10 @@ def _local_browser_reserved_by_human(session_info: Dict[str, Any]) -> bool:
     The command fence refuses ``close`` while the human holds, but the inactivity
     janitor and suspect/expiry recycle still ran ``_release_session_resources``
     afterwards and tree-killed the agent-browser daemon — and the Chromium it
-    spawned, which is the same jar the dock Browser uses. Cloud / user-CDP
-    sessions are another browser and are not reserved.
+    spawned, which is the same jar the dock Browser uses. Cloud / unrelated
+    user-CDP sessions are another browser and are not reserved.
     """
-    if not (session_info.get("features") or {}).get("local"):
+    if not _is_shared_bot_desktop_session(session_info):
         return False
     from tools.bot_desktop import lease as _bd_lease
     return _bd_lease.human_holds()

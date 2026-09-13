@@ -139,6 +139,33 @@ def _forget_session_tracking(task_id: str, *, activity: bool = True, session: bo
         _bt._cleanup_failures.pop(task_id, None)
 
 
+def _stop_reserved_recordings() -> None:
+    """Cease opted-in WebMs as soon as a human holds, even if the session is not idle.
+
+    Take over from Desktop writes the lease in another turn; the agent may be
+    sitting in ``wait_for_human`` or idle. Waiting for the 120s inactivity
+    reap would keep capturing 2FA. Owner-scoped so multiplex homes don't
+    read the launch profile's lease.
+    """
+    _bt._install_recording_lease_hook()
+    with _bt._cleanup_lock:
+        ids = list(_bt._recording_sessions)
+    for task_id in ids:
+        try:
+            with _session_owner_scope(task_id):
+                with _bt._cleanup_lock:
+                    session_info = _bt._active_sessions.get(task_id)
+                if session_info is not None and not _session._local_browser_reserved_by_human(session_info):
+                    continue
+                if session_info is None:
+                    from tools.bot_desktop import lease as _bd_lease
+                    if not _bd_lease.human_holds():
+                        continue
+                _bt._maybe_stop_recording(task_id)
+        except Exception:
+            _bt.logger.debug("reserved recording stop failed for %s", task_id, exc_info=True)
+
+
 def _cleanup_inactive_browser_sessions():
     """Close sessions inactive longer than the timeout (cleanup thread).
 
@@ -154,6 +181,7 @@ def _cleanup_inactive_browser_sessions():
         sessions_to_cleanup = [task_id for task_id, last_time in list(_bt._session_last_activity.items())
                                if current_time - last_time > _bt.BROWSER_SESSION_INACTIVITY_TIMEOUT]
 
+    _stop_reserved_recordings()
     for task_id in sessions_to_cleanup:
         elapsed = int(current_time - _bt._session_last_activity.get(task_id, current_time))
         _bt.logger.info("Cleaning up inactive session for task: %s (inactive for %ss)", task_id, elapsed)
@@ -416,6 +444,10 @@ def _browser_cleanup_thread_worker():
         for _ in range(30):  # 1s granularity so stop is quick
             if not _bt._cleanup_running:
                 break
+            try:
+                _stop_reserved_recordings()
+            except Exception as e:
+                _bt.logger.debug("reserved recording scan failed: %s", e)
             time.sleep(1)
 
 
@@ -427,6 +459,7 @@ def _start_browser_cleanup_thread():
             _bt._cleanup_thread = threading.Thread(target=_browser_cleanup_thread_worker, daemon=True,
                                                    name="browser-cleanup")
             _bt._cleanup_thread.start()
+            _bt._install_recording_lease_hook()
             _bt.logger.info("Started inactivity cleanup thread (timeout: %ss)", _bt.BROWSER_SESSION_INACTIVITY_TIMEOUT)
 
 
@@ -641,6 +674,7 @@ def _force_reap_browser_session(task_id: str) -> None:
         _bt.logger.info(
             "Deferring force-reap for %s: a human holds the Bot Desktop lease", task_id,
         )
+        _bt._maybe_stop_recording(task_id)
         return
     _cdp._stop_cdp_supervisor(task_id)
     with _bt._cleanup_lock:
@@ -666,6 +700,7 @@ def _cleanup_single_browser_session(task_id: str, *, force: bool = False) -> Non
             "Deferring browser teardown for %s: a human holds the Bot Desktop lease",
             task_id,
         )
+        _bt._maybe_stop_recording(task_id)
         return
 
     _cdp._stop_cdp_supervisor(task_id)  # close our WebSocket BEFORE the backend tears down the endpoint

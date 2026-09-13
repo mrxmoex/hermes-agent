@@ -85,6 +85,7 @@ def _session_state():
         for name in (
             "_active_sessions", "_session_last_activity",
             "_session_owner_homes", "_cleanup_failures", "_suspect_browser_sessions",
+            "_recording_sessions",
         )
     }
 
@@ -167,6 +168,122 @@ def test_get_session_info_does_not_recycle_shared_browser_while_human_holds(monk
         _restore_session_state(bt, saved)
 
 
+def test_record_stop_is_allowed_while_human_holds_so_capture_can_cease(monkeypatch):
+    """An opted-in WebM must be stoppable during takeover; close stays refused."""
+    commands: list = []
+    _, session = _wire(monkeypatch, commands)
+    lease.acquire("human-viewer")
+    stopped = session._run_browser_command("review", "record", ["stop"])
+    assert stopped.get("success") is True
+    assert commands, "record stop must reach the daemon while a human holds"
+    commands.clear()
+    started = session._run_browser_command("review", "record", ["start", "/tmp/x.webm"])
+    assert started.get("code") == "human_has_control"
+    assert commands == []
+
+
+def test_request_handoff_stops_local_session_recording(monkeypatch):
+    """request_handoff runs in the agent process before Take over; stop the WebM then."""
+    from tools import browser_tool as bt
+    from tools.computer_use.handoff import handle_handoff
+
+    bt_saved = list(bt._recording_sessions)
+    sessions = bt._active_sessions.copy()
+    stopped: list = []
+    monkeypatch.setattr(bt, "_maybe_stop_recording", lambda tid: stopped.append(tid))
+    try:
+        bt._recording_sessions.clear()
+        bt._recording_sessions.add("review")
+        bt._active_sessions["review"] = {"session_name": "h_review", "features": {"local": True}}
+        result = json.loads(handle_handoff("request_handoff", {"reason": "Finish 2FA"}))
+        assert result["ok"] is True
+        assert stopped == ["review"]
+    finally:
+        bt._recording_sessions.clear()
+        bt._recording_sessions.update(bt_saved)
+        bt._active_sessions.clear()
+        bt._active_sessions.update(sessions)
+
+
+def test_stop_local_recordings_skips_sibling_profile_sessions(monkeypatch, tmp_path):
+    """A multiplex process holds sessions for several homes; takeover on A must not stop B."""
+    from tools import browser_tool as bt
+    from hermes_constants import hermes_home_key
+
+    home_a = tmp_path / "a"
+    home_b = tmp_path / "b"
+    home_a.mkdir()
+    home_b.mkdir()
+    bt_saved = list(bt._recording_sessions)
+    sessions = bt._active_sessions.copy()
+    owners = bt._session_owner_homes.copy()
+    stopped: list = []
+    monkeypatch.setattr(bt, "_maybe_stop_recording", lambda tid: stopped.append(tid))
+    try:
+        bt._recording_sessions.clear()
+        bt._recording_sessions.update({"bot-a", "bot-b"})
+        bt._active_sessions["bot-a"] = {"session_name": "h_a", "features": {"local": True}}
+        bt._active_sessions["bot-b"] = {"session_name": "h_b", "features": {"local": True}}
+        bt._session_owner_homes["bot-a"] = str(home_a)
+        bt._session_owner_homes["bot-b"] = str(home_b)
+        bt.stop_local_browser_recordings(home=hermes_home_key(home_a))
+        assert stopped == ["bot-a"]
+    finally:
+        bt._recording_sessions.clear()
+        bt._recording_sessions.update(bt_saved)
+        bt._active_sessions.clear()
+        bt._active_sessions.update(sessions)
+        bt._session_owner_homes.clear()
+        bt._session_owner_homes.update(owners)
+
+
+def test_reserved_recording_stops_while_session_is_still_active(monkeypatch):
+    """Desktop Take over must not wait for the 120s inactivity reap to cease a WebM."""
+    from tools import browser_tool_lifecycle as life
+
+    bt, saved = _session_state()
+    stopped: list = []
+    monkeypatch.setattr(bt, "_maybe_stop_recording", lambda tid: stopped.append(tid) or bt._recording_sessions.discard(tid))
+    try:
+        for name in saved:
+            getattr(bt, name).clear()
+        bt._recording_sessions.clear()
+        existing = {"session_name": "h_review", "features": {"local": True}}
+        bt._active_sessions["review"] = existing
+        bt._session_last_activity["review"] = 10**12  # far in the future: not idle
+        bt._recording_sessions.add("review")
+        lease.acquire("human-viewer")
+        life._stop_reserved_recordings()
+        assert stopped == ["review"]
+        assert "review" not in bt._recording_sessions
+        assert bt._active_sessions["review"] is existing
+    finally:
+        bt._recording_sessions.clear()
+        _restore_session_state(bt, saved)
+
+
+def test_in_process_acquire_stops_recording_via_lease_hook(monkeypatch):
+    """display.lease.acquire writes HUMAN in this process; the WebM must stop then, not on the next tool call."""
+    from tools import browser_tool as bt
+
+    bt_saved = list(bt._recording_sessions)
+    sessions = bt._active_sessions.copy()
+    stopped: list = []
+    monkeypatch.setattr(bt, "_maybe_stop_recording", lambda tid: stopped.append(tid) or bt._recording_sessions.discard(tid))
+    try:
+        bt._recording_sessions.clear()
+        bt._recording_sessions.add("review")
+        bt._active_sessions["review"] = {"session_name": "h_review", "features": {"local": True}}
+        bt._install_recording_lease_hook()
+        lease.acquire("human-viewer")
+        assert stopped == ["review"]
+    finally:
+        bt._recording_sessions.clear()
+        bt._recording_sessions.update(bt_saved)
+        bt._active_sessions.clear()
+        bt._active_sessions.update(sessions)
+
+
 def test_cloud_browser_session_is_not_reserved_by_a_human_lease():
     """A remote cloud session is another browser; the janitor must still reap it."""
     from tools import browser_tool_session as session
@@ -178,3 +295,65 @@ def test_cloud_browser_session_is_not_reserved_by_a_human_lease():
     assert session._local_browser_reserved_by_human(
         {"session_name": "h_review", "features": {"local": True}}
     ) is True
+
+
+def test_cdp_override_to_dock_browser_is_fenced(monkeypatch):
+    """``/browser connect`` to the dock Chromium is the same jar; the lease must hold."""
+    import tools.bot_desktop.browser as bdb
+
+    commands: list = []
+    browser, session = _wire(monkeypatch, commands)
+    monkeypatch.setattr(session, "_get_session_info", lambda *a: {
+        "session_name": "cdp_1", "cdp_url": "http://127.0.0.1:9333",
+        "features": {"cdp_override": True}})
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: 9333)
+    lease.acquire("human-viewer")
+    result = json.loads(browser.browser_click("e1", task_id="review"))
+    assert commands == [], f"dock CDP override was dispatched while a human held: {commands}"
+    assert result.get("code") == "human_has_control"
+
+
+def test_cdp_override_to_unrelated_browser_is_not_the_dock_jar(monkeypatch):
+    """A user-supplied CDP to some other Chrome is not reserved by this profile's lease."""
+    import tools.bot_desktop.browser as bdb
+    from tools import browser_tool_session as session
+
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: 9333)
+    lease.acquire("human-viewer")
+    other = {"session_name": "cdp_other", "cdp_url": "http://127.0.0.1:9444",
+             "features": {"cdp_override": True}}
+    assert session._cdp_url_is_bot_desktop_browser(other["cdp_url"]) is False
+    assert session._local_browser_reserved_by_human(other) is False
+    remote = {"session_name": "cdp_remote", "cdp_url": "wss://browser.example/cdp",
+              "features": {"cdp_override": True}}
+    assert session._shares_bot_desktop_browser(remote) is False
+
+
+def test_sibling_profile_browser_connect_does_not_override_this_home(monkeypatch, tmp_path):
+    """``/browser connect`` writes BROWSER_CDP_URL; a multiplex sibling must not inherit it."""
+    from hermes_constants import hermes_home_key, reset_hermes_home_override, set_hermes_home_override
+    from tools import browser_tool_cdp as cdp
+
+    home_a = tmp_path / "a"
+    home_b = tmp_path / "b"
+    home_a.mkdir()
+    home_b.mkdir()
+    saved_by_home = dict(cdp._cdp_override_by_home)
+    saved_env_home = cdp._cdp_override_env_home
+    monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+    token_a = set_hermes_home_override(home_a)
+    try:
+        cdp.set_process_cdp_override("http://127.0.0.1:9333")
+        assert cdp._get_cdp_override_raw() == "http://127.0.0.1:9333"
+        reset_hermes_home_override(token_a)
+        token_b = set_hermes_home_override(home_b)
+        try:
+            assert hermes_home_key() != hermes_home_key(home_a)
+            assert cdp._get_cdp_override_raw() == ""
+        finally:
+            reset_hermes_home_override(token_b)
+    finally:
+        cdp._cdp_override_by_home.clear()
+        cdp._cdp_override_by_home.update(saved_by_home)
+        cdp._cdp_override_env_home = saved_env_home
+        monkeypatch.delenv("BROWSER_CDP_URL", raising=False)

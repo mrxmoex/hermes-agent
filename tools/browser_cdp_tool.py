@@ -255,6 +255,26 @@ def _browser_cdp_via_supervisor(task_id: str, frame_id: str, method: str, params
                        "result": result_msg.get("result", {})}, ensure_ascii=False)
 
 
+def _refuse_bot_desktop_cdp_while_human_holds(endpoint: str = "") -> Optional[str]:
+    """Raw CDP is an observation channel on the dock Chromium. Same lease as browser_*."""
+    from tools.browser_tool_session import _cdp_url_is_bot_desktop_browser
+    raw = (endpoint or "").strip()
+    if not raw:
+        try:
+            from tools.browser_tool_cdp import _get_cdp_override_raw
+            raw = _get_cdp_override_raw()
+        except Exception:
+            return None
+    if not _cdp_url_is_bot_desktop_browser(raw):
+        return None
+    from tools.bot_desktop import lease as _bd_lease
+    try:
+        _bd_lease.assert_agent_may_act()
+    except _bd_lease.HumanHasControl as e:
+        return json.dumps({"success": False, "error": str(e), "code": "human_has_control"})
+    return None
+
+
 def browser_cdp(method: str, params: Optional[Dict[str, Any]] = None, target_id: Optional[str] = None,
                 frame_id: Optional[str] = None, timeout: float = 30.0, task_id: Optional[str] = None) -> str:
     """Send a raw CDP command (see ``CDP_DOCS_URL``). ``target_id`` attaches a fresh stateless connection
@@ -263,6 +283,9 @@ def browser_cdp(method: str, params: Optional[Dict[str, Any]] = None, target_id:
     hit signed-URL expiry (Browserbase). Both paths share the same private-page/SSRF guard. Returns JSON
     ``{"success": True, "method", "result"}`` or ``{"error": ...}``."""
     effective_task_id = task_id or "default"
+    refused = _refuse_bot_desktop_cdp_while_human_holds()
+    if refused:
+        return refused
 
     if frame_id:
         blocked = _browser_cdp_private_guard(task_id=effective_task_id, method=method, params=params or {})

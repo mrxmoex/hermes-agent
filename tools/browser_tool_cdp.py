@@ -4,7 +4,7 @@ Split out of ``tools/browser_tool.py``. Facade-owned state is read through ``_bt
 
 import contextlib
 import os
-from typing import Tuple
+from typing import Optional, Tuple
 
 from tools.browser_tool_origin import origin_module as _origin
 
@@ -47,15 +47,59 @@ def _resolve_cdp_override(cdp_url: str) -> str:
     return raw
 
 
+# ``/browser connect`` is process-wide env today; under multiplex one serve
+# hosts many profiles. Remember which home wrote the env so a sibling turn
+# does not inherit another bot's Chromium.
+_cdp_override_by_home: dict[str, str] = {}
+_cdp_override_env_home: Optional[str] = None
+
+
+def set_process_cdp_override(url: str) -> None:
+    """Publish a live ``/browser connect`` URL for the current Hermes home only."""
+    from hermes_constants import hermes_home_key
+    global _cdp_override_env_home
+    key = hermes_home_key()
+    normalized = (url or "").strip()
+    _cdp_override_by_home[key] = normalized
+    _cdp_override_env_home = key
+    os.environ["BROWSER_CDP_URL"] = normalized
+
+
+def clear_process_cdp_override() -> None:
+    """Drop this home's live connect; do not expose a sibling's leftover env."""
+    from hermes_constants import hermes_home_key
+    global _cdp_override_env_home
+    key = hermes_home_key()
+    _cdp_override_by_home.pop(key, None)
+    if _cdp_override_env_home == key:
+        os.environ.pop("BROWSER_CDP_URL", None)
+        _cdp_override_env_home = None
+
+
 def _get_cdp_override_raw() -> str:
     """Return the *configured* CDP override without any network I/O.
 
-    Precedence: ``BROWSER_CDP_URL`` env (live ``/browser connect``), then ``browser.cdp_url``. Is-it-configured
-    gates (check_fns, ``_is_local_mode`` / ``_is_local_backend``, ``hermes doctor``) MUST use this, not
-    :func:`_get_cdp_override`: its 10s HTTP discovery against a stale ``cdp_url`` would stall every startup's
-    schema build with no error.
+    Precedence: this home's live ``/browser connect``, then ``BROWSER_CDP_URL``
+    when it was not published by a sibling profile, then ``browser.cdp_url``.
+    Is-it-configured gates (check_fns, ``_is_local_mode`` / ``_is_local_backend``,
+    ``hermes doctor``) MUST use this, not :func:`_get_cdp_override`: its 10s HTTP
+    discovery against a stale ``cdp_url`` would stall every startup's schema
+    build with no error.
     """
+    from hermes_constants import hermes_home_key
+    global _cdp_override_env_home
+    key = hermes_home_key()
     env_override = os.environ.get("BROWSER_CDP_URL", "").strip()
+    # Tests (and an operator) may pop the env after connect; treat that as
+    # this home disconnecting so the per-home map cannot outlive the env.
+    if _cdp_override_env_home == key and not env_override:
+        _cdp_override_by_home.pop(key, None)
+        _cdp_override_env_home = None
+    mapped = _cdp_override_by_home.get(key)
+    if mapped:
+        return mapped
+    if env_override and _cdp_override_env_home is not None and _cdp_override_env_home != key:
+        env_override = ""
     return env_override or _origin()._browser_cfg("cdp_url", "", lambda v: str(v or "").strip(), "browser.cdp_url from config")
 
 

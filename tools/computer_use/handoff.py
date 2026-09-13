@@ -15,6 +15,15 @@ from typing import Any, Dict
 
 from tools.bot_desktop import lease as _lease
 
+
+def _stop_shared_browser_recordings() -> None:
+    """Best-effort: a handoff means a human is about to type on the shared browser."""
+    try:
+        from tools.browser_tool import stop_local_browser_recordings
+        stop_local_browser_recordings()
+    except Exception:
+        pass
+
 HANDOFF_ACTIONS = frozenset({"request_handoff", "wait_for_human"})
 _DEFAULT_WAIT_SECONDS = 600.0
 _MAX_WAIT_SECONDS = 1800.0
@@ -25,6 +34,7 @@ def handle_handoff(action: str, args: Dict[str, Any]) -> str:
     if action == "request_handoff":
         reason = str(args.get("reason") or "The agent needs you to complete a step on its screen.").strip()
         _lease.request_handoff(reason)
+        _stop_shared_browser_recordings()
         return json.dumps({
             "ok": True, "action": action, "state": _lease.get().public_view(),
             "next": "Hermes Desktop now shows 'Bot needs you' on this bot's Screen. Tell the user in your "
@@ -41,6 +51,8 @@ def handle_handoff(action: str, args: Dict[str, Any]) -> str:
         return json.dumps({"ok": False, "action": action, "code": "no_takeover", "state": state,
                            "error": f"Nobody took over within {grace:.0f}s. Ask the user in chat to open Bots > Screen and "
                                     "click Take over, then call wait_for_human again."})
+    # Acquire landed in another process (Desktop / serve). Stop the WebM now.
+    _stop_shared_browser_recordings()
     released = _lease.wait_for_release(timeout=timeout)
     state = _lease.get().public_view()
     if released:

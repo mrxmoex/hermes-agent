@@ -12,8 +12,12 @@ _CDP_SCHEMES = {"http", "https", "ws", "wss"}
 
 def _resolve_browser_cdp_url() -> str:
     """Configured browser CDP override without network I/O (``/browser status`` must be fast;
-    ``tools.browser_tool_cdp._get_cdp_override`` HTTP-probes discovery URLs). Same precedence (env,
-    then ``browser.cdp_url``) minus WS resolution; ``browser_navigate`` normalizes on the next call."""
+    ``tools.browser_tool_cdp._get_cdp_override`` HTTP-probes discovery URLs). Same precedence
+    (this home's live connect, then env if it is not a sibling's, then ``browser.cdp_url``)
+    minus WS resolution; ``browser_navigate`` normalizes on the next call."""
+    with contextlib.suppress(Exception):
+        from tools.browser_tool_cdp import _get_cdp_override_raw
+        return _get_cdp_override_raw()
     if env_url := os.environ.get("BROWSER_CDP_URL", "").strip():
         return env_url
     with contextlib.suppress(Exception):
@@ -149,7 +153,8 @@ def _browser_connect(rid, params: dict) -> dict:
         # Reap BEFORE publishing the new env (an in-flight tool call sees the old supervisor closed)
         # and AFTER (the default task's cached supervisor drains against the new URL).
         cleanup_all_browsers()
-        os.environ["BROWSER_CDP_URL"] = normalized
+        from tools.browser_tool_cdp import set_process_cdp_override
+        set_process_cdp_override(normalized)
         cleanup_all_browsers()
     except Exception as e:
         return _err(rid, 5031, str(e))
@@ -165,7 +170,8 @@ def _browser_disconnect(rid) -> dict:
             cleanup_all_browsers()
 
     reap()
-    os.environ.pop("BROWSER_CDP_URL", None)
+    from tools.browser_tool_cdp import clear_process_cdp_override
+    clear_process_cdp_override()
     reap()
     return _ok(rid, {"connected": False})
 
