@@ -603,7 +603,36 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
             return tool_error(f"Invalid session name {session!r}: use 1-64 letters, digits, "
                               "dashes, or underscores (e.g. 'r7k2').")
         env["BU_NAME"] = session
+    # Late import: browser_tool_session → lightpanda fallback → this module.
+    from tools.browser_tool_session import (
+        _admit_bot_desktop_browser,
+        _discard_if_lease_moved,
+        _session_info_for_shared_browser_fence,
+    )
+    # ``get cdp-url`` is already fenced; the harness then talks CDP directly
+    # (clicks, capture_screenshot) and must be bracketed the same way.
+    admitted, refuse = _admit_bot_desktop_browser(
+        _session_info_for_shared_browser_fence(_backend_cache_key(task_id, session))
+    )
+    if refuse:
+        return tool_error(
+            refuse.get("error") or "Human has control of this bot's screen.",
+            code=refuse.get("code") or "human_has_control",
+        )
+
+    def _lease_moved_error():
+        discarded = _discard_if_lease_moved(admitted)
+        if not discarded:
+            return None
+        return tool_error(
+            discarded.get("error") or "A human took over the bot's screen.",
+            code=discarded.get("code") or "human_has_control",
+        )
+
     route_err = _route_backend(env, session, task_id, bool(local))
+    moved = _lease_moved_error()
+    if moved:
+        return moved
     if route_err:
         return tool_error(route_err)
     _attach_vault_supervisor(env, task_id)
@@ -633,6 +662,10 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
                           "append to workspace files — anything already written to the workspace is preserved.")
     except OSError as e:
         return tool_error(f"Failed to launch browser-use CLI: {e}")
+
+    moved = _lease_moved_error()
+    if moved:
+        return moved
 
     result = {"success": proc.returncode == 0, "exit_code": proc.returncode, "output": proc.stdout}
     if workspace:

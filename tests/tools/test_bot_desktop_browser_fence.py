@@ -5,9 +5,12 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 
 import pytest
 
+from tools import browser_tool_session as session_mod
+from tools import browser_use_cli as bu_cli
 from tools.bot_desktop import lease, runtime
 
 
@@ -146,6 +149,101 @@ def test_chrome_fallback_lookup_miss_fails_closed_while_human_holds(monkeypatch)
     result = lp._run_chrome_fallback_command("review", "screenshot", [], timeout=10)
     assert spawned == [], f"lookup failed open and chrome fallback ran: {spawned}"
     assert result.get("code") == "human_has_control"
+
+
+def _wire_browser_exec(monkeypatch, *, session_info=None, run_cli=None):
+    """Admit/discard the harness without launching a real browser-use CLI."""
+    ran: list = []
+    info = session_info or {
+        "session_name": "review", "cdp_url": None, "features": {"local": True}}
+    monkeypatch.setattr(session_mod, "_get_session_info", lambda *a, **k: info)
+    monkeypatch.setattr(bu_cli, "_find_cli", lambda: ["/usr/bin/browser-use"])
+    monkeypatch.setattr(bu_cli, "_route_backend", lambda *a, **k: None)
+    monkeypatch.setattr(bu_cli, "_attach_vault_supervisor", lambda *a, **k: None)
+
+    def _default_run(*args, **kwargs):
+        ran.append(args)
+        return subprocess.CompletedProcess(["browser-use"], 0, "ok\n", "")
+
+    monkeypatch.setattr(bu_cli, "_run_cli_killing_process_group", run_cli or _default_run)
+    return bu_cli, ran
+
+
+def test_browser_exec_is_fenced_while_human_controls_shared_browser(monkeypatch):
+    """``get cdp-url`` is fenced, but the harness then talks CDP directly."""
+    bu, ran = _wire_browser_exec(monkeypatch)
+    lease.acquire("human-viewer")
+    result = json.loads(bu.browser_exec("print(page_info())", task_id="review"))
+    assert ran == [], f"human holds the lease, yet browser_exec launched the harness: {ran}"
+    assert result.get("code") == "human_has_control"
+
+
+def test_browser_exec_result_crossing_a_takeover_is_discarded(monkeypatch, tmp_path):
+    """A screenshot captured after acquire→release must not reach the model."""
+    shot = tmp_path / "HUMAN_PRIVATE_FRAME.png"
+    shot.write_bytes(b"\x89PNGHUMAN_PRIVATE_FRAME")
+
+    def run_then_takeover(*_a, **_k):
+        lease.acquire("human-viewer")
+        lease.release("human-viewer")
+        return subprocess.CompletedProcess(["browser-use"], 0, f"{shot}\n", "")
+
+    bu, _ = _wire_browser_exec(monkeypatch, run_cli=run_then_takeover)
+    monkeypatch.setattr(
+        "tools.vision_tools._should_use_native_vision_fast_path", lambda: True)
+    monkeypatch.setattr(
+        "tools.vision_tools._resize_image_for_vision",
+        lambda p, **kw: "data:image/png;base64,HUMAN_PRIVATE_FRAME",
+    )
+    raw = bu.browser_exec("print(capture_screenshot())", task_id="review")
+    text = raw if isinstance(raw, str) else json.dumps(raw)
+    parsed = json.loads(text) if isinstance(raw, str) else raw
+    assert "HUMAN_PRIVATE_FRAME" not in text
+    assert parsed.get("code") == "human_has_control"
+    assert parsed.get("success") is not True
+
+
+def test_browser_exec_lookup_miss_fails_closed_while_human_holds(monkeypatch):
+    ran: list = []
+    monkeypatch.setattr(
+        session_mod, "_get_session_info",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no session")))
+    monkeypatch.setattr(bu_cli, "_find_cli", lambda: ["/usr/bin/browser-use"])
+    monkeypatch.setattr(bu_cli, "_route_backend", lambda *a, **k: ran.append("route") or None)
+    monkeypatch.setattr(bu_cli, "_run_cli_killing_process_group", lambda *a, **k: ran.append("cli"))
+    lease.acquire("human-viewer")
+    result = json.loads(bu_cli.browser_exec("print(1)", task_id="review"))
+    assert ran == [], f"lookup failed open and browser_exec ran: {ran}"
+    assert result.get("code") == "human_has_control"
+
+
+def test_browser_exec_without_screen_skips_session_lookup(monkeypatch):
+    """No DISPLAY and no human lease: do not spawn a browser daemon just to fence."""
+    monkeypatch.setattr(runtime, "published_env", lambda: {})
+    bu, ran = _wire_browser_exec(monkeypatch)
+    looked: list = []
+    monkeypatch.setattr(
+        session_mod, "_get_session_info",
+        lambda *a, **k: looked.append(a) or {"features": {"local": True}})
+    result = json.loads(bu.browser_exec("print(1)", task_id="review"))
+    assert looked == [], f"fence lookup ran with no screen and no human: {looked}"
+    assert ran
+    assert result.get("success") is True
+
+
+def test_browser_exec_cloud_session_is_not_fenced(monkeypatch):
+    """Cloud / user CDP is another browser; a lease on this screen must not block it."""
+    monkeypatch.setattr(runtime, "published_env", lambda: {})
+    bu, ran = _wire_browser_exec(monkeypatch, session_info={
+        "session_name": "cloud",
+        "cdp_url": "wss://cloud.example/devtools/browser/x",
+        "features": {"local": False},
+    })
+    lease.acquire("human-viewer")
+    result = json.loads(bu.browser_exec("print(1)", task_id="cloud"))
+    assert ran, "cloud browser_exec was fenced by a Bot Desktop lease"
+    assert result.get("success") is True
+    assert result.get("code") != "human_has_control"
 
 
 def test_browser_vision_preroute_is_fenced_while_human_controls(monkeypatch, tmp_path):
