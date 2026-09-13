@@ -801,11 +801,18 @@ def browser_snapshot(
     # Merge supervisor state (pending dialogs + frame tree) when a CDP supervisor is
     # attached. See website/docs/developer-guide/browser-supervisor.md.
     try:
+        from tools.bot_desktop.lease import HumanHasControl
         from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
         _supervisor = SUPERVISOR_REGISTRY.get(effective_task_id)
         if _supervisor is not None:
+            try:
+                admitted = _session._admit_task_shared_browser(effective_task_id)
+            except HumanHasControl:
+                _supervisor = None
+                admitted = None
+        if _supervisor is not None:
             _sv_snap = _supervisor.snapshot()
-            if _sv_snap.active:
+            if not _session._lease_moved_result(admitted) and _sv_snap.active:
                 response.update(_snapshot._redact_browser_output(_sv_snap.to_dict()))
     except Exception as _sv_exc:
         logger.debug("supervisor snapshot merge failed: %s", _sv_exc)

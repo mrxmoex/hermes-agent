@@ -473,3 +473,207 @@ def test_sibling_profile_browser_connect_does_not_override_this_home(monkeypatch
         cdp._cdp_override_by_home.update(saved_by_home)
         cdp._cdp_override_env_home = saved_env_home
         monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+
+
+def _shared_session(bt, task_id="review"):
+    saved = bt._active_sessions.copy()
+    bt._active_sessions[task_id] = {
+        "session_name": "h_review", "features": {"local": True},
+    }
+    return saved
+
+
+def test_vault_supervisor_eval_is_fenced_while_human_holds(monkeypatch):
+    """browser_vault_* inspects the page over CDP without _run_browser_command."""
+    from unittest.mock import MagicMock
+    from tools import browser_tool as bt
+    from tools import browser_vault_tool as vault
+    from tools.bot_desktop import lease
+
+    _wire(monkeypatch, [])
+    monkeypatch.setattr(bt, "_last_session_key", lambda task_id: "review")
+    saved = _shared_session(bt)
+    try:
+        sup = MagicMock()
+        sup.evaluate_runtime.return_value = {"ok": True, "result": "https://bank.test/secret"}
+        import tools.browser_supervisor as bs
+        registry = MagicMock()
+        registry.get.return_value = sup
+        monkeypatch.setattr(bs, "SUPERVISOR_REGISTRY", registry)
+        lease.acquire("human-viewer")
+        out = vault._eval_js("review", "window.location.href")
+        assert out.get("code") == "human_has_control"
+        assert "bank.test" not in json.dumps(out)
+        sup.evaluate_runtime.assert_not_called()
+    finally:
+        bt._active_sessions.clear()
+        bt._active_sessions.update(saved)
+
+
+def test_vault_secret_fill_is_fenced_while_human_holds(monkeypatch):
+    """Password injection talks to the supervisor only — the lease must still bind."""
+    from unittest.mock import MagicMock
+    from tools import browser_tool as bt
+    from tools import browser_vault_tool as vault
+    from tools.bot_desktop import lease
+
+    _wire(monkeypatch, [])
+    monkeypatch.setattr(bt, "_last_session_key", lambda task_id: "review")
+    saved = _shared_session(bt)
+    try:
+        sup = MagicMock()
+        sup.evaluate_runtime.return_value = {"ok": True, "result": "filled"}
+        import tools.browser_supervisor as bs
+        registry = MagicMock()
+        registry.get.return_value = sup
+        monkeypatch.setattr(bs, "SUPERVISOR_REGISTRY", registry)
+        lease.acquire("human-viewer")
+        out = vault._eval_js_secret("review", "document.querySelector('input').value = 's3cret-pw'")
+        assert out.get("code") == "human_has_control"
+        assert "s3cret-pw" not in json.dumps(out)
+        sup.evaluate_runtime.assert_not_called()
+    finally:
+        bt._active_sessions.clear()
+        bt._active_sessions.update(saved)
+
+
+def test_vault_secret_fill_discards_result_after_takeover(monkeypatch):
+    from unittest.mock import MagicMock
+    from tools import browser_tool as bt
+    from tools import browser_vault_tool as vault
+    from tools.bot_desktop import lease
+
+    _wire(monkeypatch, [])
+    monkeypatch.setattr(bt, "_last_session_key", lambda task_id: "review")
+    saved = _shared_session(bt)
+    try:
+        sup = MagicMock()
+
+        def _eval(_expr):
+            lease.acquire("human-viewer")
+            lease.release("human-viewer")
+            return {"ok": True, "result": "FILLED-SECRET"}
+
+        sup.evaluate_runtime.side_effect = _eval
+        import tools.browser_supervisor as bs
+        registry = MagicMock()
+        registry.get.return_value = sup
+        monkeypatch.setattr(bs, "SUPERVISOR_REGISTRY", registry)
+        out = vault._eval_js_secret("review", "1")
+        assert out.get("code") == "human_has_control"
+        assert "FILLED-SECRET" not in json.dumps(out)
+    finally:
+        bt._active_sessions.clear()
+        bt._active_sessions.update(saved)
+
+
+def test_vault_focus_does_not_switch_tabs_while_human_holds(monkeypatch):
+    from unittest.mock import MagicMock
+    from tools import browser_tool as bt
+    from tools import browser_vault_tool as vault
+    from tools.bot_desktop import lease
+
+    _wire(monkeypatch, [])
+    monkeypatch.setattr(bt, "_last_session_key", lambda task_id: "review")
+    saved = _shared_session(bt)
+    try:
+        sup = MagicMock()
+        sup.focus_page.return_value = {"ok": True, "url": "https://bank.test"}
+        import tools.browser_supervisor as bs
+        registry = MagicMock()
+        registry.get.return_value = sup
+        monkeypatch.setattr(bs, "SUPERVISOR_REGISTRY", registry)
+        lease.acquire("human-viewer")
+        assert vault._focus_bound_origin("review", "https://bank.test", "login") is None
+        sup.focus_page.assert_not_called()
+    finally:
+        bt._active_sessions.clear()
+        bt._active_sessions.update(saved)
+
+
+def test_browser_dialog_is_fenced_while_human_holds(monkeypatch):
+    """Accept/dismiss on the dock Chromium skipped the command fence."""
+    from unittest.mock import MagicMock
+    from tools import browser_dialog_tool as dialog
+    from tools import browser_tool as bt
+    from tools.bot_desktop import lease
+
+    _wire(monkeypatch, [])
+    monkeypatch.setattr(bt, "_last_session_key", lambda task_id: "review")
+    saved = _shared_session(bt)
+    try:
+        sup = MagicMock()
+        sup.respond_to_dialog.return_value = {"ok": True, "dialog": {"message": "SECRET-PROMPT"}}
+        import tools.browser_dialog_tool as dt
+        monkeypatch.setattr(dt, "SUPERVISOR_REGISTRY", MagicMock(get=lambda *_a, **_k: sup))
+        lease.acquire("human-viewer")
+        out = json.loads(dialog.browser_dialog(action="accept", prompt_text="yes", task_id="review"))
+        assert out.get("code") == "human_has_control"
+        assert "SECRET-PROMPT" not in json.dumps(out)
+        sup.respond_to_dialog.assert_not_called()
+    finally:
+        bt._active_sessions.clear()
+        bt._active_sessions.update(saved)
+
+
+def test_snapshot_supervisor_merge_skips_dialogs_after_takeover(monkeypatch):
+    """The accessibility snapshot can succeed; live pending_dialogs must not ride along after Take over."""
+    from unittest.mock import MagicMock
+    from tools import browser_tool as bt
+    from tools.bot_desktop import lease
+
+    _wire(monkeypatch, [])
+    monkeypatch.setattr(bt, "_is_camofox_mode", lambda: False)
+    monkeypatch.setattr(bt, "_last_session_key", lambda task_id: "review")
+    monkeypatch.setattr(bt, "_blocked_private_page_content", lambda *_a, **_k: None)
+    monkeypatch.setattr(bt, "_snapshot_fields", lambda *_a, **_k: {"snapshot": "tree"})
+
+    def _snapshot_ok(*_a, **_k):
+        lease.acquire("human-viewer")
+        return {"success": True, "data": {}}
+
+    monkeypatch.setattr(bt._session, "_run_browser_command", _snapshot_ok)
+    saved = _shared_session(bt)
+    try:
+        snap = MagicMock()
+        snap.active = True
+        snap.to_dict.return_value = {"pending_dialogs": [{"message": "SECRET-PROMPT"}]}
+        sup = MagicMock()
+        sup.snapshot.return_value = snap
+        import tools.browser_supervisor as bs
+        monkeypatch.setattr(bs, "SUPERVISOR_REGISTRY", MagicMock(get=lambda *_a, **_k: sup))
+        out = json.loads(bt.browser_snapshot(task_id="review"))
+        assert out.get("success") is True
+        assert "SECRET-PROMPT" not in json.dumps(out)
+        sup.snapshot.assert_not_called()
+    finally:
+        bt._active_sessions.clear()
+        bt._active_sessions.update(saved)
+
+
+def test_browser_dialog_discards_result_after_takeover(monkeypatch):
+    from unittest.mock import MagicMock
+    from tools import browser_dialog_tool as dialog
+    from tools import browser_tool as bt
+    from tools.bot_desktop import lease
+
+    _wire(monkeypatch, [])
+    monkeypatch.setattr(bt, "_last_session_key", lambda task_id: "review")
+    saved = _shared_session(bt)
+    try:
+        sup = MagicMock()
+
+        def _respond(**_k):
+            lease.acquire("human-viewer")
+            lease.release("human-viewer")
+            return {"ok": True, "dialog": {"message": "SECRET-PROMPT"}}
+
+        sup.respond_to_dialog.side_effect = _respond
+        import tools.browser_dialog_tool as dt
+        monkeypatch.setattr(dt, "SUPERVISOR_REGISTRY", MagicMock(get=lambda *_a, **_k: sup))
+        out = json.loads(dialog.browser_dialog(action="dismiss", task_id="review"))
+        assert out.get("code") == "human_has_control"
+        assert "SECRET-PROMPT" not in json.dumps(out)
+    finally:
+        bt._active_sessions.clear()
+        bt._active_sessions.update(saved)

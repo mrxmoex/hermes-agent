@@ -64,12 +64,23 @@ def _eval_js(task_id: str, expression: str) -> Dict[str, Any]:
     embed secret values — the fallback places the expression in subprocess
     argv. Use :func:`_eval_js_secret` for secret-bearing expressions.
     """
+    from tools.bot_desktop.lease import HumanHasControl
+    from tools.browser_tool_session import _admit_task_shared_browser, _lease_moved_result
+
+    try:
+        admitted = _admit_task_shared_browser(task_id)
+    except HumanHasControl as exc:
+        return {"success": False, "error": str(exc), "code": "human_has_control"}
+
     try:
         from tools.browser_supervisor import SUPERVISOR_REGISTRY
 
         supervisor = SUPERVISOR_REGISTRY.get(task_id)
         if supervisor is not None:
             sup = supervisor.evaluate_runtime(expression)
+            moved = _lease_moved_result(admitted)
+            if moved:
+                return moved
             if sup.get("ok"):
                 return {"success": True, "result": sup.get("result")}
             err = str(sup.get("error") or "")
@@ -86,7 +97,8 @@ def _eval_js(task_id: str, expression: str) -> Dict[str, Any]:
     effective = _last_session_key(task_id)
     result = _run_browser_command(effective, "eval", [expression])
     if not result.get("success"):
-        return {"success": False, "error": result.get("error", "eval failed")}
+        extra = {"code": result["code"]} if result.get("code") else {}
+        return {"success": False, "error": result.get("error", "eval failed"), **extra}
     return {"success": True, "result": result.get("data", {}).get("result")}
 
 
@@ -97,7 +109,14 @@ def _ensure_supervisor(task_id: str):
     a local agent-browser ``--session`` has no ``cdp_url`` of its own, so nothing did. Ask the daemon
     for the packaged Chromium's endpoint (``get cdp-url``: same daemon, same reaper) and attach.
     Returns None when no endpoint is reachable; the fill then refuses rather than touching argv."""
+    from tools.bot_desktop.lease import HumanHasControl
     from tools.browser_supervisor import SUPERVISOR_REGISTRY
+    from tools.browser_tool_session import _admit_task_shared_browser
+
+    try:
+        _admit_task_shared_browser(task_id)
+    except HumanHasControl:
+        return None
 
     supervisor = SUPERVISOR_REGISTRY.get(task_id)
     if supervisor is not None:
@@ -128,6 +147,19 @@ def _eval_js_secret(task_id: str, expression: str) -> Dict[str, Any]:
     When no supervisor session is available the caller gets a typed refusal
     (``error_type='supervisor_required'``) and nothing is written.
     """
+    from tools.bot_desktop.lease import HumanHasControl
+    from tools.browser_tool_session import _admit_task_shared_browser, _lease_moved_result
+
+    try:
+        admitted = _admit_task_shared_browser(task_id)
+    except HumanHasControl as exc:
+        return {
+            "success": False,
+            "error_type": "human_has_control",
+            "code": "human_has_control",
+            "error": str(exc),
+        }
+
     try:
         supervisor = _ensure_supervisor(task_id)
     except Exception as exc:
@@ -148,6 +180,9 @@ def _eval_js_secret(task_id: str, expression: str) -> Dict[str, Any]:
         }
 
     sup = supervisor.evaluate_runtime(expression)
+    moved = _lease_moved_result(admitted)
+    if moved:
+        return {**moved, "error_type": "human_has_control"}
     if sup.get("ok"):
         return {"success": True, "result": sup.get("result")}
     return {
@@ -195,6 +230,13 @@ def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[str]:
     """Point the supervisor's page session at the open tab on ``origin`` that holds a ``kind`` form
     (browser_exec sessions open their own tabs, so the tab the supervisor attached to first is rarely the
     login page). Returns the origin when a tab was focused, else None (caller falls back to the current page)."""
+    from tools.bot_desktop.lease import HumanHasControl
+    from tools.browser_tool_session import _admit_task_shared_browser, _lease_moved_result
+
+    try:
+        admitted = _admit_task_shared_browser(task_id)
+    except HumanHasControl:
+        return None
     try:
         supervisor = _ensure_supervisor(task_id)
     except Exception:
@@ -202,6 +244,8 @@ def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[str]:
     if supervisor is None:
         return None
     focused = supervisor.focus_page(origin, accept=_TAB_PROBES.get(kind))
+    if _lease_moved_result(admitted):
+        return None
     return (origin or focused.get("url")) if focused.get("ok") else None
 
 

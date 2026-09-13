@@ -668,6 +668,29 @@ def _admit_shared_browser(session_info: Optional[Dict[str, Any]] = None, *, cdp_
     return _bd_lease.assert_agent_may_act()
 
 
+def _admit_task_shared_browser(task_id: Optional[str] = None, *, cdp_url: str = ""):
+    """Admit the task's session, or a CDP override aimed at this profile's dock Chromium.
+
+    Supervisor-only tools (vault fill, dialog accept) never go through
+    ``_run_browser_command``; they still have to hit the same lease as click/eval.
+    """
+    key = _bt._last_session_key(task_id or "default")
+    info = _bt._active_sessions.get(key)
+    if info is None and task_id:
+        info = _bt._active_sessions.get(task_id)
+    raw = (cdp_url or "").strip()
+    if not raw:
+        try:
+            raw = _cdp._get_cdp_override_raw()
+        except Exception:
+            raw = ""
+    if info:
+        admitted = _admit_shared_browser(info)
+        if admitted is not None:
+            return admitted
+    return _admit_shared_browser(cdp_url=raw)
+
+
 def _lease_moved_result(admitted) -> Optional[Dict[str, Any]]:
     """Refuse payload when the lease epoch moved after ``admitted``, else ``None``."""
     if admitted is None:
