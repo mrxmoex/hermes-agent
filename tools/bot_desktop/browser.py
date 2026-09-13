@@ -158,6 +158,8 @@ def remember_dock_cdp_port(port: int) -> None:
     """
     if not isinstance(port, int) or not (1 <= port <= 65535):
         return
+    if last_known_dock_cdp_port() == port:
+        return
     path = _dock_port_path()
     tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     try:

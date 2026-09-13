@@ -970,6 +970,61 @@ def test_acquire_persists_dock_port_before_any_agent_probe(monkeypatch):
     assert _admit_resolved_cdp_for_attach(other) is True
 
 
+def test_watch_once_persists_dock_port_before_devtools_miss(monkeypatch):
+    """Leftover watch used to never stamp ``dock-cdp-port`` while DevTools
+    was still readable. A miss *before* Take over then treated the jar as
+    another Chrome (admit None), even after finding 65's acquire persist
+    (acquire sees no live port)."""
+    import tools.bot_desktop.browser as bdb
+    from tools.bot_desktop.lease import HumanHasControl
+    from tools.browser_tool_session import (
+        _admit_resolved_cdp_for_attach,
+        _admit_shared_browser,
+        _cdp_url_is_bot_desktop_browser,
+        _last_dock_cdp_port,
+    )
+    from tools.browser_tool_supervisor_lease import _watch_once
+
+    dock = "ws://127.0.0.1:9333/devtools/browser/x"
+    other = "ws://127.0.0.1:9222/devtools/browser/x"
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: 9333)
+    monkeypatch.setattr(
+        "tools.browser_tool_lifecycle._stop_reserved_recordings",
+        lambda: None,
+    )
+    _last_dock_cdp_port.clear()
+    assert bdb.last_known_dock_cdp_port() is None
+
+    _watch_once()
+    assert bdb.last_known_dock_cdp_port() == 9333
+
+    _last_dock_cdp_port.clear()
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: None)
+    lease.acquire("human-viewer")
+    assert bdb.last_known_dock_cdp_port() == 9333
+    assert _cdp_url_is_bot_desktop_browser(dock) is True
+    assert _cdp_url_is_bot_desktop_browser(other) is False
+    with pytest.raises(HumanHasControl):
+        _admit_shared_browser(cdp_url=dock)
+    assert _admit_resolved_cdp_for_attach(dock) is False
+    assert _admit_shared_browser(cdp_url=other) is None
+    assert _admit_resolved_cdp_for_attach(other) is True
+
+
+def test_remember_dock_cdp_port_skips_rewrite_when_unchanged():
+    """The 0.25s watch re-persists the same port; skip-if-same must not
+    block the first write or a later different port."""
+    import tools.bot_desktop.browser as bdb
+
+    assert bdb.last_known_dock_cdp_port() is None
+    bdb.remember_dock_cdp_port(9333)
+    assert bdb.last_known_dock_cdp_port() == 9333
+    bdb.remember_dock_cdp_port(9333)
+    assert bdb.last_known_dock_cdp_port() == 9333
+    bdb.remember_dock_cdp_port(9222)
+    assert bdb.last_known_dock_cdp_port() == 9222
+
+
 def test_acquire_without_live_dock_does_not_invent_a_port(monkeypatch):
     """No live probe at Take over must not stamp a loopback port and mute
     an unrelated Chrome."""

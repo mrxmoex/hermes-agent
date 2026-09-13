@@ -136,6 +136,41 @@ def install_supervisor_lease_hook() -> None:
             ).start()
 
 
+def _persist_watched_dock_ports() -> None:
+    """Stamp each leftover home's live dock port while DevTools is still readable.
+
+    Finding 65 persists on ``lease.acquire``. A DevTools miss *before* Take
+    over still left ``dock-cdp-port`` empty, so leftover attach treated the
+    jar as another Chrome. The 0.25s watch already walks leftover homes;
+    persist here so a later miss still fences that port. Unrelated Chromes
+    stay unstamped (``running_instance_cdp_port`` only remembers this
+    profile's ``profile_dir()``).
+    """
+    from tools.bot_desktop.browser import persist_live_dock_cdp_port
+    homes: list[Optional[str]] = [None]
+    try:
+        from tools.browser_supervisor import SUPERVISOR_REGISTRY
+        with SUPERVISOR_REGISTRY._lock:
+            items = list(SUPERVISOR_REGISTRY._by_task.items())
+        for raw_key, sup in items:
+            stored_id = getattr(sup, "task_id", None)
+            task_id = stored_id if isinstance(stored_id, str) and stored_id else raw_key
+            homes.append(_supervisor_home(sup, task_id if isinstance(task_id, str) else None))
+    except Exception:
+        pass
+    seen: set[str] = set()
+    for home in homes:
+        key = home or ""
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            with _home_scope(home):
+                persist_live_dock_cdp_port()
+        except Exception:
+            pass
+
+
 def _watch_once() -> None:
     """Detach leftover supervisors and stop reserved WebMs when a human holds.
 
@@ -145,6 +180,10 @@ def _watch_once() -> None:
     fire this process's ``on_change``; the 0.25s poll is how a WebM
     started here notices that write. The janitor's 1s scan is the backup.
     """
+    try:
+        _persist_watched_dock_ports()
+    except Exception:
+        pass
     try:
         from tools.browser_tool_lifecycle import _stop_reserved_recordings
         _stop_reserved_recordings()

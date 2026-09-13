@@ -361,6 +361,63 @@ def test_cross_process_takeover_stops_sibling_profile_supervisor(monkeypatch, tm
                     pass
 
 
+def test_watch_once_persists_sibling_dock_under_supervisor_home(monkeypatch, tmp_path):
+    """A leftover minted under a bot home must stamp that home's
+    ``dock-cdp-port``, not invent a port on the launch profile.
+
+    Mint happens with no live probe (no identify persist). The watch tick
+    later sees DevTools on the bot jar only.
+    """
+    import tools.bot_desktop.browser as bdb
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from pathlib import Path
+    from tools.browser_supervisor import CDPSupervisor
+    from tools.browser_tool_supervisor_lease import _watch_once
+
+    launch, bot = _sibling_homes(tmp_path)
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: None)
+    token_bot = set_hermes_home_override(str(bot))
+    try:
+        sup = CDPSupervisor(task_id="review", cdp_url="ws://127.0.0.1:9333/devtools/browser/x")
+        assert bdb.last_known_dock_cdp_port() is None
+        assert getattr(sup, "targets_bot_desktop", None) is False
+    finally:
+        reset_hermes_home_override(token_bot)
+
+    bot_profile = (bot / "bot-desktop" / "browser-profile").resolve()
+
+    def live_port(user_data_dir, **_k):
+        try:
+            return 9333 if Path(user_data_dir).resolve() == bot_profile else None
+        except OSError:
+            return None
+
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", live_port)
+    monkeypatch.setattr(
+        "tools.browser_tool_lifecycle._stop_reserved_recordings",
+        lambda: None,
+    )
+    import tools.browser_supervisor as bs
+    registry = __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock()
+    registry._lock = __import__("threading").Lock()
+    registry._by_task = {"review": sup}
+    monkeypatch.setattr(bs, "SUPERVISOR_REGISTRY", registry)
+
+    token_launch = set_hermes_home_override(str(launch))
+    try:
+        assert bdb.last_known_dock_cdp_port() is None
+        _watch_once()
+        assert bdb.last_known_dock_cdp_port() is None
+    finally:
+        reset_hermes_home_override(token_launch)
+
+    token_bot = set_hermes_home_override(str(bot))
+    try:
+        assert bdb.last_known_dock_cdp_port() == 9333
+    finally:
+        reset_hermes_home_override(token_bot)
+
+
 def test_minted_dock_identity_survives_a_missing_devtools_port(monkeypatch):
     """Take over can unlink DevToolsActivePort; leftover I/O is still the dock."""
     import tools.bot_desktop.browser as bdb
