@@ -859,6 +859,12 @@ def _run_browser_command_unfenced(task_id: str, command: str, args: List[str], t
     # empty, non-JSON, nonzero rc, parsed).
     fallback_reason = _lp._lightpanda_fallback_reason(engine, command, result)
     if fallback_reason:
+        from tools.bot_desktop.lease import HumanHasControl
+
+        try:
+            _refuse_shared_session_while_human_holds()
+        except HumanHasControl as e:
+            return {"success": False, "error": str(e), "code": "human_has_control"}
         _bt.logger.info("Lightpanda fallback: retrying '%s' with Chrome (task=%s): %s", command, task_id, fallback_reason)
         if command == "screenshot":  # separate Chrome session to the same URL
             fallback_result = _lp._chrome_fallback_screenshot(task_id, args or [], timeout)

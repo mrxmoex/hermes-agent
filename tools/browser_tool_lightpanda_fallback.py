@@ -126,10 +126,19 @@ def _run_chrome_fallback_command(task_id: str, command: str, args: List[str], ti
     # 1. Current URL from the Lightpanda session. ``get url`` is not fallback-eligible,
     # so this can't recurse; the explicit override strips Chromium-only env flags.
     url_result = _session._run_browser_command(task_id, "get", ["url"], timeout=10, _engine_override="lightpanda")
+    if url_result.get("code") == "human_has_control":
+        return url_result
     current_url = str(url_result.get("data", {}).get("url", "")).strip() if url_result.get("success") else None
     if not current_url:
         _bt.logger.warning("Chrome fallback: could not determine current URL from LP session")
         return {"success": False, "error": "Chrome fallback failed: could not determine current URL"}
+
+    from tools.bot_desktop.lease import HumanHasControl
+
+    try:
+        _session._refuse_shared_session_while_human_holds()
+    except HumanHasControl as e:
+        return {"success": False, "error": str(e), "code": "human_has_control"}
 
     # 2. Temporary Chrome session (bypasses _get_session_info's cache).
     tmp_session = f"h_cfb_{uuid.uuid4().hex[:8]}"
@@ -151,6 +160,12 @@ def _run_chrome_fallback_command(task_id: str, command: str, args: List[str], ti
     task_socket_dir = _session._prepare_session_socket_dir(tmp_session)
     # Bypasses _run_browser_command, so apply the same Chromium sandbox policy explicitly.
     browser_env = _session._agent_browser_command_env(task_socket_dir)
+    # _build_browser_env pins the dock jar. This fallback is a throwaway
+    # Chrome at the same URL — keeping that pin lets Chromium's singleton
+    # join the human-held dock instance and navigate it.
+    tmp_profile = os.path.join(task_socket_dir, "chrome-profile")
+    os.makedirs(tmp_profile, mode=0o700, exist_ok=True)
+    browser_env["AGENT_BROWSER_PROFILE"] = tmp_profile
     _session._apply_chromium_sandbox_args(browser_env)
 
     def _run_tmp(cmd: str, cmd_args: List[str]) -> Dict[str, Any]:

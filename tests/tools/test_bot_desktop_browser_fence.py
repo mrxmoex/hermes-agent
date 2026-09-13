@@ -601,6 +601,72 @@ def test_eval_supervisor_fast_path_discards_result_after_takeover(monkeypatch):
         bt._active_sessions.update(saved)
 
 
+def test_chrome_fallback_is_refused_while_human_holds(monkeypatch):
+    """Lightpanda's Chrome retry bypasses _run_browser_command and used to spawn against the dock jar."""
+    from tools import browser_tool as bt
+    from tools import browser_tool_lightpanda_fallback as lp
+    from tools.bot_desktop import lease
+
+    launched = []
+    monkeypatch.setattr(lp._session, "_run_browser_command", lambda *a, **k: {
+        "success": True, "data": {"url": "https://example.com/login"}})
+    monkeypatch.setattr(lp._install, "_find_agent_browser", lambda: launched.append("find") or "/bin/agent-browser")
+    monkeypatch.setattr(lp._install, "_chromium_installed", lambda: True)
+    monkeypatch.setattr(lp._session, "_popen_agent_browser", lambda *a, **k: launched.append(a) or (_ for _ in ()).throw(
+        AssertionError("fallback chrome spawned")))
+    saved = bt._active_sessions.copy()
+    try:
+        bt._active_sessions["review"] = {"session_name": "lp_1", "features": {"local": True, "lightpanda": True}}
+        lease.acquire("human-viewer")
+        out = lp._run_chrome_fallback_command("review", "screenshot", [], 5)
+        assert out.get("code") == "human_has_control"
+        assert launched == []
+    finally:
+        bt._active_sessions.clear()
+        bt._active_sessions.update(saved)
+
+
+def test_chrome_fallback_uses_throwaway_profile_not_the_dock_jar(monkeypatch, tmp_path):
+    """A temp Chrome that inherits AGENT_BROWSER_PROFILE joins the dock singleton and can navigate it."""
+    from tools import browser_tool_lightpanda_fallback as lp
+    from tools.bot_desktop import browser as bdb
+
+    dock = str(tmp_path / "bot-desktop" / "browser-profile")
+    captured: list[str] = []
+
+    class _Proc:
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            return None
+
+    monkeypatch.setattr(lp._session, "_run_browser_command", lambda *a, **k: {
+        "success": True, "data": {"url": "https://example.com"}})
+    monkeypatch.setattr(lp._install, "_find_agent_browser", lambda: "/bin/agent-browser")
+    monkeypatch.setattr(lp._install, "_chromium_installed", lambda: True)
+    monkeypatch.setattr(lp._session, "_prepare_session_socket_dir", lambda _n: str(tmp_path / "sock"))
+    monkeypatch.setattr(lp._session, "_agent_browser_argv", lambda _cmd: ["agent-browser"])
+    monkeypatch.setattr(lp._session, "_agent_browser_command_env", lambda _d: {
+        "AGENT_BROWSER_PROFILE": dock})
+    monkeypatch.setattr(lp._session, "_apply_chromium_sandbox_args", lambda _e: None)
+    monkeypatch.setattr(lp._session, "_unlink_command_output_files", lambda *a: None)
+    monkeypatch.setattr(bdb, "profile_dir", lambda: tmp_path / "bot-desktop" / "browser-profile")
+
+    def _popen(_argv, env, _sock, _tag):
+        captured.append(env.get("AGENT_BROWSER_PROFILE", ""))
+        stdout = tmp_path / "sock" / f"_stdout_{_tag}"
+        stdout.parent.mkdir(parents=True, exist_ok=True)
+        stdout.write_text('{"success": true, "data": {}}\n', encoding="utf-8")
+        return _Proc()
+
+    monkeypatch.setattr(lp._session, "_popen_agent_browser", _popen)
+    out = lp._run_chrome_fallback_command("review", "screenshot", [], 5)
+    assert out.get("success") is True
+    assert captured, "fallback never spawned Chrome"
+    assert all(p != dock and p.endswith("chrome-profile") for p in captured), captured
+
+
 def test_lightpanda_vision_preroute_does_not_persist_while_human_holds(monkeypatch, tmp_path):
     """Chrome fallback for Lightpanda vision must not copy a PNG after Take over."""
     from tools import browser_tool_vision as vision
