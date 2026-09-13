@@ -976,6 +976,7 @@ _PACKAGE_EXEC_SUBCOMMANDS = frozenset({"exec", "dlx"})
 _UVX_LAUNCHERS = frozenset({"uvx", "uv"})
 _NODE_LAUNCHERS = frozenset({"node", "nodejs", "iojs"})
 _ENV_LAUNCHERS = frozenset({"env"})
+_COREPACK_LAUNCHERS = frozenset({"corepack"})
 _AGENT_BROWSER_NODE_ENTRYPOINTS = frozenset({
     "agent-browser", "cli.js", "cli.mjs", "cli.cjs", "index.js",
 })
@@ -1054,6 +1055,29 @@ def _env_command_tokens(tokens: List[str]) -> List[str]:
             i += 1
             continue
         if "=" in raw and not raw.startswith("="):
+            i += 1
+            continue
+        return [str(t) for t in tokens[i:]]
+    return []
+
+
+def _corepack_command_tokens(tokens: List[str]) -> List[str]:
+    """Argv after ``corepack`` [flags], or empty.
+
+    ``corepack pnpm exec lighthouse --port 9333`` is the leftover writer
+    finding 91's ``pnpm exec`` match misses. ``corepack enable`` /
+    ``corepack use`` are not leftover invocations. Keep the child's
+    flags (``--port``, ``--browserUrl``) — do not strip them as
+    corepack's own.
+    """
+    if not tokens or _launcher_basename(tokens[0]) not in _COREPACK_LAUNCHERS:
+        return []
+    i = 1
+    while i < len(tokens):
+        raw = str(tokens[i])
+        if raw == "--":
+            return [str(t) for t in tokens[i + 1:]]
+        if raw.startswith("-"):
             i += 1
             continue
         return [str(t) for t in tokens[i:]]
@@ -1168,6 +1192,9 @@ def _is_agent_browser_invocation(tokens: List[str]) -> bool:
     name0 = _launcher_basename(tokens[0])
     if name0 in _ENV_LAUNCHERS:
         return _is_agent_browser_invocation(_env_command_tokens(tokens))
+    if name0 in _COREPACK_LAUNCHERS:
+        rest = _corepack_command_tokens(tokens)
+        return bool(rest) and _is_agent_browser_invocation(rest)
     via = _invocation_via_package_exec(tokens, _is_agent_browser_invocation)
     if via is not None:
         return via
@@ -1195,6 +1222,9 @@ def _is_browser_use_invocation(tokens: List[str]) -> bool:
     name0 = _launcher_basename(tokens[0])
     if name0 in _ENV_LAUNCHERS:
         return _is_browser_use_invocation(_env_command_tokens(tokens))
+    if name0 in _COREPACK_LAUNCHERS:
+        rest = _corepack_command_tokens(tokens)
+        return bool(rest) and _is_browser_use_invocation(rest)
     via = _invocation_via_package_exec(tokens, _is_browser_use_invocation)
     if via is not None:
         return via
@@ -1250,6 +1280,9 @@ def _is_playwright_invocation(tokens: List[str]) -> bool:
     name0 = _launcher_basename(tokens[0])
     if name0 in _ENV_LAUNCHERS:
         return _is_playwright_invocation(_env_command_tokens(tokens))
+    if name0 in _COREPACK_LAUNCHERS:
+        rest = _corepack_command_tokens(tokens)
+        return bool(rest) and _is_playwright_invocation(rest)
     via = _invocation_via_package_exec(tokens, _is_playwright_invocation)
     if via is not None:
         return via
@@ -1339,6 +1372,9 @@ def _is_chrome_remote_interface_invocation(tokens: List[str]) -> bool:
     name0 = _launcher_basename(tokens[0])
     if name0 in _ENV_LAUNCHERS:
         return _is_chrome_remote_interface_invocation(_env_command_tokens(tokens))
+    if name0 in _COREPACK_LAUNCHERS:
+        rest = _corepack_command_tokens(tokens)
+        return bool(rest) and _is_chrome_remote_interface_invocation(rest)
     via = _invocation_via_package_exec(tokens, _is_chrome_remote_interface_invocation)
     if via is not None:
         return via
@@ -1364,6 +1400,9 @@ def _is_playwright_mcp_invocation(tokens: List[str]) -> bool:
     name0 = _launcher_basename(tokens[0])
     if name0 in _ENV_LAUNCHERS:
         return _is_playwright_mcp_invocation(_env_command_tokens(tokens))
+    if name0 in _COREPACK_LAUNCHERS:
+        rest = _corepack_command_tokens(tokens)
+        return bool(rest) and _is_playwright_mcp_invocation(rest)
     via = _invocation_via_package_exec(tokens, _is_playwright_mcp_invocation)
     if via is not None:
         return via
@@ -1413,6 +1452,9 @@ def _is_chrome_devtools_mcp_invocation(tokens: List[str]) -> bool:
     name0 = _launcher_basename(tokens[0])
     if name0 in _ENV_LAUNCHERS:
         return _is_chrome_devtools_mcp_invocation(_env_command_tokens(tokens))
+    if name0 in _COREPACK_LAUNCHERS:
+        rest = _corepack_command_tokens(tokens)
+        return bool(rest) and _is_chrome_devtools_mcp_invocation(rest)
     via = _invocation_via_package_exec(tokens, _is_chrome_devtools_mcp_invocation)
     if via is not None:
         return via
@@ -1458,6 +1500,9 @@ def _is_lighthouse_invocation(tokens: List[str]) -> bool:
     name0 = _launcher_basename(tokens[0])
     if name0 in _ENV_LAUNCHERS:
         return _is_lighthouse_invocation(_env_command_tokens(tokens))
+    if name0 in _COREPACK_LAUNCHERS:
+        rest = _corepack_command_tokens(tokens)
+        return bool(rest) and _is_lighthouse_invocation(rest)
     via = _invocation_via_package_exec(tokens, _is_lighthouse_invocation)
     if via is not None:
         return via

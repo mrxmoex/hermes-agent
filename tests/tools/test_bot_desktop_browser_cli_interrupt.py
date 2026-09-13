@@ -354,6 +354,20 @@ def test_agent_browser_invocation_is_token_match_not_substring():
     assert not _is_lighthouse_invocation(["pnpm", "run", "lighthouse"])
     assert not _is_lighthouse_invocation(["npm", "install", "lighthouse"])
     assert not _is_lighthouse_invocation(["pnpm", "exec", "ruff"])
+    assert _is_lighthouse_invocation(
+        ["corepack", "pnpm", "exec", "lighthouse", "--port", "9333"])
+    assert _is_lighthouse_invocation(
+        ["corepack", "--yes", "npm", "exec", "--package=lighthouse", "--",
+         "--port=9333", "https://example.com"])
+    assert _is_chrome_devtools_mcp_invocation(
+        ["corepack", "pnpm", "exec", "chrome-devtools-mcp",
+         "--browserUrl", "http://127.0.0.1:9333"])
+    assert not _is_lighthouse_invocation(["corepack", "enable"])
+    assert not _is_lighthouse_invocation(["corepack", "use", "pnpm@10"])
+    assert not _is_lighthouse_invocation(
+        ["corepack", "npm", "install", "lighthouse"])
+    assert not _is_lighthouse_invocation(
+        ["/bin/bash", "-c", "corepack pnpm exec lighthouse --port 9333"])
 
 
 def test_unregistered_cdp_dock_cli_killed_on_takeover():
@@ -916,6 +930,55 @@ def test_unregistered_package_exec_dock_cli_killed_on_takeover():
     assert run_script.killed == 0
     assert other.killed == 0
     assert install.killed == 0
+    assert bash_parent.killed == 0
+
+
+def test_unregistered_corepack_package_exec_dock_cli_killed_on_takeover():
+    """corepack npm/pnpm/yarn exec is the leftover writer finding 91 missed."""
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    bdb.remember_dock_cdp_port(9333)
+    leftover = _FakeProc(
+        9500,
+        ["corepack", "pnpm", "exec", "lighthouse",
+         "--port", "9333", "https://example.com"],
+    )
+    npm_yes = _FakeProc(
+        9501,
+        ["corepack", "--yes", "npm", "exec", "--package=lighthouse", "--",
+         "--port=9333", "https://example.com"],
+    )
+    mcp = _FakeProc(
+        9502,
+        ["corepack", "yarn", "dlx", "chrome-devtools-mcp",
+         "--browserUrl", "http://127.0.0.1:9333"],
+    )
+    enable = _FakeProc(9503, ["corepack", "enable"])
+    install = _FakeProc(9504, ["corepack", "npm", "install", "lighthouse"])
+    other = _FakeProc(
+        9505,
+        ["corepack", "pnpm", "exec", "lighthouse",
+         "--port", "9222", "https://example.com"],
+    )
+    bash_parent = _FakeProc(
+        9506,
+        ["/bin/bash", "-c",
+         "corepack pnpm exec lighthouse --port 9333 https://example.com"],
+    )
+    lease.acquire("human")
+    n = interrupt_unregistered_dock_cli(
+        processes=[leftover, npm_yes, mcp, enable, install, other, bash_parent],
+        chromium_pid=9999,
+        owner_daemon_pid=9998,
+    )
+    assert n == 3
+    assert leftover.killed == 1
+    assert npm_yes.killed == 1
+    assert mcp.killed == 1
+    assert enable.killed == 0
+    assert install.killed == 0
+    assert other.killed == 0
     assert bash_parent.killed == 0
 
 
