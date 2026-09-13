@@ -432,6 +432,34 @@ def test_vault_eval_preserves_human_has_control_code(monkeypatch):
     assert result.get("success") is not True
 
 
+def test_vault_save_login_does_not_wrap_a_reminted_fill_as_success(monkeypatch, tmp_path):
+    """save_login stores the credential then calls fill. Fill is independently
+    fenced and can remint; the outer success wrapper must not hide the handoff."""
+    from agent.vault_backends import unlock as unlock_mod
+    from agent.vault_store import VaultStore
+    from tools import browser_vault_tool as vault
+
+    store = VaultStore(base_dir=tmp_path / "vault")
+    unlock_mod.set_save_login_prompt_callback(
+        lambda origin, site: {"identifier": "tek@acme.test", "password": "hunter2"}
+    )
+    monkeypatch.setattr(vault, "_focus_bound_origin", lambda *_a, **_k: None)
+    monkeypatch.setattr(vault, "_origin_probe", lambda *_a, **_k: ("https://acme.test", None))
+    monkeypatch.setattr(vault, "browser_vault_fill", lambda *_a, **_k: json.dumps({
+        "success": False, "code": "human_has_control",
+        "error": "A human has control of this bot's screen.",
+    }))
+    try:
+        with patch("agent.vault_store.get_vault_store", return_value=store), \
+             patch("agent.vault_backends.unlock.can_prompt_here", return_value=True):
+            out = json.loads(vault.browser_vault_save_login(task_id="review"))
+    finally:
+        unlock_mod.set_save_login_prompt_callback(None)
+    assert out.get("success") is not True, f"reminted fill was wrapped as success: {out}"
+    assert out.get("code") == "human_has_control"
+    assert store.list_items(), "the login was saved; only the fill reminted"
+
+
 def test_vault_fill_inspect_failure_preserves_human_has_control(monkeypatch, tmp_path):
     """Inspect failure wrappers must not rewrite a handoff as a generic inspect error."""
     from agent.vault_store import VaultStore

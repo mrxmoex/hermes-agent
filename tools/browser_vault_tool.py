@@ -56,6 +56,15 @@ def _with_handoff_code(payload: Dict[str, Any], source: Optional[Dict[str, Any]]
         payload["code"] = source["code"]
     return payload
 
+
+def _json_if_handoff(payload: Optional[Dict[str, Any]], **extra: Any) -> Optional[str]:
+    """JSON refuse when a nested fenced call reminted. Do not wrap that as success."""
+    if not payload or payload.get("code") != "human_has_control":
+        return None
+    out = {"success": False, "error": payload.get("error") or "A human has control of this bot's screen."}
+    out.update({key: value for key, value in extra.items() if value is not None})
+    return json.dumps(_with_handoff_code(out, payload), ensure_ascii=False)
+
 logger = logging.getLogger(__name__)
 
 
@@ -391,6 +400,14 @@ def browser_vault_save_login(label: str = "", task_id: Optional[str] = None) -> 
     if moved:
         return moved
     filled = json.loads(browser_vault_fill(meta.id, task_id=effective_task_id))
+    # Fill is independently fenced and can remint after the save prompt. A
+    # successful save must not hide ``code: human_has_control`` as success.
+    handed = _json_if_handoff(filled, handle=meta.id, origin=origin)
+    if handed:
+        return handed
+    moved = _json_if_lease_moved(admitted)
+    if moved:
+        return moved
     return json.dumps({"success": True, "handle": meta.id, "origin": origin, "identifier": identifier,
                        "identifier_type": id_type, "fill": filled,
                        "next": "Type the identifier into the username field if the form has one, then submit."},
