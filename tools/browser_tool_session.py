@@ -973,6 +973,8 @@ def interrupt_reserved_browser_cli(home: Optional[str] = None) -> None:
 _NPX_LAUNCHERS = frozenset({"npx", "pnpx", "bunx"})
 _PACKAGE_EXEC_LAUNCHERS = frozenset({"npm", "pnpm", "yarn"})
 _PACKAGE_EXEC_SUBCOMMANDS = frozenset({"exec", "dlx"})
+_BUN_LAUNCHERS = frozenset({"bun"})
+_BUN_X_SUBCOMMANDS = frozenset({"x", "exec"})
 _UVX_LAUNCHERS = frozenset({"uvx", "uv"})
 _NODE_LAUNCHERS = frozenset({"node", "nodejs", "iojs"})
 _ENV_LAUNCHERS = frozenset({"env"})
@@ -1177,6 +1179,32 @@ def _invocation_via_package_exec(tokens: List[str], matches) -> Optional[bool]:
     return bool(operands) and bool(matches(operands))
 
 
+def _bun_x_operands(tokens: List[str]) -> Optional[List[str]]:
+    """``bun x|exec`` operands, else None.
+
+    ``bunx`` already unwraps via ``_NPX_LAUNCHERS``. ``bun x lighthouse``
+    and ``bun exec chrome-devtools-mcp`` are the leftover writers that
+    miss. ``bun run`` / ``bun install`` / ``bun add`` are not invocations.
+    """
+    if not tokens or _launcher_basename(tokens[0]) not in _BUN_LAUNCHERS:
+        return None
+    rest = _first_non_flag_tokens(tokens)
+    if not rest or rest[0] not in _BUN_X_SUBCOMMANDS:
+        return None
+    operands = rest[1:]
+    if operands and operands[0] == "--":
+        operands = operands[1:]
+    return operands
+
+
+def _invocation_via_bun_x(tokens: List[str], matches) -> Optional[bool]:
+    """None when argv is not ``bun x|exec``; else leftover-CLI match."""
+    operands = _bun_x_operands(tokens)
+    if operands is None:
+        return None
+    return bool(operands) and bool(matches(operands))
+
+
 def _is_agent_browser_invocation(tokens: List[str]) -> bool:
     """True when argv launches agent-browser (binary, npx, or shebang node).
 
@@ -1196,6 +1224,9 @@ def _is_agent_browser_invocation(tokens: List[str]) -> bool:
         rest = _corepack_command_tokens(tokens)
         return bool(rest) and _is_agent_browser_invocation(rest)
     via = _invocation_via_package_exec(tokens, _is_agent_browser_invocation)
+    if via is not None:
+        return via
+    via = _invocation_via_bun_x(tokens, _is_agent_browser_invocation)
     if via is not None:
         return via
     if name0 in _NPX_LAUNCHERS:
@@ -1226,6 +1257,9 @@ def _is_browser_use_invocation(tokens: List[str]) -> bool:
         rest = _corepack_command_tokens(tokens)
         return bool(rest) and _is_browser_use_invocation(rest)
     via = _invocation_via_package_exec(tokens, _is_browser_use_invocation)
+    if via is not None:
+        return via
+    via = _invocation_via_bun_x(tokens, _is_browser_use_invocation)
     if via is not None:
         return via
     if _is_python_launcher(name0):
@@ -1284,6 +1318,9 @@ def _is_playwright_invocation(tokens: List[str]) -> bool:
         rest = _corepack_command_tokens(tokens)
         return bool(rest) and _is_playwright_invocation(rest)
     via = _invocation_via_package_exec(tokens, _is_playwright_invocation)
+    if via is not None:
+        return via
+    via = _invocation_via_bun_x(tokens, _is_playwright_invocation)
     if via is not None:
         return via
     if name0 in _NPX_LAUNCHERS:
@@ -1378,6 +1415,9 @@ def _is_chrome_remote_interface_invocation(tokens: List[str]) -> bool:
     via = _invocation_via_package_exec(tokens, _is_chrome_remote_interface_invocation)
     if via is not None:
         return via
+    via = _invocation_via_bun_x(tokens, _is_chrome_remote_interface_invocation)
+    if via is not None:
+        return via
     if name0 in _NPX_LAUNCHERS:
         rest = _first_non_flag_tokens(tokens)
         return bool(rest) and _token_is_chrome_remote_interface(rest[0])
@@ -1404,6 +1444,9 @@ def _is_playwright_mcp_invocation(tokens: List[str]) -> bool:
         rest = _corepack_command_tokens(tokens)
         return bool(rest) and _is_playwright_mcp_invocation(rest)
     via = _invocation_via_package_exec(tokens, _is_playwright_mcp_invocation)
+    if via is not None:
+        return via
+    via = _invocation_via_bun_x(tokens, _is_playwright_mcp_invocation)
     if via is not None:
         return via
     if name0 in _NPX_LAUNCHERS:
@@ -1458,6 +1501,9 @@ def _is_chrome_devtools_mcp_invocation(tokens: List[str]) -> bool:
     via = _invocation_via_package_exec(tokens, _is_chrome_devtools_mcp_invocation)
     if via is not None:
         return via
+    via = _invocation_via_bun_x(tokens, _is_chrome_devtools_mcp_invocation)
+    if via is not None:
+        return via
     if name0 in _NPX_LAUNCHERS:
         rest = _first_non_flag_tokens(tokens)
         return bool(rest) and _token_is_chrome_devtools_mcp(rest[0])
@@ -1504,6 +1550,9 @@ def _is_lighthouse_invocation(tokens: List[str]) -> bool:
         rest = _corepack_command_tokens(tokens)
         return bool(rest) and _is_lighthouse_invocation(rest)
     via = _invocation_via_package_exec(tokens, _is_lighthouse_invocation)
+    if via is not None:
+        return via
+    via = _invocation_via_bun_x(tokens, _is_lighthouse_invocation)
     if via is not None:
         return via
     if name0 in _NPX_LAUNCHERS:

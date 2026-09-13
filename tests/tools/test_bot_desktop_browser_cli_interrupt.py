@@ -368,6 +368,19 @@ def test_agent_browser_invocation_is_token_match_not_substring():
         ["corepack", "npm", "install", "lighthouse"])
     assert not _is_lighthouse_invocation(
         ["/bin/bash", "-c", "corepack pnpm exec lighthouse --port 9333"])
+    assert _is_lighthouse_invocation(
+        ["bun", "x", "lighthouse", "--port", "9333", "https://example.com"])
+    assert _is_lighthouse_invocation(
+        ["bun", "--bun", "x", "lighthouse", "--port=9333"])
+    assert _is_chrome_devtools_mcp_invocation(
+        ["bun", "exec", "chrome-devtools-mcp",
+         "--browserUrl", "http://127.0.0.1:9333"])
+    assert not _is_lighthouse_invocation(["bun", "run", "lighthouse"])
+    assert not _is_lighthouse_invocation(["bun", "install", "lighthouse"])
+    assert not _is_lighthouse_invocation(["bun", "add", "lighthouse"])
+    assert not _is_lighthouse_invocation(["bun", "x", "ruff"])
+    assert not _is_lighthouse_invocation(
+        ["/bin/bash", "-c", "bun x lighthouse --port 9333"])
 
 
 def test_unregistered_cdp_dock_cli_killed_on_takeover():
@@ -930,6 +943,59 @@ def test_unregistered_package_exec_dock_cli_killed_on_takeover():
     assert run_script.killed == 0
     assert other.killed == 0
     assert install.killed == 0
+    assert bash_parent.killed == 0
+
+
+def test_unregistered_bun_x_dock_cli_killed_on_takeover():
+    """bun x / bun exec leftover writers missed bunx matching."""
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    bdb.remember_dock_cdp_port(9333)
+    leftover = _FakeProc(
+        9600,
+        ["bun", "x", "lighthouse",
+         "--port", "9333", "https://example.com"],
+    )
+    bun_flag = _FakeProc(
+        9601,
+        ["bun", "--bun", "x", "lighthouse",
+         "--port=9333", "https://example.com"],
+    )
+    bun_exec = _FakeProc(
+        9602,
+        ["bun", "exec", "chrome-devtools-mcp",
+         "--browserUrl", "http://127.0.0.1:9333"],
+    )
+    run_script = _FakeProc(9603, ["bun", "run", "lighthouse", "--port", "9333"])
+    install = _FakeProc(9604, ["bun", "install", "lighthouse"])
+    other = _FakeProc(
+        9605,
+        ["bun", "x", "lighthouse",
+         "--port", "9222", "https://example.com"],
+    )
+    ruff = _FakeProc(9606, ["bun", "x", "ruff"])
+    bash_parent = _FakeProc(
+        9607,
+        ["/bin/bash", "-c", "bun x lighthouse --port 9333 https://example.com"],
+    )
+    lease.acquire("human")
+    n = interrupt_unregistered_dock_cli(
+        processes=[
+            leftover, bun_flag, bun_exec, run_script, install, other, ruff,
+            bash_parent,
+        ],
+        chromium_pid=9999,
+        owner_daemon_pid=9998,
+    )
+    assert n == 3
+    assert leftover.killed == 1
+    assert bun_flag.killed == 1
+    assert bun_exec.killed == 1
+    assert run_script.killed == 0
+    assert install.killed == 0
+    assert other.killed == 0
+    assert ruff.killed == 0
     assert bash_parent.killed == 0
 
 
