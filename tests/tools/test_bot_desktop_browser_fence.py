@@ -561,3 +561,37 @@ def test_browser_console_does_not_return_errors_from_a_later_epoch(monkeypatch):
     assert "WHAT-THE-HUMAN-TYPED" not in text
     assert parsed.get("code") == "human_has_control"
     assert calls["n"] == 1, f"errors read ran after a completed takeover: {calls}"
+
+
+def test_browser_navigate_is_fenced_while_human_controls(monkeypatch):
+    commands: list = []
+    browser, _ = _wire(monkeypatch, commands)
+    lease.acquire("human-viewer")
+    result = json.loads(browser.browser_navigate("https://example.com", task_id="review"))
+    assert commands == [], f"human holds the lease, yet navigate dispatched: {commands}"
+    assert result.get("code") == "human_has_control"
+
+
+def test_browser_navigate_does_not_return_snapshot_from_a_later_epoch(monkeypatch):
+    """open + auto-snapshot are one ownership epoch; a hand-back must not attach the human's DOM."""
+    commands: list = []
+    browser, session = _wire(monkeypatch, commands)
+    monkeypatch.setattr(session, "_get_session_info", lambda *a, **k: {
+        "session_name": "review", "cdp_url": None, "features": {"local": True}, "_first_nav": False})
+    calls: list = []
+
+    def run_cmd(_task, command, args=None, **_k):
+        calls.append(command)
+        if command == "open":
+            lease.acquire("human-viewer")
+            lease.release("human-viewer")
+            return {"success": True, "data": {"url": "https://example.com/", "title": "Example"}}
+        return {"success": True, "data": {"snapshot": "WHAT-THE-HUMAN-TYPED", "refs": {"e1": {}}}}
+
+    monkeypatch.setattr(session, "_run_browser_command", run_cmd)
+    raw = browser.browser_navigate("https://example.com", task_id="review")
+    text = raw if isinstance(raw, str) else json.dumps(raw)
+    parsed = json.loads(text)
+    assert "WHAT-THE-HUMAN-TYPED" not in text
+    assert parsed.get("code") == "human_has_control"
+    assert "snapshot" not in calls, f"auto-snapshot ran after a completed takeover: {calls}"

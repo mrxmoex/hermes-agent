@@ -693,6 +693,12 @@ def _merge_fallback_warning(response: Dict[str, Any], result: Dict[str, Any]) ->
         _lp._copy_fallback_warning(response, result)
 
 
+def _lease_moved_json(admitted) -> Optional[str]:
+    """JSON refuse when the shared-browser epoch moved since ``admitted``."""
+    stole = _session._discard_if_lease_moved(admitted)
+    return _dumps(stole) if stole else None
+
+
 def _attach_auto_snapshot(response: Dict[str, Any], nav_session_key: str) -> None:
     """Add a compact snapshot to a navigate response so the model can act without browser_snapshot."""
     try:
@@ -730,22 +736,28 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
 
     session_info = _session._get_session_info(nav_session_key)
     is_first_nav = session_info.get("_first_nav", True)
+    admitted, refuse = _session._shared_browser_fence(nav_session_key)
+    if refuse:
+        return _dumps(refuse)
     if is_first_nav:
         session_info["_first_nav"] = False
         _maybe_start_recording(nav_session_key)
+        moved = _lease_moved_json(admitted)
+        if moved:
+            return moved
 
     result = _session._run_browser_command(nav_session_key, "open", [url],
                                   timeout=_get_open_command_timeout(first_open=is_first_nav))
     if not result.get("success"):
-        return _dumps(_err(result.get("error", "Navigation failed")))
+        return _dumps(_err(result.get("error", "Navigation failed"),
+                           **({"code": result["code"]} if result.get("code") else {})))
+    moved = _lease_moved_json(admitted)
+    if moved:
+        return moved
 
     data = result.get("data", {})
     title = data.get("title", "")
     final_url = data.get("url", url)
-    blocked = _post_redirect_block(nav_session_key, url, final_url, auto_local_this_nav)
-    if blocked is not None:
-        return blocked
-
     response = {"success": True, "url": final_url, "title": title}
     features = session_info.get("features") or {}
     if features.get("real_profile"):  # auditability: this ran on the user's real-profile copy-browser
@@ -755,7 +767,18 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     _last_active_session_key[effective_task_id] = nav_session_key
     _lp._copy_fallback_warning(response, result)
     _add_navigate_warnings(response, title, session_info if is_first_nav else None)
+    # Blank-on-SSRF and auto-snapshot remint unless they share this ticket.
+    if _session._discard_if_lease_moved(admitted):
+        return _dumps(response)
+    blocked = _post_redirect_block(nav_session_key, url, final_url, auto_local_this_nav)
+    if blocked is not None:
+        return blocked
+    if _session._discard_if_lease_moved(admitted):
+        return _dumps(response)
     _attach_auto_snapshot(response, nav_session_key)
+    moved = _lease_moved_json(admitted)
+    if moved:
+        return moved
     return _dumps(response)
 
 
