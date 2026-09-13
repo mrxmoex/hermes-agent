@@ -768,6 +768,95 @@ def test_browser_cdp_does_not_resolve_dock_endpoint_while_human_holds(monkeypatc
     assert "SECRET" not in json.dumps(out)
 
 
+def test_browser_cdp_does_not_send_to_dock_after_takeover_during_resolve(monkeypatch):
+    """Take over during /json/version must not then Target.attach / Runtime.evaluate."""
+    import tools.bot_desktop.browser as bdb
+    from tools.bot_desktop import lease
+    from tools import browser_cdp_tool as cdp
+
+    sent = []
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: 9333)
+    monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override_raw", lambda: "http://127.0.0.1:9333")
+
+    def _resolve():
+        lease.acquire("human-viewer")
+        return "ws://127.0.0.1:9333/devtools/browser/x"
+
+    monkeypatch.setattr(cdp, "_resolve_cdp_endpoint", _resolve)
+    monkeypatch.setattr(cdp, "_WS_AVAILABLE", True)
+    monkeypatch.setattr(cdp, "_browser_cdp_private_guard", lambda **k: None)
+    monkeypatch.setattr(cdp, "_run_async", lambda *_a, **_k: sent.append("send") or {"data": "SECRET"})
+    out = json.loads(cdp.browser_cdp("Runtime.evaluate", {"expression": "1"}))
+    assert out.get("code") == "human_has_control"
+    assert sent == []
+    assert "SECRET" not in json.dumps(out)
+
+
+def test_browser_cdp_other_chrome_still_sends_after_takeover_during_resolve(monkeypatch):
+    """A resolved unrelated Chrome is not muted because this profile's lease moved."""
+    import tools.bot_desktop.browser as bdb
+    from tools.bot_desktop import lease
+    from tools import browser_cdp_tool as cdp
+
+    sent = []
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: 9333)
+    monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override_raw", lambda: "http://127.0.0.1:9333")
+
+    def _resolve():
+        lease.acquire("human-viewer")
+        return "ws://127.0.0.1:9222/devtools/browser/x"
+
+    monkeypatch.setattr(cdp, "_resolve_cdp_endpoint", _resolve)
+    monkeypatch.setattr(cdp, "_WS_AVAILABLE", True)
+    monkeypatch.setattr(cdp, "_browser_cdp_private_guard", lambda **k: None)
+    monkeypatch.setattr(cdp, "_run_async", lambda *_a, **_k: sent.append("send") or {"data": "OTHER"})
+    out = json.loads(cdp.browser_cdp("Runtime.evaluate", {"expression": "1"}))
+    assert sent == ["send"]
+    # Start-of-call admit was the dock; discard after, but do not skip the other Chrome's send.
+    assert out.get("code") == "human_has_control"
+    assert "OTHER" not in json.dumps(out)
+
+
+def test_browser_cdp_ws_send_skips_after_takeover_during_connect(monkeypatch):
+    """ws.send must not run if Take over happens after connect, before the first CDP write."""
+    import tools.bot_desktop.browser as bdb
+    from tools.bot_desktop.lease import HumanHasControl
+    from tools.browser_tool_session import _admit_shared_browser
+    from tools import browser_cdp_tool as cdp
+
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: 9333)
+    endpoint = "ws://127.0.0.1:9333/devtools/browser/x"
+    admitted = _admit_shared_browser(cdp_url=endpoint)
+    assert admitted is not None
+
+    class FakeWS:
+        def __init__(self):
+            self.sent = []
+
+        async def __aenter__(self):
+            from tools.bot_desktop import lease as _lease
+            _lease.acquire("human-viewer")
+            return self
+
+        async def __aexit__(self, *_a):
+            return False
+
+        async def send(self, raw):
+            self.sent.append(raw)
+
+        async def recv(self):
+            raise AssertionError("recv should not run after a refused send")
+
+    fake = FakeWS()
+    monkeypatch.setattr(cdp, "websockets", type("WS", (), {"connect": staticmethod(lambda *_a, **_k: fake)})())
+    with pytest.raises(HumanHasControl):
+        cdp._run_async(cdp._cdp_call(
+            endpoint, "Runtime.evaluate", {"expression": "1"}, None, 5.0,
+            endpoint_admitted=admitted,
+        ))
+    assert fake.sent == []
+
+
 def test_remembered_dock_port_still_fences_when_devtools_file_is_gone(monkeypatch):
     """A live DevTools miss must not treat the port we already saw as another Chrome."""
     import tools.bot_desktop.browser as bdb

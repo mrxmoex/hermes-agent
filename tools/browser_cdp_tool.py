@@ -165,9 +165,17 @@ def _browser_cdp_private_guard(*, task_id: str, method: str, params: Dict[str, A
 
 
 async def _cdp_call(ws_url: str, method: str, params: Dict[str, Any], target_id: Optional[str],
-                    timeout: float) -> Dict[str, Any]:
+                    timeout: float, *, endpoint_admitted: Any = None) -> Dict[str, Any]:
     """Make a single CDP call. With ``target_id``, ``Target.attachToTarget(flatten=True)`` multiplexes a
-    page-level session over the browser-level WebSocket; without it ``method`` runs at browser level."""
+    page-level session over the browser-level WebSocket; without it ``method`` runs at browser level.
+
+    ``endpoint_admitted`` is the lease snapshot from admitting *this* WebSocket as
+    the Bot Desktop dock. A Take over after ``/json/version`` but before
+    ``ws.send`` must refuse — leftover supervisor ``_cdp`` already does this at
+    send time; the stateless ``browser_cdp`` path must too. When the resolved
+    endpoint is not the dock, leave this ``None`` so a hold on *this* profile
+    cannot mute an unrelated Chrome.
+    """
     assert websockets is not None  # guarded by _WS_AVAILABLE at call-site
     # max_size=None: CDP responses (e.g. DOM.getDocument) can be large; ping_interval=None: CDP
     # servers don't expect pings.
@@ -177,6 +185,14 @@ async def _cdp_call(ws_url: str, method: str, params: Dict[str, Any], target_id:
 
         async def _send(req: Dict[str, Any], what: str) -> Dict[str, Any]:
             nonlocal next_id
+            if endpoint_admitted is not None:
+                from tools.bot_desktop.lease import HumanHasControl
+                from tools.browser_tool_session import _lease_moved_result
+                moved = _lease_moved_result(endpoint_admitted)
+                if moved is not None:
+                    raise HumanHasControl(
+                        "Human has control of the Bot Screen; refusing leftover CDP I/O."
+                    )
             call_id, next_id = next_id, next_id + 1
             await ws.send(json.dumps({"id": call_id, **req}))
             deadline = asyncio.get_running_loop().time() + timeout
@@ -275,6 +291,23 @@ def _admit_bot_desktop_cdp(endpoint: str = "", task_id: Optional[str] = None):
         return None, json.dumps({"success": False, "error": str(e), "code": "human_has_control"})
 
 
+def _admit_resolved_cdp_endpoint(endpoint: str):
+    """Admit the resolved WebSocket only — not the task session.
+
+    A leftover/session admit at the start of ``browser_cdp`` can be the dock
+    while ``_resolve_cdp_endpoint`` returns another Chrome. Fencing that
+    other Chrome because *this* profile's lease moved would mute an
+    unrelated browser. Conversely, a Take over during ``/json/version``
+    must re-admit *this* endpoint before ``ws.send``.
+    """
+    from tools.bot_desktop.lease import HumanHasControl
+    from tools.browser_tool_session import _admit_shared_browser
+    try:
+        return _admit_shared_browser(cdp_url=endpoint), None
+    except HumanHasControl as e:
+        return None, json.dumps({"success": False, "error": str(e), "code": "human_has_control"})
+
+
 def _refuse_bot_desktop_cdp_while_human_holds(endpoint: str = "", task_id: Optional[str] = None) -> Optional[str]:
     """Raw CDP is an observation channel on the dock Chromium. Same lease as browser_*."""
     _admitted, refused = _admit_bot_desktop_cdp(endpoint, task_id=task_id)
@@ -317,6 +350,14 @@ def browser_cdp(method: str, params: Optional[Dict[str, Any]] = None, target_id:
         return tool_error(f"CDP endpoint is not a WebSocket URL: {endpoint!r}. Expected ws://... or wss://... — "
                           "the /browser connect resolver should have rewritten this. Check that a Chromium-family "
                           "browser is actually listening on the debug port.")
+    # Re-admit the *resolved* WebSocket. Discovery (`/json/version`) can
+    # outlive a Take over; leftover-only admit at the start of the call
+    # would still let Target.attachToTarget / Runtime.evaluate land on the
+    # dock after the human holds. Unrelated Chromes stay unfenced — this
+    # admit is None unless the endpoint is this profile's dock.
+    endpoint_admitted, refused = _admit_resolved_cdp_endpoint(endpoint)
+    if refused:
+        return refused
     call_params: Dict[str, Any] = params or {}
     if not isinstance(call_params, dict):
         return tool_error(f"'params' must be an object/dict, got {type(call_params).__name__}")
@@ -330,8 +371,14 @@ def browser_cdp(method: str, params: Optional[Dict[str, Any]] = None, target_id:
     except (TypeError, ValueError):
         safe_timeout = 30.0
     safe_timeout = max(1.0, min(safe_timeout, 300.0))
+    from tools.bot_desktop.lease import HumanHasControl
     try:
-        result = _run_async(_cdp_call(endpoint, method, call_params, target_id, safe_timeout))
+        result = _run_async(_cdp_call(
+            endpoint, method, call_params, target_id, safe_timeout,
+            endpoint_admitted=endpoint_admitted,
+        ))
+    except HumanHasControl as exc:
+        return json.dumps({"success": False, "error": str(exc), "code": "human_has_control"})
     except asyncio.TimeoutError as exc:
         return tool_error(f"CDP call timed out after {safe_timeout}s: {exc}", method=method)
     except (TimeoutError, RuntimeError) as exc:
@@ -349,6 +396,9 @@ def browser_cdp(method: str, params: Optional[Dict[str, Any]] = None, target_id:
     if target_id:
         payload["target_id"] = target_id
     from tools.browser_tool_session import _lease_moved_result
+    moved = _lease_moved_result(endpoint_admitted)
+    if moved:
+        return json.dumps(moved)
     moved = _lease_moved_result(admitted)
     if moved:
         return json.dumps(moved)
