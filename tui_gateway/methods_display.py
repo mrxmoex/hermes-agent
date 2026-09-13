@@ -111,16 +111,22 @@ def _(rid, params: dict) -> dict:
 # viewer ids minted per connection (keyed by the transport that asked), so a reconnecting pane can
 # keep its identity — and its lease — while nobody can claim an id minted for another connection.
 _minted_viewer_ids: "weakref.WeakKeyDictionary[object, set[str]]" = weakref.WeakKeyDictionary()
+# StdioTransport / other slotted peers cannot be weakly referenced. Key by
+# id(transport): those objects are process-long singletons (stdio) or live
+# as long as the connection (tests). A fresh empty set here used to remint
+# every observe and drop the lease on every reconnect.
+_minted_viewer_ids_by_id: dict[int, set[str]] = {}
 
 
 def _mint_viewer_id(requested: str) -> str:
     """Server-minted viewer identity. ``requested`` is honoured only when THIS connection minted it
     earlier; anything else (including a holder id read off display.status) gets a fresh id."""
     import secrets
+    transport = current_transport()
     try:
-        mine = _minted_viewer_ids.setdefault(current_transport(), set())
-    except TypeError:  # stdio / slotted transports cannot be weakly referenced: always mint
-        mine = set()
+        mine = _minted_viewer_ids.setdefault(transport, set())
+    except TypeError:
+        mine = _minted_viewer_ids_by_id.setdefault(id(transport), set())
     if requested in mine:
         return requested
     viewer_id = secrets.token_urlsafe(16)

@@ -145,6 +145,16 @@ def test_observe_mints_the_viewer_id_and_status_never_discloses_the_holder(monke
                                   "params": {"viewer_id": with_mine["viewer_id"]}}, other)["result"]
         assert stolen["viewer_id"] != with_mine["viewer_id"]
 
+        class _Slotted:
+            __slots__ = ()
+            def write(self, obj):
+                return True
+        slotted = _Slotted()
+        first = server.dispatch({"jsonrpc": "2.0", "id": 11, "method": "display.observe", "params": {}}, slotted)["result"]
+        kept = server.dispatch({"jsonrpc": "2.0", "id": 12, "method": "display.observe",
+                                "params": {"viewer_id": first["viewer_id"]}}, slotted)["result"]
+        assert kept["viewer_id"] == first["viewer_id"], "slotted transports must still reuse a minted id"
+
         _rpc(server, "display.status", {})  # installs the broadcast listener
         lease.acquire(holder)
         status = _rpc(server, "display.status", {})["result"]
