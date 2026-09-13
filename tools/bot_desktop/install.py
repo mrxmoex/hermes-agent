@@ -28,6 +28,8 @@ logger = logging.getLogger(__name__)
 
 _install_lock = threading.Lock()
 _running: set[str] = set()
+# After SIGKILL the drain is normally instant; this only guards a writer outside the group.
+_POST_KILL_DRAIN_S = 3.0
 
 
 class InstallBusy(RuntimeError):
@@ -85,6 +87,36 @@ def _sudo_nopasswd() -> bool:
         return False
 
 
+def _kill_install_tree(proc: subprocess.Popen) -> None:
+    """Kill sudo's process group, including root apt/dnf children.
+
+    ``os.killpg`` from unprivileged Hermes can take the sudo leader while a
+    root-owned package manager in the same group survives and keeps stdout
+    open. The ``for line in proc.stdout`` drain then never EOFs and the
+    profile install slot is never released. Ask sudo to SIGKILL the group
+    (``-n``: same cached timestamp / NOPASSWD the install itself used),
+    then close our read end so the drain cannot block on a surviving writer.
+    """
+    pgid = None
+    with contextlib.suppress(ProcessLookupError, OSError):
+        pgid = os.getpgid(proc.pid)
+    if pgid is not None:
+        with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+            os.killpg(pgid, signal.SIGKILL)  # windows-footgun: ok — Linux-only (is_supported_host)
+        with contextlib.suppress(Exception):
+            subprocess.run(
+                ["sudo", "-n", "kill", "-9", f"-{pgid}"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=3,
+                check=False,
+            )
+    if proc.stdout is not None:
+        with contextlib.suppress(OSError, ValueError):
+            proc.stdout.close()
+
+
 def _run(cmd: str, *, ask_password: Callable[[], str], on_line: Callable[[str], None],
          timeout_seconds: float) -> int:
     argv = shlex.split(cmd)
@@ -110,16 +142,26 @@ def _run(cmd: str, *, ask_password: Callable[[], str], on_line: Callable[[str], 
     except OSError:
         pass
     # The package manager runs in its own session (start_new_session); killing only sudo would leave apt/dnf
-    # running as root with the dpkg lock while the slot is released, so the whole group goes.
-    def _kill_group() -> None:
-        with contextlib.suppress(ProcessLookupError):
-            os.killpg(proc.pid, signal.SIGKILL)  # windows-footgun: ok — Linux-only (is_supported_host)
+    # running as root with the dpkg lock while the slot is released, so the whole group goes. Unprivileged
+    # killpg is not enough when the child is root — see :func:`_kill_install_tree`.
+    timed_out = threading.Event()
 
-    timer = threading.Timer(timeout_seconds, _kill_group)
+    def _on_timeout() -> None:
+        timed_out.set()
+        _kill_install_tree(proc)
+
+    timer = threading.Timer(timeout_seconds, _on_timeout)
     timer.start()
     try:
-        for line in proc.stdout:  # type: ignore[union-attr]
-            on_line(line.rstrip("\n"))
-        return proc.wait()
+        try:
+            for line in proc.stdout:  # type: ignore[union-attr]
+                on_line(line.rstrip("\n"))
+        except ValueError:
+            # Timeout closed stdout from the timer thread; the iterator is done.
+            pass
+        try:
+            return proc.wait(timeout=_POST_KILL_DRAIN_S if timed_out.is_set() else None)
+        except subprocess.TimeoutExpired:
+            return -1
     finally:
         timer.cancel()
