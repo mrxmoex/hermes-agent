@@ -51,8 +51,14 @@ def handle_handoff(action: str, args: Dict[str, Any]) -> str:
         return json.dumps({"ok": False, "action": action, "code": "no_takeover", "state": state,
                            "error": f"Nobody took over within {grace:.0f}s. Ask the user in chat to open Bots > Screen and "
                                     "click Take over, then call wait_for_human again."})
-    # Acquire landed in another process (Desktop / serve). Stop the WebM now.
+    # Acquire landed in another process (Desktop / serve). Stop the WebM now
+    # and drop leftover cua-driver I/O aimed at this screen.
     _stop_shared_browser_recordings()
+    try:
+        from tools.computer_use.tool import interrupt_reserved_backends
+        interrupt_reserved_backends()
+    except Exception:
+        pass
     released = _lease.wait_for_release(timeout=timeout)
     state = _lease.get().public_view()
     if released:
