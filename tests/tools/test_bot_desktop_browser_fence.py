@@ -1178,11 +1178,11 @@ def test_vault_eval_preserves_human_has_control_code(monkeypatch):
         type("R", (), {"get": staticmethod(lambda *_a: None)})(),
     )
     monkeypatch.setattr("tools.browser_tool._last_session_key", lambda key: key)
-        monkeypatch.setattr(session, "_run_browser_command", lambda *_a, **_k: {
-            "success": False, "code": "human_has_control",
-            "error": "A human has control of this bot's screen.",
-        })
-        result = vault._eval_js("review", "window.location.href")
+    monkeypatch.setattr(session, "_run_browser_command", lambda *_a, **_k: {
+        "success": False, "code": "human_has_control",
+        "error": "A human has control of this bot's screen.",
+    })
+    result = vault._eval_js("review", "window.location.href")
     assert result.get("code") == "human_has_control"
     assert result.get("success") is not True
 
@@ -1707,11 +1707,11 @@ def test_vault_secret_eval_preserves_handoff_when_cdp_url_probe_remints(monkeypa
         "tools.browser_supervisor.SUPERVISOR_REGISTRY",
         type("R", (), {"get": staticmethod(lambda *_a: None)})(),
     )
-        monkeypatch.setattr(session_mod, "_run_browser_command", lambda *a, **k: {
-            "success": False, "code": "human_has_control",
-            "error": "A human has control of this bot's screen.",
-        })
-        result = vault._eval_js_secret("review", "document.querySelector('input').value='s3cret-pw'")
+    monkeypatch.setattr(session_mod, "_run_browser_command", lambda *a, **k: {
+        "success": False, "code": "human_has_control",
+        "error": "A human has control of this bot's screen.",
+    })
+    result = vault._eval_js_secret("review", "document.querySelector('input').value='s3cret-pw'")
     assert result.get("code") == "human_has_control"
     assert result.get("success") is not True
     assert result.get("error_type") != "supervisor_required"
