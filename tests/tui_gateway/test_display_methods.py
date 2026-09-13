@@ -65,18 +65,81 @@ def test_thumbnail_is_suppressed_while_a_human_holds_the_lease(monkeypatch, _fre
     assert _call(server, "display.thumbnail", {})["result"]["data_url"].endswith("SECRET")
 
 
-def test_release_without_viewer_id_cannot_yank_another_viewers_lease(_fresh_lease):
-    """lease.release(None) skips the holder check, so a client that lost its viewer id (or a bare RPC)
-    must be refused unless it forces; a matching viewer id and force keep working."""
+def test_acquire_and_release_reject_viewer_ids_not_minted_on_this_connection(monkeypatch, tmp_path, _fresh_lease):
+    """A client cannot choose its viewer id for the lease: only ids returned by display.observe on
+    THIS connection may acquire or release."""
     import tui_gateway.server as server
+    from tools.bot_desktop import runtime
 
-    _fresh_lease.acquire("viewer-1")
-    refused = _call(server, "display.lease.release", {})
+    class _Peer:
+        def write(self, obj):
+            return True
+
+    mine, other = _Peer(), _Peer()
+    monkeypatch.setattr(runtime, "rfb_socket_path", lambda: tmp_path / "rfb.sock")
+    observed = server.dispatch({"jsonrpc": "2.0", "id": 1, "method": "display.observe", "params": {}}, mine)["result"]
+    minted = observed["viewer_id"]
+
+    refused_acquire = server.dispatch(
+        {"jsonrpc": "2.0", "id": 2, "method": "display.lease.acquire", "params": {"viewer_id": "client-chosen"}},
+        mine,
+    )
+    assert refused_acquire["error"]["data"]["code"] == "viewer_not_minted"
+    assert _fresh_lease.get().holder == _fresh_lease.AGENT
+
+    ok_acquire = server.dispatch(
+        {"jsonrpc": "2.0", "id": 3, "method": "display.lease.acquire", "params": {"viewer_id": minted}},
+        mine,
+    )["result"]
+    assert ok_acquire["lease"]["holder"] == _fresh_lease.HUMAN
+
+    stolen = server.dispatch(
+        {"jsonrpc": "2.0", "id": 4, "method": "display.lease.acquire", "params": {"viewer_id": minted}},
+        other,
+    )
+    assert stolen["error"]["data"]["code"] == "viewer_not_minted"
+    assert _fresh_lease.get().viewer_id == minted
+
+    refused_release = server.dispatch(
+        {"jsonrpc": "2.0", "id": 5, "method": "display.lease.release", "params": {"viewer_id": minted}},
+        other,
+    )
+    assert refused_release["error"]["data"]["code"] == "viewer_not_minted"
+    assert _fresh_lease.get().holder == _fresh_lease.HUMAN
+
+    server.dispatch(
+        {"jsonrpc": "2.0", "id": 6, "method": "display.lease.release", "params": {"viewer_id": minted}},
+        mine,
+    )
+    assert _fresh_lease.get().holder == _fresh_lease.AGENT
+
+
+def test_release_without_viewer_id_cannot_yank_another_viewers_lease(monkeypatch, tmp_path, _fresh_lease):
+    """lease.release(None) skips the holder check, so a client that lost its viewer id (or a bare RPC)
+    must be refused unless it forces; a matching minted viewer id and force keep working."""
+    import tui_gateway.server as server
+    from tools.bot_desktop import runtime
+
+    class _Peer:
+        def write(self, obj):
+            return True
+
+    peer = _Peer()
+    monkeypatch.setattr(runtime, "rfb_socket_path", lambda: tmp_path / "rfb.sock")
+    minted = server.dispatch({"jsonrpc": "2.0", "id": 1, "method": "display.observe", "params": {}}, peer)["result"]["viewer_id"]
+    _fresh_lease.acquire(minted)
+    refused = server.dispatch({"jsonrpc": "2.0", "id": 2, "method": "display.lease.release", "params": {}}, peer)
     assert refused["error"]["data"]["code"] == "viewer_mismatch"
     assert _fresh_lease.get().holder == _fresh_lease.HUMAN
-    assert _call(server, "display.lease.release", {"viewer_id": "viewer-1"})["result"]["lease"]["holder"] == _fresh_lease.AGENT
+    released = server.dispatch(
+        {"jsonrpc": "2.0", "id": 3, "method": "display.lease.release", "params": {"viewer_id": minted}}, peer,
+    )["result"]
+    assert released["lease"]["holder"] == _fresh_lease.AGENT
     _fresh_lease.acquire("viewer-2")
-    assert _call(server, "display.lease.release", {"force": True})["result"]["lease"]["holder"] == _fresh_lease.AGENT
+    forced = server.dispatch(
+        {"jsonrpc": "2.0", "id": 4, "method": "display.lease.release", "params": {"force": True}}, peer,
+    )["result"]
+    assert forced["lease"]["holder"] == _fresh_lease.AGENT
 
 def _rpc(server, method, params):
     return server.handle_request({"jsonrpc": "2.0", "id": 7, "method": method, "params": params})

@@ -113,19 +113,33 @@ def _(rid, params: dict) -> dict:
 _minted_viewer_ids: "weakref.WeakKeyDictionary[object, set[str]]" = weakref.WeakKeyDictionary()
 
 
+def _minted_ids_for_transport() -> set[str] | None:
+    """Viewer ids minted for the current connection, or ``None`` when the transport cannot be keyed."""
+    try:
+        return _minted_viewer_ids.setdefault(current_transport(), set())
+    except TypeError:  # stdio / slotted transports cannot be weakly referenced
+        return None
+
+
 def _mint_viewer_id(requested: str) -> str:
     """Server-minted viewer identity. ``requested`` is honoured only when THIS connection minted it
     earlier; anything else (including a holder id read off display.status) gets a fresh id."""
     import secrets
-    try:
-        mine = _minted_viewer_ids.setdefault(current_transport(), set())
-    except TypeError:  # stdio / slotted transports cannot be weakly referenced: always mint
-        mine = set()
+    mine = _minted_ids_for_transport()
+    if mine is None:
+        viewer_id = secrets.token_urlsafe(16)
+        return viewer_id
     if requested in mine:
         return requested
     viewer_id = secrets.token_urlsafe(16)
     mine.add(viewer_id)
     return viewer_id
+
+
+def _viewer_id_minted_for_caller(viewer_id: str) -> bool:
+    """True when ``viewer_id`` was minted on this connection (via ``display.observe``)."""
+    mine = _minted_ids_for_transport()
+    return mine is not None and viewer_id in mine
 
 
 @method("display.observe")
@@ -199,6 +213,9 @@ def _(rid, params: dict) -> dict:
     viewer_id = str(params.get("viewer_id") or "").strip()
     if not viewer_id:
         return _err(rid, _DISPLAY_ERR, "viewer_id required")
+    if not _viewer_id_minted_for_caller(viewer_id):
+        return _err(rid, _DISPLAY_ERR, "viewer_id not minted for this connection (call display.observe first)",
+                    data={"code": "viewer_not_minted"})
     lease = _bd_lease.acquire(viewer_id, reason=str(params.get("reason") or ""))
     return _ok(rid, {"lease": _lease_view(lease)})
 
@@ -213,6 +230,9 @@ def _(rid, params: dict) -> dict:
     if viewer_id is None and not params.get("force") and _bd_lease.human_holds():
         return _err(rid, _DISPLAY_ERR, "viewer_id required to release another viewer's lease (or pass force: true)",
                     data={"code": "viewer_mismatch"})
+    if viewer_id is not None and not _viewer_id_minted_for_caller(viewer_id):
+        return _err(rid, _DISPLAY_ERR, "viewer_id not minted for this connection (call display.observe first)",
+                    data={"code": "viewer_not_minted"})
     lease = _bd_lease.release(viewer_id)
     return _ok(rid, {"lease": _lease_view(lease)})
 

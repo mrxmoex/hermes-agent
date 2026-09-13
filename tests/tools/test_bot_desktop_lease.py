@@ -159,6 +159,27 @@ def test_unreadable_lease_file_fails_closed_and_takeover_keeps_the_agents_reason
     assert hermes_home_key(home)  # sanity: the key derivation used by the bridge is available
 
 
+def test_request_handoff_does_not_bump_epoch_so_in_flight_captures_are_not_discarded(monkeypatch):
+    """``request_handoff`` records intent for the UI but the agent still holds; bumping epoch there
+    would make an in-flight capture look like a human takeover and discard it."""
+    from tools.computer_use import tool
+
+    monkeypatch.setattr(tool, "_get_backend", lambda session_id="": object())
+    admitted_epoch = lease.get().epoch
+    lease.request_handoff("log in to the bank")
+    assert lease.get().epoch == admitted_epoch
+    assert lease.get().pending_handoff == "log in to the bank"
+
+    def _dispatch(backend, action, args, fence=lambda: None, **_):
+        lease.request_handoff("another ask during capture")
+        fence()
+        return json.dumps({"ok": True, "action": action, "png_b64": "FRAME"})
+
+    monkeypatch.setattr(tool, "_dispatch", _dispatch)
+    res = json.loads(tool.handle_computer_use({"action": "capture"}))
+    assert res.get("png_b64") == "FRAME" or "FRAME" in json.dumps(res)
+
+
 def test_lease_works_without_fcntl(tmp_path):
     """Windows and fcntl-less hosts: ``computer_use`` imports the lease (via handoff) on EVERY call, so a
     module-level fcntl dependency turns every desktop action into ModuleNotFoundError there. The file

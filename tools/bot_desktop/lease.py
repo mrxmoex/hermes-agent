@@ -141,13 +141,14 @@ def _notify(key: str, lease: Lease) -> None:
             pass
 
 
-def _transition(profile_key: Optional[str], mutate: Callable[[Lease], bool]) -> Lease:
+def _transition(profile_key: Optional[str], mutate: Callable[[Lease], bool], *, bump_epoch: bool = True) -> Lease:
     key, path = hermes_home_key(profile_key) if profile_key else hermes_home_key(), _path(profile_key)
     with _locked(path):
         lease = _read(path)
         if not mutate(lease):
             return lease
-        lease.epoch += 1
+        if bump_epoch:
+            lease.epoch += 1
         _write(path, lease)
     with _lock:
         _lock.notify_all()
@@ -185,11 +186,12 @@ def release(viewer_id: Optional[str] = None, *, profile_key: Optional[str] = Non
 
 def request_handoff(reason: str, *, profile_key: Optional[str] = None) -> Lease:
     """Agent asks a human to take over (login, 2FA, CAPTCHA, payment). Recorded so the UI can show
-    why and the bridge can page the user; control itself still flips only on ``acquire``."""
+    why and the bridge can page the user; control itself still flips only on ``acquire``. Does not
+    bump ``epoch``: the agent still holds, and an epoch bump would discard in-flight captures."""
     def _m(lease: Lease) -> bool:
         lease.pending_handoff = reason
         return True
-    return _transition(profile_key, _m)
+    return _transition(profile_key, _m, bump_epoch=False)
 
 
 def wait_for_release(*, timeout: float, profile_key: Optional[str] = None) -> bool:
