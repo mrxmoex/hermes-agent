@@ -2801,6 +2801,48 @@ def test_browser_cdp_stateless_scheme_less_surviving_copy_is_fenced(monkeypatch)
     assert result.get("code") == "human_has_control"
 
 
+def test_browser_cdp_stateless_unresolved_http_surviving_copy_is_fenced(monkeypatch):
+    """``/json/version`` miss leaves the HTTP cache URL; that is still this screen."""
+    token = _without_in_process_real_profile()
+    _live_real_profile_copy(monkeypatch)
+    ran: list = []
+    monkeypatch.setattr(browser_cdp_tool, "_resolve_cdp_endpoint", lambda: "http://127.0.0.1:9334")
+    monkeypatch.setattr(
+        browser_cdp_tool, "_run_async",
+        lambda *_a, **_k: ran.append("cdp") or {"secret": "WHAT-THE-HUMAN-TYPED"},
+    )
+    monkeypatch.setattr(browser_cdp_tool, "_browser_cdp_private_guard", lambda **_k: None)
+    lease.acquire("human-viewer")
+    try:
+        result = json.loads(browser_cdp_tool.browser_cdp(method="Target.getTargets", task_id="review"))
+    finally:
+        _restore_in_process_real_profile(token)
+    assert ran == [], f"human holds the lease, yet unresolved HTTP surviving copy CDP ran: {ran}"
+    assert result.get("code") == "human_has_control"
+    assert "WebSocket" not in json.dumps(result)
+
+
+def test_browser_cdp_stateless_scheme_less_foreign_is_not_fenced(monkeypatch):
+    """Scheme-less user Chrome on 9222 is still another browser."""
+    token = _without_in_process_real_profile()
+    _live_real_profile_copy(monkeypatch)
+    ran: list = []
+    monkeypatch.setattr(browser_cdp_tool, "_resolve_cdp_endpoint", lambda: "127.0.0.1:9222")
+    monkeypatch.setattr(
+        browser_cdp_tool, "_run_async",
+        lambda *_a, **_k: ran.append("cdp") or {"secret": "WHAT-THE-HUMAN-TYPED"},
+    )
+    monkeypatch.setattr(browser_cdp_tool, "_browser_cdp_private_guard", lambda **_k: None)
+    lease.acquire("human-viewer")
+    try:
+        result = json.loads(browser_cdp_tool.browser_cdp(method="Target.getTargets", task_id="review"))
+    finally:
+        _restore_in_process_real_profile(token)
+    assert result.get("code") != "human_has_control"
+    assert ran == []
+    assert "WebSocket" in result.get("error", "")
+
+
 def test_timeout_does_not_teardown_shared_browser_while_human_holds(monkeypatch, tmp_path):
     """In-flight timeout recovery is the same class as the janitor: no tree-kill."""
     from tools import browser_tool as browser

@@ -23,7 +23,11 @@ def _resolve_cdp_override(cdp_url: str) -> str:
     if "/devtools/browser/" in lowered:
         return raw
 
-    discovery_url = raw
+    # ``browser.cdp_url`` / ``BROWSER_CDP_URL`` are often stored as
+    # ``127.0.0.1:PORT``. Without a scheme, ``/json/version`` is not a URL
+    # and this function returned the raw host:port — ``browser_cdp`` then
+    # reminted leftover Chrome as a generic "not a WebSocket URL" error.
+    discovery_url = raw if "://" in raw else f"http://{raw}"
     if lowered.startswith(("ws://", "wss://")):
         if not (raw.count(":") == 2 and raw.rstrip("/").rsplit(":", 1)[-1].isdigit() and "/" not in raw.split(":", 2)[-1]):
             return raw

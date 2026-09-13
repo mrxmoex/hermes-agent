@@ -305,6 +305,13 @@ def browser_cdp(method: str, params: Optional[Dict[str, Any]] = None, target_id:
         return tool_error("No CDP endpoint is available. Run '/browser connect' to attach to a running Chrome, "
                           "Brave, Chromium, or Edge browser, or set 'browser.cdp_url' in config.yaml. The Camofox "
                           "backend is REST-only and does not expose CDP.", cdp_docs=CDP_DOCS_URL)
+    # Stateless CDP is usually another browser (user Chrome on 9222, cloud).
+    # Admit before the WS-shape check: leftover real-profile / dock Chrome is
+    # often still scheme-less ``127.0.0.1:PORT`` or HTTP after ``/json/version``
+    # misses. That used to remint as a generic "not a WebSocket URL" error.
+    admitted, refuse = _admit_bot_desktop_browser(_session_info_for_routed_cdp(endpoint))
+    if refuse:
+        return json.dumps(refuse)
     if not endpoint.startswith(("ws://", "wss://")):
         return tool_error(f"CDP endpoint is not a WebSocket URL: {endpoint!r}. Expected ws://... or wss://... — "
                           "the /browser connect resolver should have rewritten this. Check that a Chromium-family "
@@ -316,12 +323,6 @@ def browser_cdp(method: str, params: Optional[Dict[str, Any]] = None, target_id:
     blocked = _browser_cdp_private_guard(task_id=effective_task_id, method=method, params=call_params)
     if blocked:
         return blocked
-
-    # Stateless CDP is usually another browser (user Chrome on 9222, cloud).
-    # Fence when the endpoint IS this profile's live dock or real-profile Chrome.
-    admitted, refuse = _admit_bot_desktop_browser(_session_info_for_routed_cdp(endpoint))
-    if refuse:
-        return json.dumps(refuse)
 
     try:
         safe_timeout = float(timeout) if timeout else 30.0
