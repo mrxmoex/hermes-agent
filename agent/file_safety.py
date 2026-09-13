@@ -286,6 +286,33 @@ def raise_if_read_blocked(path: str) -> None:
         raise ValueError(blocked)
 
 
+# Directory names that are credential stores wherever they sit — not only
+# under HERMES_HOME. A copied ``bot-desktop/`` in a project repo is still
+# the live cookie jar / lease; ``git diff --no-index`` and ``@diff`` must
+# refuse it the same way dashboard / Electron git rails do.
+_SENSITIVE_TREE_DIR_NAMES = frozenset({"bot-desktop", "pairing", "mcp-tokens"})
+
+
+def is_sensitive_managed_path(path: str) -> bool:
+    """True when ``path`` is a credential / Bot Screen store.
+
+    Matches on directory name (any depth, symlink-resolved) plus the
+    HERMES_HOME-scoped ``get_read_block_error`` denylist. Fail-closed:
+    a path we cannot resolve is treated as sensitive so a dump rail
+    cannot open it.
+    """
+    try:
+        raw = Path(os.path.expanduser(str(path)))
+        if any(part.lower() in _SENSITIVE_TREE_DIR_NAMES for part in raw.parts):
+            return True
+        resolved = raw.resolve()
+        if any(part.lower() in _SENSITIVE_TREE_DIR_NAMES for part in resolved.parts):
+            return True
+        return get_read_block_error(str(resolved)) is not None
+    except Exception:
+        return True
+
+
 def _resolve_active_profile_name() -> str:
     """Active profile name from HERMES_HOME: ``~/.hermes`` -> ``"default"``,
     ``~/.hermes/profiles/X`` -> ``"X"``; ``"default"`` on any resolution failure."""

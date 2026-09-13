@@ -41,29 +41,51 @@ def _run(args: List[str], cwd: str, timeout: int = _GIT_TIMEOUT):
     return proc.returncode, proc.stdout
 
 
+def _is_sensitive_diff_path(cwd: str, rel: str) -> bool:
+    """True when ``rel`` is a credential / Bot Screen store and must not be dumped.
+
+    ``git diff --no-index /dev/null <file>`` prints the whole file. Same
+    always-on denylist as the dashboard git rail (finding 30) and
+    ``@file:`` (``agent.file_safety.is_sensitive_managed_path``). Fail-closed.
+    """
+    if not rel or not str(rel).strip():
+        return False
+    from agent.file_safety import is_sensitive_managed_path
+    if is_sensitive_managed_path(rel):
+        return True
+    try:
+        return is_sensitive_managed_path(str(os.path.join(cwd, rel)))
+    except (OSError, ValueError):
+        return True
+
+
 def _untracked_files(cwd: str) -> List[str]:
     code, out = _run(["ls-files", "--others", "--exclude-standard"], cwd)
-    return [line for line in out.splitlines() if line.strip()] if code == 0 else []
+    if code != 0:
+        return []
+    return [line for line in out.splitlines() if line.strip() and not _is_sensitive_diff_path(cwd, line)]
 
 
 def _untracked_diff(cwd: str, files: List[str]) -> str:
     """Render untracked files as new-file diffs via ``git diff --no-index``."""
     chunks: List[str] = []
-    for rel in files[:_MAX_UNTRACKED_FILES]:
+    safe = [rel for rel in files if not _is_sensitive_diff_path(cwd, rel)]
+    for rel in safe[:_MAX_UNTRACKED_FILES]:
         with suppress(subprocess.TimeoutExpired, OSError):
             # --no-index exits 1 when files differ — the success path, so the code is ignored.
             _, out = _run(["diff", "--no-index", "--", os.devnull, rel], cwd)
             if out.strip():
                 chunks.append(out.rstrip("\n"))
-    if len(files) > _MAX_UNTRACKED_FILES:
-        chunks.append(f"... ({len(files) - _MAX_UNTRACKED_FILES} more untracked files not shown)")
+    if len(safe) > _MAX_UNTRACKED_FILES:
+        chunks.append(f"... ({len(safe) - _MAX_UNTRACKED_FILES} more untracked files not shown)")
     return "\n".join(chunks)
 
 
 def collect_working_diff(cwd: str, mode: str = "working", paths: List[str] | None = None) -> Dict:
     """Collect a git diff of the working directory: ``{"success", "stat", "diff", "untracked", "empty"}``
     on success or ``{"success": False, "error": ...}`` when git is unavailable / not a repo. ``paths``
-    restricts the diff to pathspecs (passed verbatim); untracked files are then skipped."""
+    restricts the diff to pathspecs (sensitive Bot Screen / credential
+    targets are dropped); untracked files are then skipped."""
     if mode not in _MODE_ARGS:
         return {"success": False, "error": f"Unknown mode '{mode}'. Use: {', '.join(VALID_MODES)}"}
     if not shutil.which("git"):
@@ -76,10 +98,19 @@ def collect_working_diff(cwd: str, mode: str = "working", paths: List[str] | Non
         return {"success": False, "error": "Not a git repository."}
 
     base_args = _MODE_ARGS[mode]
-    pathspec = ["--", *paths] if paths else []
+    requested = [p for p in (paths or []) if p and not _is_sensitive_diff_path(cwd, p)]
+    if paths and not requested:
+        return {"success": True, "stat": "", "diff": "", "untracked": [], "empty": True}
+    pathspec = ["--", *requested] if requested else []
     try:
-        _, stat_out = _run([*base_args, "--stat", *pathspec], cwd)
-        _, diff_out = _run([*base_args, *pathspec], cwd, timeout=_GIT_TIMEOUT * 2)
+        _, name_out = _run([*base_args, "--name-only", *pathspec], cwd)
+        safe_names = [p for p in name_out.splitlines() if p.strip() and not _is_sensitive_diff_path(cwd, p)]
+        if not safe_names:
+            stat_out, diff_out = "", ""
+        else:
+            safe_spec = ["--", *safe_names]
+            _, stat_out = _run([*base_args, "--stat", *safe_spec], cwd)
+            _, diff_out = _run([*base_args, *safe_spec], cwd, timeout=_GIT_TIMEOUT * 2)
         untracked = _untracked_files(cwd) if mode in ("working", "all") and not paths else []
         untracked_diff = _untracked_diff(cwd, untracked) if untracked else ""
     except subprocess.TimeoutExpired:

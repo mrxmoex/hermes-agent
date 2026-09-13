@@ -315,6 +315,25 @@ def test_bot_desktop_outside_home_not_blocked(fake_home, tmp_path):
     assert get_read_block_error(str(project)) is None
 
 
+def test_is_sensitive_managed_path_flags_copied_bot_desktop(fake_home, tmp_path):
+    """Git dump rails refuse a copied jar by directory name, even off HERMES_HOME.
+
+    ``get_read_block_error`` stays HERMES_HOME-scoped (a project folder
+    named bot-desktop is not the screen). ``is_sensitive_managed_path``
+    is the wider net ``/diff`` and ``@diff`` share with dashboard git.
+    """
+    from agent.file_safety import is_sensitive_managed_path
+
+    project = tmp_path / "myproject" / "bot-desktop" / "lease.json"
+    project.parent.mkdir(parents=True)
+    project.write_text("LIVE-JAR\n", encoding="utf-8")
+    assert is_sensitive_managed_path(str(project)) is True
+    assert is_sensitive_managed_path(str(tmp_path / "myproject" / "notes.md")) is False
+    alias = tmp_path / "myproject" / "alias.json"
+    alias.symlink_to(project)
+    assert is_sensitive_managed_path(str(alias)) is True
+
+
 def test_profile_mode_blocks_root_and_profile_bot_desktop(tmp_path, monkeypatch):
     """Named-profile turns must still miss the launch home's cookie jar."""
     import agent.file_safety as fs
