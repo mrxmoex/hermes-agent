@@ -46,8 +46,8 @@ def _home_scope(home: Optional[str]):
 def _supervisor_home(supervisor, task_id: Optional[str] = None) -> Optional[str]:
     """Profile that minted this leftover supervisor, else the session owner, else None."""
     home = getattr(supervisor, "hermes_home", None)
-    if home:
-        return str(home)
+    if isinstance(home, str) and home:
+        return home
     if not task_id:
         task_id = getattr(supervisor, "task_id", None)
     if not task_id:
