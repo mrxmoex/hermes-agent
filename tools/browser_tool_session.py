@@ -977,6 +977,14 @@ _ENV_LAUNCHERS = frozenset({"env"})
 _AGENT_BROWSER_NODE_ENTRYPOINTS = frozenset({
     "agent-browser", "cli.js", "cli.mjs", "cli.cjs", "index.js",
 })
+_PLAYWRIGHT_NODE_ENTRYPOINTS = frozenset({
+    "playwright", "cli.js", "cli.mjs", "cli.cjs",
+})
+_PLAYWRIGHT_CDP_ENV = (
+    "PW_TEST_CONNECT_WS_ENDPOINT",
+    "PLAYWRIGHT_WS_ENDPOINT",
+    "BROWSER_CDP_URL",
+)
 
 
 def _token_basename_is(token: str, name: str) -> bool:
@@ -1133,17 +1141,69 @@ def _is_browser_use_invocation(tokens: List[str]) -> bool:
     return False
 
 
+def _token_is_playwright_script(token: str) -> bool:
+    """True when this token is the Playwright CLI or its Node entry.
+
+    ``…/playwright/cli.js`` is an invocation. ``…/@playwright/mcp/cli.js``
+    is not — Path parts are ``@playwright`` + ``mcp``, not ``playwright``.
+    ``npx playwright install`` is an invocation but stays unknown without
+    a CDP aim (not leftover action).
+    """
+    if _token_basename_is(token, "playwright"):
+        return True
+    raw = (token or "").strip().strip("\"'")
+    if not raw:
+        return False
+    path = Path(raw)
+    parts = [p.lower() for p in path.parts]
+    if "playwright" not in parts:
+        return False
+    return path.name.lower() in _PLAYWRIGHT_NODE_ENTRYPOINTS
+
+
+def _is_playwright_invocation(tokens: List[str]) -> bool:
+    """True when argv launches the Playwright CLI (binary, npx, shebang node).
+
+    Token-match only. ``npx playwright install`` is an invocation; it is
+    not dock-aimed unless ``--cdp-endpoint`` / ``PW_TEST_CONNECT_*`` pin
+    this jar. Do not match ``@playwright/mcp`` by substring.
+    """
+    if not tokens:
+        return False
+    if _token_basename_is(tokens[0], "playwright"):
+        return True
+    name0 = _launcher_basename(tokens[0])
+    if name0 in _ENV_LAUNCHERS:
+        return _is_playwright_invocation(_env_command_tokens(tokens))
+    if name0 in _NPX_LAUNCHERS:
+        rest = _first_non_flag_tokens(tokens)
+        return bool(rest) and _token_basename_is(rest[0], "playwright")
+    if name0 in _NODE_LAUNCHERS:
+        return any(_token_is_playwright_script(t) for t in _first_non_flag_tokens(tokens))
+    if _is_python_launcher(name0):
+        rest = _first_non_flag_tokens(tokens)
+        return bool(rest) and _token_basename_is(rest[0], "playwright")
+    return False
+
+
 def _is_unregistered_dock_cli_invocation(tokens: List[str]) -> bool:
-    return _is_agent_browser_invocation(tokens) or _is_browser_use_invocation(tokens)
+    return (
+        _is_agent_browser_invocation(tokens)
+        or _is_browser_use_invocation(tokens)
+        or _is_playwright_invocation(tokens)
+    )
 
 
 def _cdp_arg_from_argv(tokens: List[str]) -> Optional[str]:
-    """``--cdp VALUE`` / ``--cdp=VALUE``, or None. Does not guess ``--session``."""
+    """``--cdp`` / ``--cdp-endpoint`` value, or None. Does not guess ``--session``."""
+    keys = ("--cdp-endpoint", "--cdp")
     for i, tok in enumerate(tokens):
-        if tok == "--cdp" and i + 1 < len(tokens):
-            return str(tokens[i + 1])
-        if isinstance(tok, str) and tok.startswith("--cdp="):
-            return tok.split("=", 1)[1]
+        raw = str(tok) if tok is not None else ""
+        for key in keys:
+            if raw == key and i + 1 < len(tokens):
+                return str(tokens[i + 1])
+            if raw.startswith(key + "="):
+                return raw.split("=", 1)[1]
     return None
 
 
@@ -1173,6 +1233,19 @@ def _unregistered_cli_aims_at_dock(
             port = _loopback_cdp_port(val)
             return dock_port is not None and port == dock_port
         return False
+    if _is_playwright_invocation(tokens) and not _is_agent_browser_invocation(tokens):
+        cdp = _cdp_arg_from_argv(tokens)
+        if not cdp:
+            for key in _PLAYWRIGHT_CDP_ENV:
+                cdp = (env.get(key) or "").strip()
+                if cdp:
+                    break
+        if not cdp:
+            return False
+        if _cdp_url_is_bot_desktop_browser(cdp):
+            return True
+        port = _loopback_cdp_port(cdp)
+        return dock_port is not None and port == dock_port
     cdp = _cdp_arg_from_argv(tokens)
     if cdp:
         if _cdp_url_is_bot_desktop_browser(cdp):
@@ -1242,7 +1315,7 @@ def interrupt_unregistered_dock_cli(
 
     Finding 42 only tracks Hermes-spawned CLIs (``_spawn_and_collect`` /
     ``browser_exec``). ``terminal()`` ``agent-browser`` / ``npx agent-browser``
-    and ``browser-use`` / ``uvx browser-use`` never enter
+    and ``browser-use`` / ``uvx browser-use`` / ``npx playwright`` never enter
     ``_inflight_dock_cli``, so Take over would wait those writers out —
     leftover *action* in the field the human is typing into, the same
     class as leftover ``ws.send``. After Linux shebang the writer is

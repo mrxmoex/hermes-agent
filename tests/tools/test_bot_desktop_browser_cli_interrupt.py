@@ -276,6 +276,16 @@ def test_agent_browser_invocation_is_token_match_not_substring():
         ["python3", "/home/x/.hermes/bin/browser-use", "exec"])
     assert not _is_browser_use_invocation(["/usr/bin/cat", "browser-use.log"])
     assert not _is_browser_use_invocation(["uvx", "ruff", "check"])
+    from tools.browser_tool_session import _is_playwright_invocation
+    assert _is_playwright_invocation(["playwright", "codegen"])
+    assert _is_playwright_invocation(["npx", "--yes", "playwright", "install"])
+    assert _is_playwright_invocation(
+        ["node", "/home/x/node_modules/playwright/cli.js", "codegen"])
+    assert not _is_playwright_invocation(
+        ["node", "/home/x/node_modules/@playwright/mcp/cli.js"])
+    assert not _is_playwright_invocation(["/usr/bin/cat", "playwright.log"])
+    assert not _is_playwright_invocation(
+        ["/bin/bash", "-c", "npx playwright codegen --cdp-endpoint http://127.0.0.1:9333"])
 
 
 def test_unregistered_cdp_dock_cli_killed_on_takeover():
@@ -563,6 +573,56 @@ def test_unregistered_browser_use_dock_env_killed_on_takeover():
     assert other.killed == 0
     assert unknown.killed == 0
     assert lan.killed == 0
+
+
+def test_unregistered_playwright_dock_cdp_killed_on_takeover():
+    """terminal() npx playwright --cdp-endpoint / PW_TEST_CONNECT_* is leftover action."""
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    bdb.remember_dock_cdp_port(9333)
+    leftover = _FakeProc(
+        8900,
+        ["npx", "playwright", "codegen", "--cdp-endpoint", "http://127.0.0.1:9333"],
+    )
+    via_env = _FakeProc(
+        8901,
+        ["playwright", "open", "https://example.com"],
+        {"PW_TEST_CONNECT_WS_ENDPOINT": "ws://127.0.0.1:9333/devtools/browser/x"},
+    )
+    shebang = _FakeProc(
+        8902,
+        ["node", "/home/x/node_modules/playwright/cli.js",
+         "--cdp-endpoint=http://127.0.0.1:9333", "codegen"],
+    )
+    install = _FakeProc(8903, ["npx", "playwright", "install"])
+    other = _FakeProc(
+        8904,
+        ["npx", "playwright", "codegen", "--cdp-endpoint", "http://127.0.0.1:9222"],
+    )
+    mcp = _FakeProc(
+        8905,
+        ["node", "/home/x/node_modules/@playwright/mcp/cli.js",
+         "--cdp-endpoint", "http://127.0.0.1:9333"],
+    )
+    bash_parent = _FakeProc(
+        8906,
+        ["/bin/bash", "-c", "npx playwright codegen --cdp-endpoint http://127.0.0.1:9333"],
+    )
+    lease.acquire("human")
+    n = interrupt_unregistered_dock_cli(
+        processes=[leftover, via_env, shebang, install, other, mcp, bash_parent],
+        chromium_pid=9999,
+        owner_daemon_pid=9998,
+    )
+    assert n == 3
+    assert leftover.killed == 1
+    assert via_env.killed == 1
+    assert shebang.killed == 1
+    assert install.killed == 0
+    assert other.killed == 0
+    assert mcp.killed == 0
+    assert bash_parent.killed == 0
 
 
 def test_stop_reserved_calls_unregistered_interrupt(monkeypatch):
