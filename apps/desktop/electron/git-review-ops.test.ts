@@ -6,7 +6,18 @@ import path from 'node:path'
 
 import { afterEach, test } from 'vitest'
 
-import { gitFor, repoStatus, resolveRenamePath, REVIEW_FILE_CAP, reviewList } from './git-review-ops'
+import {
+  fileDiffVsHead,
+  gitFor,
+  isSensitiveGitTarget,
+  repoStatus,
+  resolveRenamePath,
+  REVIEW_FILE_CAP,
+  reviewDiff,
+  reviewList,
+  reviewRevert,
+  reviewStage
+} from './git-review-ops'
 
 const tempDirs: string[] = []
 
@@ -116,4 +127,72 @@ test('reviewList caps the file payload returned to the renderer', async () => {
   const result = await reviewList(dir, 'uncommitted', null, 'git')
 
   assert.equal(result.files.length, REVIEW_FILE_CAP)
+})
+
+function makeRepoWithBotDesktop() {
+  const dir = makeRepo()
+  const jar = path.join(dir, 'bot-desktop')
+
+  fs.mkdirSync(path.join(jar, 'browser-profile', 'Default'), { recursive: true })
+  fs.writeFileSync(path.join(jar, 'lease.json'), '{"holder":"human","viewer_id":"SECRET-VIEWER"}\n')
+  fs.writeFileSync(path.join(dir, 'notes.md'), 'ok\n')
+
+  return dir
+}
+
+test('isSensitiveGitTarget flags bot-desktop and resolved aliases', () => {
+  const dir = makeRepoWithBotDesktop()
+
+  assert.equal(isSensitiveGitTarget(dir, 'bot-desktop/lease.json'), true)
+  assert.equal(isSensitiveGitTarget(dir, 'bot-desktop/'), true)
+  assert.equal(isSensitiveGitTarget(dir, 'notes.md'), false)
+  fs.symlinkSync(path.join(dir, 'bot-desktop', 'lease.json'), path.join(dir, 'alias.json'))
+  assert.equal(isSensitiveGitTarget(dir, 'alias.json'), true)
+})
+
+test('reviewDiff does not dump an untracked Bot Screen lease', async () => {
+  const dir = makeRepoWithBotDesktop()
+  const leaked = await reviewDiff(dir, 'bot-desktop/lease.json', 'uncommitted', null, false, 'git')
+
+  assert.equal(leaked, '')
+  const ordinary = await reviewDiff(dir, 'notes.md', 'uncommitted', null, false, 'git')
+
+  assert.match(ordinary, /ok/)
+  assert.doesNotMatch(ordinary, /SECRET-VIEWER/)
+})
+
+test('fileDiffVsHead refuses the cookie jar', async () => {
+  const dir = makeRepoWithBotDesktop()
+
+  assert.equal(await fileDiffVsHead(dir, 'bot-desktop/lease.json', 'git'), '')
+})
+
+test('reviewList and repoStatus hide bot-desktop', async () => {
+  const dir = makeRepoWithBotDesktop()
+  const listed = await reviewList(dir, 'uncommitted', null, 'git')
+
+  assert.deepEqual(
+    listed.files.map(file => file.path),
+    ['notes.md']
+  )
+  const status = await repoStatus(dir, 'git')
+
+  assert.ok(status)
+  assert.deepEqual(
+    status.files.map(file => file.path),
+    ['notes.md']
+  )
+})
+
+test('reviewStage and reviewRevert refuse bot-desktop and do not add -A the jar', async () => {
+  const dir = makeRepoWithBotDesktop()
+
+  await assert.rejects(() => reviewStage(dir, 'bot-desktop/lease.json', 'git'), /sensitive/)
+  await assert.rejects(() => reviewRevert(dir, 'bot-desktop/lease.json', 'git'), /sensitive/)
+  await reviewStage(dir, null, 'git')
+  const staged = execFileSync('git', ['diff', '--cached', '--name-only'], { cwd: dir, encoding: 'utf8' })
+
+  assert.match(staged, /notes.md/)
+  assert.doesNotMatch(staged, /bot-desktop/)
+  assert.match(fs.readFileSync(path.join(dir, 'bot-desktop', 'lease.json'), 'utf8'), /SECRET-VIEWER/)
 })
