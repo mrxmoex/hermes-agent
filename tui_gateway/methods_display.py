@@ -108,21 +108,25 @@ def _(rid, params: dict) -> dict:
         return _err(rid, _DISPLAY_ERR, str(e))
 
 
-# viewer ids minted per connection (keyed by the transport that asked), so a reconnecting pane can
-# keep its identity — and its lease — while nobody can claim an id minted for another connection.
-_minted_viewer_ids: "weakref.WeakKeyDictionary[object, set[str]]" = weakref.WeakKeyDictionary()
+# viewer ids minted per (connection, profile). A reconnecting pane keeps its identity on
+# the same transport, but a multiplexed client must not take over bot B with an id
+# observe minted for bot A on the same socket.
+_minted_viewer_ids: "weakref.WeakKeyDictionary[object, dict[str, set[str]]]" = weakref.WeakKeyDictionary()
 # Transports that cannot be weak-referenced (stdio / slotted / handle_request with no
 # transport) still need a durable bucket: otherwise observe returns an id that acquire
 # cannot recognise, and Take over from those callers would always fail closed.
-_minted_fallback: dict[int, set[str]] = {}
+_minted_fallback: dict[int, dict[str, set[str]]] = {}
 
 
 def _caller_minted_ids() -> set[str]:
+    # get_hermes_home is on server.py; _profile_scoped has already bound the requested profile.
+    profile = str(get_hermes_home())
     transport = current_transport()
     try:
-        return _minted_viewer_ids.setdefault(transport, set())
+        by_profile = _minted_viewer_ids.setdefault(transport, {})
     except TypeError:
-        return _minted_fallback.setdefault(id(transport) if transport is not None else 0, set())
+        by_profile = _minted_fallback.setdefault(id(transport) if transport is not None else 0, {})
+    return by_profile.setdefault(profile, set())
 
 
 def _viewer_id_is_minted(viewer_id: str) -> bool:
@@ -238,6 +242,11 @@ def _(rid, params: dict) -> dict:
     if viewer_id is None and not params.get("force") and _bd_lease.human_holds():
         return _err(rid, _DISPLAY_ERR, "viewer_id required to release another viewer's lease (or pass force: true)",
                     data={"code": "viewer_mismatch"})
+    # Same mint gate as acquire: a stolen or cross-profile id must not yank the holder.
+    # force remains the documented recovery when this window no longer has a minted id.
+    if viewer_id is not None and not params.get("force") and not _viewer_id_is_minted(viewer_id):
+        return _err(rid, _DISPLAY_ERR, "viewer_id is not valid for this connection",
+                    data={"code": "viewer_unminted"})
     lease = _bd_lease.release(viewer_id)
     return _ok(rid, {"lease": _lease_view(lease)})
 

@@ -133,6 +133,23 @@ def test_takeover_handback_during_approval_does_not_start_the_device_op(monkeypa
     assert res.get("code") == "human_has_control"
 
 
+def test_lease_file_is_owner_only_on_posix():
+    """The on-disk id is a capability (release still accepts it in-process). The RFB
+    socket is 0600; the lease file must not be the looser 0644 umask default."""
+    import os
+    import stat
+
+    from hermes_constants import get_hermes_home
+
+    lease.acquire("secret-viewer")
+    path = get_hermes_home() / "bot-desktop" / "lease.json"
+    assert path.is_file()
+    if os.name != "posix":
+        return
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
+
+
 def test_public_view_replaces_the_raw_viewer_id_with_a_hash():
     """RPC, tool results and CLI JSON must share one redaction: the raw id is a capability."""
     import hashlib

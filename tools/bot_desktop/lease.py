@@ -105,9 +105,23 @@ def _read(path: Path) -> Lease:
 
 def _write(path: Path, lease: Lease) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        path.parent.chmod(0o700)
+    except OSError:
+        pass
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(lease.as_dict()), encoding="utf-8")
+    try:
+        os.chmod(tmp, 0o600)
+    except OSError:
+        pass
     os.replace(tmp, path)
+    # replace keeps an existing dest's mode; a file created under a loose umask
+    # must not stay group/world readable — the raw viewer_id is a capability.
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
 
 
 class _locked:
