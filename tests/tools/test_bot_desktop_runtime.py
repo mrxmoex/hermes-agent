@@ -46,6 +46,40 @@ def test_recycled_pid_is_not_our_launcher(tmp_path, monkeypatch):
     assert runtime._launcher_pid() == os.getpid()
 
 
+def test_alloc_lock_path_is_not_in_world_writable_tmp(tmp_path):
+    """A predictable lock in /tmp is a cross-user DoS: anyone can pre-create
+    or flock it and stall every profile's display allocation."""
+    runtime_dir = tmp_path / "run"
+    home = tmp_path / "home"
+    assert runtime._alloc_lock_path(xdg_runtime_dir=str(runtime_dir)) == (
+        runtime_dir / "hermes-bot-desktop-alloc.lock"
+    )
+    fallback = runtime._alloc_lock_path(xdg_runtime_dir="", home=home)
+    assert fallback == home / ".cache" / "hermes-bot-desktop-alloc.lock"
+    # The historical squat target. An empty XDG_RUNTIME_DIR must not revive it.
+    assert fallback != Path("/tmp/.hermes-bot-desktop-alloc.lock")
+    assert fallback.parent != Path("/tmp")
+
+
+def test_allocate_display_creates_a_private_alloc_lock_parent(tmp_path, monkeypatch):
+    """XDG_RUNTIME_DIR / ~/.cache may not exist yet; open() on the lock
+    would fail, and a 0777 parent would let another uid squat the file."""
+    import os
+
+    monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path / "bd")
+    (tmp_path / "bd").mkdir()
+    lock_parent = tmp_path / "runtime-dir"
+    monkeypatch.setattr(runtime, "_ALLOC_LOCK", lock_parent / "hermes-bot-desktop-alloc.lock")
+    monkeypatch.setattr(runtime, "_display_in_use", lambda num: False)
+    old = os.umask(0)
+    try:
+        assert runtime._allocate_display() == runtime._DISPLAY_MIN
+    finally:
+        os.umask(old)
+    assert lock_parent.is_dir()
+    assert lock_parent.stat().st_mode & 0o777 == 0o700
+
+
 def test_recorded_display_held_by_a_live_server_is_not_reused(tmp_path, monkeypatch):
     """After profile A stops, B may take A's number; A restarting must pick another rather than
     unlink B's socket and lock."""

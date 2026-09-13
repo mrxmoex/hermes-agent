@@ -58,6 +58,48 @@ def test_dock_lists_only_programs_present_on_path(tmp_path):
     assert execs == [f"{chrome} --user-data-dir={tmp_path}/bp", "xfce4-terminal"]
 
 
+def test_xauth_cookie_is_not_passed_on_argv(tmp_path):
+    """The MIT-MAGIC-COOKIE-1 used to be the last xauth argv token. Every
+    local user can read that via ps; the cookie belongs on stdin."""
+    import re
+
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    argv_log = tmp_path / "xauth-argv"
+    stdin_log = tmp_path / "xauth-stdin"
+    (bindir / "xauth").write_text(
+        f'#!/bin/sh\nprintf "%s\\n" "$@" > "{argv_log}"\ncat > "{stdin_log}"\n',
+        encoding="utf-8",
+    )
+    (bindir / "xauth").chmod(0o755)
+    for tool in ("mkdir", "sed", "cat", "printf", "dirname", "bash", "sh", "rm",
+                 "ln", "touch", "chmod", "od", "tr", "awk"):
+        real = shutil.which(tool)
+        if real and not (bindir / tool).exists():
+            (bindir / tool).symlink_to(real)
+    env = {
+        "PATH": str(bindir),
+        "HOME": str(tmp_path),
+        "HERMES_BD_PROFILE": "t", "HERMES_BD_DISPLAY_NUM": "99",
+        "HERMES_BD_SOCKET": str(tmp_path / "rfb.sock"),
+        "HERMES_BD_XAUTH": str(tmp_path / "Xauthority"),
+        "HERMES_BD_ENV_FILE": str(tmp_path / "env"),
+        "HERMES_BD_CONFIG_HOME": str(tmp_path / "xdg"),
+        "HERMES_BD_SEED_ONLY": "1",
+    }
+    subprocess.run(
+        ["bash", str(LAUNCHER)], env=env, check=True,
+        stdin=subprocess.DEVNULL, capture_output=True, timeout=30,
+    )
+    argv = argv_log.read_text(encoding="utf-8")
+    stdin = stdin_log.read_text(encoding="utf-8")
+    assert "source" in argv.split()
+    assert "MIT-MAGIC-COOKIE-1" not in argv
+    assert not re.search(r"\b[0-9a-fA-F]{32}\b", argv)
+    assert "MIT-MAGIC-COOKIE-1" in stdin
+    assert re.search(r"\b[0-9a-fA-F]{32}\b", stdin)
+
+
 def test_dock_browser_exec_keeps_a_profile_dir_that_contains_spaces(tmp_path):
     """BIN+PROFILE must become one Exec= argv even when the profile path has spaces;
     otherwise takeover opens a truncated user-data-dir and a different cookie jar."""

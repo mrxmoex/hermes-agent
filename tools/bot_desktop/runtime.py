@@ -230,7 +230,24 @@ def _kill_group_then_wait(pgid: Optional[int], pid: int, grace: float = 2.0) -> 
     _signal(signal.SIGKILL)  # windows-footgun: ok — Linux-only runtime (is_supported_host gates start/stop)
 
 
-_ALLOC_LOCK = Path("/tmp/.hermes-bot-desktop-alloc.lock")  # host-wide: profiles allocate from one band
+def _alloc_lock_path(xdg_runtime_dir: Optional[str] = None, home: Optional[Path] = None) -> Path:
+    """Host-wide display-allocation lock. Never in world-writable ``/tmp``: a
+    predictable name there lets another local user pre-create or squat the
+    file and stall every profile's ``start()``."""
+    if xdg_runtime_dir is None:
+        xdg_runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
+    if xdg_runtime_dir:
+        return Path(xdg_runtime_dir) / "hermes-bot-desktop-alloc.lock"
+    return (home or Path.home()) / ".cache" / "hermes-bot-desktop-alloc.lock"
+
+
+_ALLOC_LOCK = _alloc_lock_path()
+
+
+def _prepare_alloc_lock(path: Optional[Path] = None) -> Path:
+    lock = path if path is not None else _ALLOC_LOCK
+    lock.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    return lock
 
 
 @contextlib.contextmanager
@@ -257,6 +274,7 @@ def _pick_display() -> int:
 
 
 def _allocate_display() -> int:
+    _prepare_alloc_lock()
     with _flocked(_ALLOC_LOCK):
         return _pick_display()
 
@@ -372,6 +390,7 @@ def start(*, wait_seconds: float = 15.0) -> DesktopStatus:
             return status()
         if _launcher_pid() is None:
             _reap_orphaned_server(sd)
+        _prepare_alloc_lock()
         with _flocked(_ALLOC_LOCK):
             return _spawn_and_wait(sd, _pick_display(), wait_seconds)
 
