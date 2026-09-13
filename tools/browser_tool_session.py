@@ -866,13 +866,16 @@ def _shares_bot_desktop_browser(session_info: Dict[str, Any]) -> bool:
 
 
 def _cdp_loopback_port(url: str) -> Optional[int]:
-    """DevTools port when ``url`` is loopback HTTP/WS, else ``None``."""
-    if not isinstance(url, str) or not url:
-        return None
-    parsed = urlparse(url)
-    if parsed.hostname not in ("127.0.0.1", "localhost", "::1"):
-        return None
-    return parsed.port
+    """DevTools port when ``url`` is loopback HTTP/WS, else ``None``.
+
+    Same parser as the dock (``loopback_cdp_port``): scheme-less
+    ``127.0.0.1:PORT`` is how ``browser.cdp_url`` / ``BROWSER_CDP_URL`` are
+    often stored, and ``_predicted_local_shared_browser`` fences the raw
+    override before ``_resolve_cdp_override`` rewrites it.
+    """
+    from tools.bot_desktop.browser import loopback_cdp_port
+
+    return loopback_cdp_port(url)
 
 
 def _cdp_is_this_profile_real_profile(cdp_url: str) -> bool:
@@ -921,6 +924,7 @@ def _cdp_endpoints_match(left: str, right: str) -> bool:
 
     Real-profile cache stores the HTTP discovery root; ``/browser connect`` and
     ``_get_cdp_override`` rewrite it to a WebSocket URL on the same port.
+    Scheme-less ``127.0.0.1:PORT`` (raw config / ``BROWSER_CDP_URL``) matches both.
     """
     if left == right:
         return True
