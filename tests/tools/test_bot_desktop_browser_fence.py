@@ -906,6 +906,52 @@ def test_persisted_dock_port_fences_a_cold_process_after_devtools_miss(monkeypat
     assert _admit_shared_browser(cdp_url=other) is None
 
 
+def test_debian_and_mapped_loopback_hosts_still_fence_after_devtools_miss(monkeypatch):
+    """Identity used a closed host set (127.0.0.1 / localhost / ::1 / 0.0.0.0).
+    Debian's 127.0.1.1 and IPv4-mapped ::ffff:127.0.0.1 never extracted a
+    port, so persist could not match and leftover attach was another Chrome
+    (admit None) on the jar a human is typing into. LAN hosts stay unfenced.
+    """
+    import tools.bot_desktop.browser as bdb
+    from tools.bot_desktop.lease import HumanHasControl
+    from tools.browser_tool_session import (
+        _admit_resolved_cdp_for_attach,
+        _admit_shared_browser,
+        _cdp_url_is_bot_desktop_browser,
+        _last_dock_cdp_port,
+        _loopback_cdp_port,
+    )
+
+    debian = "ws://127.0.1.1:9333/devtools/browser/x"
+    mapped = "ws://[::ffff:127.0.0.1]:9333/devtools/browser/x"
+    other_debian = "ws://127.0.1.1:9222/devtools/browser/x"
+    lan = "ws://192.168.1.5:9333/devtools/browser/x"
+
+    assert _loopback_cdp_port(debian) == 9333
+    assert _loopback_cdp_port(mapped) == 9333
+    assert _loopback_cdp_port(lan) is None
+
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: 9333)
+    assert _cdp_url_is_bot_desktop_browser(debian) is True
+    _last_dock_cdp_port.clear()
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: None)
+    lease.acquire("human-viewer")
+    assert _cdp_url_is_bot_desktop_browser(debian) is True
+    assert _cdp_url_is_bot_desktop_browser(mapped) is True
+    assert _cdp_url_is_bot_desktop_browser(other_debian) is False
+    assert _cdp_url_is_bot_desktop_browser(lan) is False
+    with pytest.raises(HumanHasControl):
+        _admit_shared_browser(cdp_url=debian)
+    with pytest.raises(HumanHasControl):
+        _admit_shared_browser(cdp_url=mapped)
+    assert _admit_resolved_cdp_for_attach(debian) is False
+    assert _admit_resolved_cdp_for_attach(mapped) is False
+    assert _admit_shared_browser(cdp_url=other_debian) is None
+    assert _admit_resolved_cdp_for_attach(other_debian) is True
+    assert _admit_shared_browser(cdp_url=lan) is None
+    assert _admit_resolved_cdp_for_attach(lan) is True
+
+
 def test_persisted_dock_port_does_not_leak_to_a_sibling_profile(monkeypatch, tmp_path):
     """A dock port stamped under one HERMES_HOME must not fence another bot's Chrome."""
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override

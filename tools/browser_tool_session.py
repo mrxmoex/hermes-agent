@@ -5,6 +5,7 @@ Split out of ``tools/browser_tool.py``. Facade-owned state is read through ``_bt
 """
 
 import contextlib
+import ipaddress
 import json
 import logging
 import os
@@ -660,7 +661,28 @@ def _run_browser_command(
     return _run_browser_command_unfenced(task_id, command, args, timeout, _engine_override, browser_cmd, session_info)
 
 
-_LOOPBACK_CDP_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "0.0.0.0"})
+def _is_loopback_cdp_host(host: str) -> bool:
+    """True for this machine's loopback CDP hosts, including 127/8 and IPv4-mapped.
+
+    A closed hostname set missed Debian's ``127.0.1.1`` and ``::ffff:127.0.0.1``.
+    Leftover attach then treated the dock as another Chrome (admit None) even
+    after ``dock-cdp-port`` was stamped — persist cannot match a port it never
+    extracted. Remote / LAN hosts stay another browser. Do not resolve DNS
+    here: leftover identity must stay a local parse.
+    """
+    text = (host or "").strip().lower().strip("[]")
+    if not text:
+        return False
+    if text in {"localhost", "localhost.localdomain"} or text.endswith(".localhost"):
+        return True
+    try:
+        addr = ipaddress.ip_address(text)
+    except ValueError:
+        return False
+    if addr.is_loopback or addr.is_unspecified:
+        return True
+    mapped = getattr(addr, "ipv4_mapped", None)
+    return bool(mapped and (mapped.is_loopback or mapped.is_unspecified))
 
 
 def _loopback_cdp_port(url: str) -> Optional[int]:
@@ -678,7 +700,7 @@ def _loopback_cdp_port(url: str) -> Optional[int]:
     from urllib.parse import urlparse
     parsed = urlparse(text if "://" in text else f"http://{text}")
     host = (parsed.hostname or "").lower()
-    if host not in _LOOPBACK_CDP_HOSTS:
+    if not _is_loopback_cdp_host(host):
         return None
     port = parsed.port
     return port if port is not None and 1 <= port <= 65535 else None
