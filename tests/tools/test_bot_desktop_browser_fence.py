@@ -1011,6 +1011,21 @@ def test_watch_once_persists_dock_port_before_devtools_miss(monkeypatch):
     assert _admit_resolved_cdp_for_attach(other) is True
 
 
+def test_cdp_swap_blocked_by_human_matches_tui_and_cli_fence():
+    """Interactive CLI ``/browser connect`` used to swap CDP while a human
+    holds. TUI ``browser.manage`` already refused; both now share this
+    helper so leftover attach cannot mint after a DevTools miss."""
+    from tools.browser_tool_cdp import cdp_swap_blocked_by_human
+
+    lease._reset_for_tests()
+    assert cdp_swap_blocked_by_human() is None
+    lease.acquire("human-viewer")
+    blocked = cdp_swap_blocked_by_human()
+    assert blocked and "human holds" in blocked.lower()
+    lease.release("human-viewer")
+    assert cdp_swap_blocked_by_human() is None
+
+
 def test_set_process_cdp_override_persists_dock_port_before_devtools_miss(monkeypatch):
     """TUI ``/browser connect`` probed the dock over HTTP and published
     ``BROWSER_CDP_URL`` without stamping ``dock-cdp-port``. A later

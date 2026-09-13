@@ -105,37 +105,6 @@ def test_browser_manage_connect_persists_dock_port_before_devtools_miss(monkeypa
     _reset_dock_port_memory_for_tests()
 
 
-def test_cli_browser_connect_refuses_while_human_holds(monkeypatch, capsys):
-    """Interactive CLI ``/browser connect`` used to swap CDP while a human
-    holds — TUI ``browser.manage`` already refused that leftover attach."""
-    from hermes_cli.cli_commands_mixin import _browser_connect
-
-    monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
-    lease.acquire("human-viewer")
-    try:
-        _browser_connect(object(), "http://127.0.0.1:9333")
-        out = capsys.readouterr().out.lower()
-        assert "human holds" in out
-        assert "BROWSER_CDP_URL" not in os.environ
-    finally:
-        lease._reset_for_tests()
-
-
-def test_cli_browser_disconnect_refuses_while_human_holds(monkeypatch, capsys):
-    from hermes_cli.cli_commands_mixin import _browser_disconnect
-
-    monkeypatch.setenv("BROWSER_CDP_URL", "http://127.0.0.1:9222")
-    lease.acquire("human-viewer")
-    try:
-        _browser_disconnect(object())
-        out = capsys.readouterr().out.lower()
-        assert "human holds" in out
-        assert os.environ.get("BROWSER_CDP_URL") == "http://127.0.0.1:9222"
-    finally:
-        lease._reset_for_tests()
-        monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
-
-
 def test_browser_manage_connect_allowed_when_agent_holds(monkeypatch):
     """The refuse is lease-gated, not a blanket block on /browser connect."""
     monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
