@@ -79,6 +79,31 @@ def test_ensure_cdp_supervisor_still_attaches_when_agent_holds(monkeypatch):
     assert len(started) == 1
 
 
+def test_ensure_cdp_supervisor_does_not_attach_after_takeover_on_resolved_ws(monkeypatch):
+    """A full dock WS candidate used to skip the post-resolve check
+    (``cdp_url == candidate``) and still ``get_or_start`` after Take over."""
+    import tools.bot_desktop.browser as bdb
+    from tools import browser_tool_cdp as cdp
+
+    ws = "ws://127.0.0.1:9333/devtools/browser/x"
+    started = []
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: 9333)
+    monkeypatch.setattr(cdp, "_get_cdp_override_raw", lambda: ws)
+
+    def _get():
+        lease.acquire("human-viewer")
+        return ws
+
+    monkeypatch.setattr(cdp, "_get_cdp_override", _get)
+    import tools.browser_supervisor as bs
+    registry = MagicMock()
+    registry.get_or_start.side_effect = lambda **k: started.append(k.get("cdp_url"))
+    monkeypatch.setattr(bs, "SUPERVISOR_REGISTRY", registry)
+    cdp._ensure_cdp_supervisor("review")
+    assert started == []
+    assert lease.human_holds() is True
+
+
 def test_supervisor_may_not_touch_dock_page_while_human_holds(monkeypatch):
     """Leftover reconnect / Fetch passthrough must stop, not talk to the dock jar."""
     import tools.bot_desktop.browser as bdb

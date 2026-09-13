@@ -138,7 +138,13 @@ def _ensure_supervisor(task_id: str):
         return None
     policy, timeout_s = _get_dialog_policy_config()
     try:
-        return SUPERVISOR_REGISTRY.get_or_start(task_id=task_id, cdp_url=_resolve_cdp_override(cdp_url),
+        from tools.browser_tool_session import _admit_resolved_cdp_for_attach
+        resolved = _resolve_cdp_override(cdp_url)
+        if not resolved:
+            return None
+        if not _admit_resolved_cdp_for_attach(resolved):
+            return None
+        return SUPERVISOR_REGISTRY.get_or_start(task_id=task_id, cdp_url=resolved,
                                                 dialog_policy=policy, dialog_timeout_s=timeout_s)
     except Exception as exc:
         logger.debug("vault fill: supervisor attach to local session failed (%s)", exc)

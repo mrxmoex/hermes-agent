@@ -185,13 +185,16 @@ def _ensure_cdp_supervisor(task_id: str) -> None:
         cdp_url = _resolve_cdp_override(session_cdp) if session_cdp else ""
     if not cdp_url:
         return
-    if cdp_url != candidate:
-        try:
-            from tools.browser_tool_supervisor_lease import supervisor_may_touch_page
-            if not supervisor_may_touch_page(cdp_url):
-                return
-        except Exception:
+    # Always re-admit the *resolved* URL. When the raw candidate was already
+    # a full ``ws://…/devtools/browser/…`` dock endpoint, ``cdp_url ==
+    # candidate`` used to skip the second check and ``get_or_start`` still
+    # minted a leftover supervisor after a mid-resolve Take over.
+    try:
+        from tools.browser_tool_session import _admit_resolved_cdp_for_attach
+        if not _admit_resolved_cdp_for_attach(cdp_url):
             return
+    except Exception:
+        return
     try:
         from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
         from tools.browser_tool_session import _shares_bot_desktop_browser

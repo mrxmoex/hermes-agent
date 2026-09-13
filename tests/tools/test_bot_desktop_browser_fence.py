@@ -990,6 +990,85 @@ def test_vault_supervisor_attach_does_not_probe_dock_while_human_holds(monkeypat
     assert started == []
 
 
+def test_vault_supervisor_attach_does_not_start_after_takeover_during_resolve(monkeypatch):
+    """Take over during /json/version must not then get_or_start on the dock."""
+    import tools.bot_desktop.browser as bdb
+    from tools import browser_use_cli as bu
+
+    started = []
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: 9333)
+
+    def _resolve(url):
+        lease.acquire("human-viewer")
+        return "ws://127.0.0.1:9333/devtools/browser/x"
+
+    monkeypatch.setattr("tools.browser_tool_cdp._resolve_cdp_override", _resolve)
+    import tools.browser_supervisor as bs
+    registry = __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock()
+    registry.get_or_start.side_effect = lambda **k: started.append(k.get("cdp_url"))
+    monkeypatch.setattr(bs, "SUPERVISOR_REGISTRY", registry)
+    bu._attach_vault_supervisor({"BU_CDP_URL": "http://127.0.0.1:9333"}, "review")
+    assert started == []
+    assert lease.human_holds() is True
+
+
+def test_vault_supervisor_attach_other_chrome_still_starts_after_takeover_during_resolve(monkeypatch):
+    """A resolved unrelated Chrome is not muted because this profile's lease moved."""
+    import tools.bot_desktop.browser as bdb
+    from tools import browser_use_cli as bu
+
+    started = []
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: 9333)
+
+    def _resolve(url):
+        lease.acquire("human-viewer")
+        return "ws://127.0.0.1:9222/devtools/browser/x"
+
+    monkeypatch.setattr("tools.browser_tool_cdp._resolve_cdp_override", _resolve)
+    import tools.browser_supervisor as bs
+    registry = __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock()
+    registry.get_or_start.side_effect = lambda **k: started.append(k.get("cdp_url"))
+    monkeypatch.setattr(bs, "SUPERVISOR_REGISTRY", registry)
+    bu._attach_vault_supervisor({"BU_CDP_URL": "http://127.0.0.1:9222"}, "review")
+    assert started == ["ws://127.0.0.1:9222/devtools/browser/x"]
+
+
+def test_vault_ensure_supervisor_does_not_start_after_takeover_during_resolve(monkeypatch):
+    """Local-session vault attach has the same mid-resolve leftover door."""
+    import tools.bot_desktop.browser as bdb
+    from tools import browser_vault_tool as vault
+
+    started = []
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: 9333)
+    monkeypatch.setattr(
+        "tools.browser_tool_session._admit_task_shared_browser",
+        lambda *a, **k: None,
+    )
+    monkeypatch.setattr(
+        "tools.browser_tool_session._run_browser_command",
+        lambda *a, **k: {"success": True, "data": {"cdpUrl": "http://127.0.0.1:9333"}},
+    )
+    monkeypatch.setattr("tools.browser_tool._last_session_key", lambda tid: tid)
+    monkeypatch.setattr(
+        "tools.browser_tool_cdp._get_dialog_policy_config",
+        lambda: ("accept", 1.0),
+    )
+
+    def _resolve(url):
+        lease.acquire("human-viewer")
+        return "ws://127.0.0.1:9333/devtools/browser/x"
+
+    monkeypatch.setattr("tools.browser_tool_cdp._resolve_cdp_override", _resolve)
+    import tools.browser_supervisor as bs
+    registry = __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock()
+    registry.get.return_value = None
+    registry.get_or_start.side_effect = lambda **k: started.append(k.get("cdp_url"))
+    monkeypatch.setattr(bs, "SUPERVISOR_REGISTRY", registry)
+    assert vault._ensure_supervisor("review") is None
+    assert started == []
+    assert lease.human_holds() is True
+
+
 def test_browser_cdp_remembers_dock_port_when_devtools_file_is_gone(monkeypatch):
     """browser_cdp must not HTTP-probe the remembered dock after the port file vanishes."""
     import tools.bot_desktop.browser as bdb

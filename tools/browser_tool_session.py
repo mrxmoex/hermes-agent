@@ -1092,6 +1092,22 @@ def _admit_shared_browser(
             reset_hermes_home_override(token)
 
 
+def _admit_resolved_cdp_for_attach(endpoint: str) -> bool:
+    """True unless *endpoint* is this profile's dock and a human now holds.
+
+    Discovery (``/json/version``) can outlive the start-of-call admit.
+    Re-check the *resolved* WebSocket before ``get_or_start`` so a mid-resolve
+    Take over cannot mint a leftover supervisor on the jar. Unrelated
+    Chromes stay unfenced (admit returns None).
+    """
+    from tools.bot_desktop.lease import HumanHasControl
+    try:
+        _admit_shared_browser(cdp_url=endpoint)
+        return True
+    except HumanHasControl:
+        return False
+
+
 def _admit_task_shared_browser(task_id: Optional[str] = None, *, cdp_url: str = ""):
     """Admit the task's session, or a CDP override aimed at this profile's dock Chromium.
 

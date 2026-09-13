@@ -517,8 +517,17 @@ def _attach_vault_supervisor(env: dict, task_id: Optional[str]) -> None:
     try:
         from tools.browser_supervisor import SUPERVISOR_REGISTRY
         from tools.browser_tool_cdp import _get_dialog_policy_config, _resolve_cdp_override
+        from tools.browser_tool_session import _admit_resolved_cdp_for_attach
         policy, timeout_s = _get_dialog_policy_config()
-        SUPERVISOR_REGISTRY.get_or_start(task_id=task_id or "default", cdp_url=_resolve_cdp_override(cdp),
+        resolved = _resolve_cdp_override(cdp)
+        if not resolved:
+            return
+        # Re-admit the *resolved* WS. Discovery can outlive the start-of-call
+        # admit; leftover get_or_start after Take over is Target.attach on the
+        # jar. Unrelated Chromes stay unfenced.
+        if not _admit_resolved_cdp_for_attach(resolved):
+            return
+        SUPERVISOR_REGISTRY.get_or_start(task_id=task_id or "default", cdp_url=resolved,
                                          dialog_policy=policy, dialog_timeout_s=timeout_s)
     except Exception as exc:
         logger.debug("browser_exec: CDP supervisor attach failed (non-fatal): %s", exc)
