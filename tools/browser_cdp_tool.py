@@ -255,26 +255,19 @@ def _browser_cdp_via_supervisor(task_id: str, frame_id: str, method: str, params
                        "result": result_msg.get("result", {})}, ensure_ascii=False)
 
 
-def _admit_bot_desktop_cdp(endpoint: str = ""):
+def _admit_bot_desktop_cdp(endpoint: str = "", task_id: Optional[str] = None):
     """Admit raw CDP against the dock Chromium. Returns ``(admitted, error_json_or_None)``."""
     from tools.bot_desktop.lease import HumanHasControl
-    from tools.browser_tool_session import _admit_shared_browser
-    raw = (endpoint or "").strip()
-    if not raw:
-        try:
-            from tools.browser_tool_cdp import _get_cdp_override_raw
-            raw = _get_cdp_override_raw()
-        except Exception:
-            return None, None
+    from tools.browser_tool_session import _admit_task_shared_browser
     try:
-        return _admit_shared_browser(cdp_url=raw), None
+        return _admit_task_shared_browser(task_id, cdp_url=endpoint or ""), None
     except HumanHasControl as e:
         return None, json.dumps({"success": False, "error": str(e), "code": "human_has_control"})
 
 
-def _refuse_bot_desktop_cdp_while_human_holds(endpoint: str = "") -> Optional[str]:
+def _refuse_bot_desktop_cdp_while_human_holds(endpoint: str = "", task_id: Optional[str] = None) -> Optional[str]:
     """Raw CDP is an observation channel on the dock Chromium. Same lease as browser_*."""
-    _admitted, refused = _admit_bot_desktop_cdp(endpoint)
+    _admitted, refused = _admit_bot_desktop_cdp(endpoint, task_id=task_id)
     return refused
 
 
@@ -286,7 +279,7 @@ def browser_cdp(method: str, params: Optional[Dict[str, Any]] = None, target_id:
     hit signed-URL expiry (Browserbase). Both paths share the same private-page/SSRF guard. Returns JSON
     ``{"success": True, "method", "result"}`` or ``{"error": ...}``."""
     effective_task_id = task_id or "default"
-    admitted, refused = _admit_bot_desktop_cdp()
+    admitted, refused = _admit_bot_desktop_cdp(task_id=effective_task_id)
     if refused:
         return refused
 

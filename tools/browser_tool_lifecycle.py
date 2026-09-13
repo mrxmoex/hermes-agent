@@ -154,6 +154,8 @@ def _stop_reserved_recordings() -> None:
         try:
             with _session_owner_scope(task_id):
                 with _bt._cleanup_lock:
+                    if task_id not in _bt._recording_sessions:
+                        continue
                     session_info = _bt._active_sessions.get(task_id)
                 if session_info is not None and not _session._local_browser_reserved_by_human(session_info):
                     continue

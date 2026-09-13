@@ -684,6 +684,22 @@ def _admit_task_shared_browser(task_id: Optional[str] = None, *, cdp_url: str = 
             raw = _cdp._get_cdp_override_raw()
         except Exception:
             raw = ""
+    if not raw:
+        # Leftover supervisor after the session row was dropped: still the dock jar
+        # if its stored CDP URL is this profile's live Chromium.
+        try:
+            from tools.browser_supervisor import SUPERVISOR_REGISTRY
+            for candidate in (task_id, key, "default"):
+                if not candidate:
+                    continue
+                sup = SUPERVISOR_REGISTRY.get(candidate)
+                if sup is None:
+                    continue
+                raw = str(getattr(sup, "cdp_url", "") or "")
+                if raw:
+                    break
+        except Exception:
+            raw = raw
     if info:
         admitted = _admit_shared_browser(info)
         if admitted is not None:

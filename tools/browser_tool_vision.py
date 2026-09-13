@@ -31,13 +31,10 @@ def _lightpanda_vision_preroute(
         return False, None, screenshot_path
     from tools.bot_desktop.lease import HumanHasControl
     from tools import browser_tool_session as _session
-    admitted = None
-    info = _bt._active_sessions.get(effective_task_id)
-    if info:
-        try:
-            admitted = _session._admit_shared_browser(info)
-        except HumanHasControl:
-            return False, None, screenshot_path
+    try:
+        admitted = _session._admit_task_shared_browser(effective_task_id)
+    except HumanHasControl:
+        return False, None, screenshot_path
     _bt.logger.debug("browser_vision: pre-routing screenshot to Chrome (engine=lightpanda)")
     screenshot_args = ["--annotate"] if annotate else []
     fb_result = _lp._chrome_fallback_screenshot(effective_task_id, screenshot_args, _bt._get_command_timeout())

@@ -254,7 +254,9 @@ def test_reserved_recording_stops_while_session_is_still_active(monkeypatch):
         bt._recording_sessions.add("review")
         lease.acquire("human-viewer")
         life._stop_reserved_recordings()
-        assert stopped == ["review"]
+        # Acquire's in-process hook and the janitor scan can both fire; the
+        # contract is that the WebM stopped and the Chromium session stayed up.
+        assert "review" in stopped
         assert "review" not in bt._recording_sessions
         assert bt._active_sessions["review"] is existing
     finally:
@@ -345,6 +347,69 @@ def test_eval_supervisor_fast_path_is_fenced_while_human_holds(monkeypatch):
             "session_name": "h_review", "features": {"local": True},
         }
         sup = MagicMock()
+        sup.evaluate_runtime.return_value = {"ok": True, "result": "SECRET-FROM-PAGE"}
+        import tools.browser_supervisor as bs
+        registry = MagicMock()
+        registry.get.return_value = sup
+        monkeypatch.setattr(bs, "SUPERVISOR_REGISTRY", registry)
+        lease.acquire("human-viewer")
+        out = json.loads(bt._browser_eval("document.body.innerText", task_id="review"))
+        assert out.get("code") == "human_has_control"
+        assert "SECRET-FROM-PAGE" not in json.dumps(out)
+        sup.evaluate_runtime.assert_not_called()
+    finally:
+        bt._active_sessions.clear()
+        bt._active_sessions.update(saved)
+
+
+def test_eval_supervisor_fast_path_fenced_via_cdp_override_without_session(monkeypatch):
+    """A leftover supervisor on the dock jar must not skip the lease just because no session row exists."""
+    from unittest.mock import MagicMock
+    import tools.bot_desktop.browser as bdb
+    from tools import browser_tool as bt
+    from tools.bot_desktop import lease
+
+    _wire(monkeypatch, [])
+    monkeypatch.setattr(bt, "_is_camofox_mode", lambda: False)
+    monkeypatch.setattr(bt, "_last_session_key", lambda task_id: "review")
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: 9333)
+    monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override_raw", lambda: "http://127.0.0.1:9333")
+    saved = bt._active_sessions.copy()
+    try:
+        bt._active_sessions.pop("review", None)
+        sup = MagicMock()
+        sup.evaluate_runtime.return_value = {"ok": True, "result": "SECRET-FROM-PAGE"}
+        import tools.browser_supervisor as bs
+        registry = MagicMock()
+        registry.get.return_value = sup
+        monkeypatch.setattr(bs, "SUPERVISOR_REGISTRY", registry)
+        lease.acquire("human-viewer")
+        out = json.loads(bt._browser_eval("document.body.innerText", task_id="review"))
+        assert out.get("code") == "human_has_control"
+        assert "SECRET-FROM-PAGE" not in json.dumps(out)
+        sup.evaluate_runtime.assert_not_called()
+    finally:
+        bt._active_sessions.clear()
+        bt._active_sessions.update(saved)
+
+
+def test_eval_supervisor_fast_path_fenced_via_leftover_supervisor_cdp(monkeypatch):
+    """Session row gone, no /browser connect — the supervisor's own cdp_url still names the dock jar."""
+    from unittest.mock import MagicMock
+    import tools.bot_desktop.browser as bdb
+    from tools import browser_tool as bt
+    from tools.bot_desktop import lease
+
+    _wire(monkeypatch, [])
+    monkeypatch.setattr(bt, "_is_camofox_mode", lambda: False)
+    monkeypatch.setattr(bt, "_last_session_key", lambda task_id: "review")
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: 9333)
+    monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override_raw", lambda: "")
+    saved = bt._active_sessions.copy()
+    try:
+        bt._active_sessions.pop("review", None)
+        sup = MagicMock()
+        sup.cdp_url = "ws://127.0.0.1:9333/devtools/browser/x"
         sup.evaluate_runtime.return_value = {"ok": True, "result": "SECRET-FROM-PAGE"}
         import tools.browser_supervisor as bs
         registry = MagicMock()
