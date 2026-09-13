@@ -784,13 +784,17 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     _lp._copy_fallback_warning(response, result)
     _add_navigate_warnings(response, title, session_info if is_first_nav else None)
     # Blank-on-SSRF and auto-snapshot remint unless they share this ticket.
-    if _session._discard_if_lease_moved(admitted):
-        return _dumps(response)
+    # The url/title from open still belong to that epoch — do not return them
+    # as a successful navigate after a completed take-over / hand-back.
+    moved = _lease_moved_json(admitted)
+    if moved:
+        return moved
     blocked = _post_redirect_block(nav_session_key, url, final_url, auto_local_this_nav)
     if blocked is not None:
         return blocked
-    if _session._discard_if_lease_moved(admitted):
-        return _dumps(response)
+    moved = _lease_moved_json(admitted)
+    if moved:
+        return moved
     _attach_auto_snapshot(response, nav_session_key)
     moved = _lease_moved_json(admitted)
     if moved:

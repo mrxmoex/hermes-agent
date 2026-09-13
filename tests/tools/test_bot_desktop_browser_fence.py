@@ -652,6 +652,48 @@ def test_browser_navigate_does_not_return_snapshot_from_a_later_epoch(monkeypatc
     assert "snapshot" not in calls, f"auto-snapshot ran after a completed takeover: {calls}"
 
 
+def test_browser_navigate_discards_open_payload_when_epoch_moves_after_open(monkeypatch):
+    """open can finish on the agent's ticket; url/title still belong to that epoch.
+
+    The post-open discard used to return the success payload (skipping only
+    auto-snapshot). A take-over / hand-back after open must refuse the same
+    way click/console do, not report success.
+    """
+    browser, session = _wire(monkeypatch, [])
+    monkeypatch.setattr(session, "_get_session_info", lambda *a, **k: {
+        "session_name": "review", "cdp_url": None, "features": {"local": True}, "_first_nav": False})
+    monkeypatch.setattr(session, "_run_browser_command", lambda *_a, **_k: {
+        "success": True, "data": {"url": "https://example.com/", "title": "Example"}})
+
+    def steal_after_open(*_a, **_k):
+        lease.acquire("human-viewer")
+        lease.release("human-viewer")
+
+    monkeypatch.setattr(browser, "_add_navigate_warnings", steal_after_open)
+    result = json.loads(browser.browser_navigate("https://example.com", task_id="review"))
+    assert result.get("code") == "human_has_control"
+    assert result.get("success") is not True
+
+
+def test_browser_navigate_discards_open_payload_when_epoch_moves_after_redirect_check(monkeypatch):
+    """The blank-on-SSRF window is the same epoch as open — not a new success."""
+    browser, session = _wire(monkeypatch, [])
+    monkeypatch.setattr(session, "_get_session_info", lambda *a, **k: {
+        "session_name": "review", "cdp_url": None, "features": {"local": True}, "_first_nav": False})
+    monkeypatch.setattr(session, "_run_browser_command", lambda *_a, **_k: {
+        "success": True, "data": {"url": "https://example.com/", "title": "Example"}})
+
+    def steal_after_redirect(*_a, **_k):
+        lease.acquire("human-viewer")
+        lease.release("human-viewer")
+        return None
+
+    monkeypatch.setattr(browser, "_post_redirect_block", steal_after_redirect)
+    result = json.loads(browser.browser_navigate("https://example.com", task_id="review"))
+    assert result.get("code") == "human_has_control"
+    assert result.get("success") is not True
+
+
 @pytest.mark.parametrize("invoke", [
     lambda browser: browser.browser_click("e1", task_id="review"),
     lambda browser: browser.browser_navigate("https://example.com", task_id="review"),
