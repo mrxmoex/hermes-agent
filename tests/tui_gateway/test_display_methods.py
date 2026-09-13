@@ -375,3 +375,41 @@ def test_stop_cannot_kill_the_screen_under_a_human_without_force(monkeypatch, _f
     forced = _call(server, "display.stop", {"force": True})["result"]
     assert forced["stopped"] is True and stops == [1]
     assert _fresh_lease.get().holder == _fresh_lease.AGENT
+
+
+def test_display_status_persists_dock_port_before_devtools_miss(monkeypatch, _fresh_lease):
+    """Desktop polls ``display.status`` while the pane is open. Finding 65
+    only stamps at Take over; finding 66 only stamps after leftover hooks
+    start the agent watch. A DevTools miss before both left the jar
+    looking like another Chrome."""
+    import tools.bot_desktop.browser as bdb
+    import tui_gateway.server as server
+    from tools.bot_desktop.lease import HumanHasControl
+    from tools.browser_tool_session import (
+        _admit_resolved_cdp_for_attach,
+        _admit_shared_browser,
+        _cdp_url_is_bot_desktop_browser,
+        _last_dock_cdp_port,
+        _reset_dock_port_memory_for_tests,
+    )
+
+    _reset_dock_port_memory_for_tests()
+    dock = "ws://127.0.0.1:9333/devtools/browser/x"
+    other = "ws://127.0.0.1:9222/devtools/browser/x"
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: 9333)
+    assert bdb.last_known_dock_cdp_port() is None
+    assert "error" not in _call(server, "display.status", {})
+    assert bdb.last_known_dock_cdp_port() == 9333
+
+    _last_dock_cdp_port.clear()
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: None)
+    _fresh_lease.acquire("human-viewer")
+    assert bdb.last_known_dock_cdp_port() == 9333
+    assert _cdp_url_is_bot_desktop_browser(dock) is True
+    assert _cdp_url_is_bot_desktop_browser(other) is False
+    with pytest.raises(HumanHasControl):
+        _admit_shared_browser(cdp_url=dock)
+    assert _admit_resolved_cdp_for_attach(dock) is False
+    assert _admit_shared_browser(cdp_url=other) is None
+    assert _admit_resolved_cdp_for_attach(other) is True
+    _reset_dock_port_memory_for_tests()

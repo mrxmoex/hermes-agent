@@ -78,6 +78,14 @@ def _lease_event_payload(profile_key: str, lease) -> dict:
 def _display_snapshot() -> dict:
     from hermes_constants import hermes_home_key
     from tools.bot_desktop import lease as _bd_lease, runtime as _bd_runtime
+    # Desktop polls status while the pane is open — stamp the live dock
+    # port before Take over so a later DevTools miss still fences it.
+    # Persist failure must not fail status.
+    try:
+        from tools.bot_desktop.browser import persist_live_dock_cdp_port
+        persist_live_dock_cdp_port()
+    except Exception:
+        pass
     st = _bd_runtime.status()
     return {**st.as_dict(), "lease": _lease_view(_bd_lease.get()), "profile_key": hermes_home_key()}
 

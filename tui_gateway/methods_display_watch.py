@@ -103,6 +103,29 @@ def _poll_runtime_files() -> None:
         _broadcast_global_event("display.status", payload)
 
 
+def _persist_watched_dock_ports() -> None:
+    """Stamp each served home's live dock port while DevTools is still readable.
+
+    Finding 65 persists on ``lease.acquire``. Finding 66 persists on the
+    agent leftover watch, which only starts after leftover / browser /
+    computer_use hooks. A human-first dock whose DevTools dies before
+    Take over still left ``dock-cdp-port`` empty when neither hook had
+    run. This serve poll already walks every served home every 0.5s;
+    persist here so a later miss still fences that port. Unrelated
+    Chromes stay unstamped.
+    """
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.bot_desktop.browser import persist_live_dock_cdp_port
+    for home in _watched_lease_homes():
+        token = set_hermes_home_override(home)
+        try:
+            persist_live_dock_cdp_port()
+        except Exception:
+            pass
+        finally:
+            reset_hermes_home_override(token)
+
+
 def _poll_lease_files() -> None:
     """One pass: read a home's lease only when its file mtime moved; broadcast when the epoch did."""
     from hermes_constants import hermes_home_key
@@ -144,6 +167,7 @@ def _ensure_lease_watcher() -> None:
     def _loop() -> None:
         while True:
             try:
+                _persist_watched_dock_ports()
                 _poll_lease_files()
                 _poll_runtime_files()
             except Exception:  # noqa: BLE001 - a torn read must not kill the watcher

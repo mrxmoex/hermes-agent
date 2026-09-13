@@ -210,3 +210,60 @@ def test_launcher_crash_without_unlinking_files_is_broadcast_as_stopped(tmp_path
     statuses = _status_for(events, home)
     assert len(statuses) == before + 1
     assert statuses[-1]["running"] is False
+
+
+def test_watch_persists_sibling_dock_under_watched_home(tmp_path, monkeypatch):
+    """The serve 0.5s poll walks every served home. A leftover / status
+    stamp on the launch profile must not invent a port there; the bot
+    home's live DevTools is the one that gets ``dock-cdp-port``."""
+    import tools.bot_desktop.browser as bdb
+    import tui_gateway.server as server
+    from hermes_cli import profiles as profiles_mod
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from pathlib import Path
+    from tools.browser_tool_session import _reset_dock_port_memory_for_tests
+
+    launch = tmp_path / "launch"
+    bot = tmp_path / "bot-b"
+    launch.mkdir()
+    bot.mkdir()
+    monkeypatch.setattr(
+        profiles_mod,
+        "profiles_to_serve",
+        lambda multiplex=True: [("default", launch), ("bot-b", bot)],
+    )
+    monkeypatch.setattr(server, "_hermes_home", str(launch))
+    server._served_profile_homes.clear()
+    server._seed_watched_profile_homes()
+
+    bot_profile = (bot / "bot-desktop" / "browser-profile").resolve()
+
+    def live_port(user_data_dir, **_k):
+        try:
+            return 9333 if Path(user_data_dir).resolve() == bot_profile else None
+        except OSError:
+            return None
+
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", live_port)
+    _reset_dock_port_memory_for_tests()
+
+    token_launch = set_hermes_home_override(str(launch))
+    try:
+        assert bdb.last_known_dock_cdp_port() is None
+    finally:
+        reset_hermes_home_override(token_launch)
+
+    server._persist_watched_dock_ports()
+
+    token_launch = set_hermes_home_override(str(launch))
+    try:
+        assert bdb.last_known_dock_cdp_port() is None
+    finally:
+        reset_hermes_home_override(token_launch)
+
+    token_bot = set_hermes_home_override(str(bot))
+    try:
+        assert bdb.last_known_dock_cdp_port() == 9333
+    finally:
+        reset_hermes_home_override(token_bot)
+        _reset_dock_port_memory_for_tests()
