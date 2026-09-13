@@ -310,6 +310,9 @@ DANGEROUS_PATTERNS = [
     (r'\bopenssl\b.*\b(?:base64|enc)\b[^|]*\s+-[dD]\b[^|]*\|\s*\b(bash|sh|zsh|ksh|dash)\b',
      "pipe openssl-decoded content to shell (possible command obfuscation)"),
     (rf'\btee\b.*["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via tee"),
+    # moreutils sponge is dest-last like tee (atomic replace). Without this,
+    # `cat forged | sponge ~/.hermes/bot-desktop/lease.json` auto-approves.
+    (rf'\bsponge\b\s+["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via sponge"),
     (rf'>>?\s*["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via redirection"),
     # `dd of=` with no `if=` writes stdin (or zeros) and misses the "disk copy" rule
     # (`dd … if=`). Same pairing as tee/redirect: forges lease.json holder=agent or
@@ -317,6 +320,7 @@ DANGEROUS_PATTERNS = [
     # are not folded by basename projection (`busybox`/`gdd` stay the argv0).
     (rf'\b(?:gdd|dd)\b[^\n]*\bof=["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via dd"),
     (rf'\btee\b.*["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_WRITE_TARGET_BOUNDARY}', "overwrite project env/config via tee"),
+    (rf'\bsponge\b\s+["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_WRITE_TARGET_BOUNDARY}', "overwrite project env/config via sponge"),
     (rf'>>?\s*["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_WRITE_TARGET_BOUNDARY}', "overwrite project env/config via redirection"),
     (r'\bxargs\s+.*\brm\b', "xargs with rm"),
     # -execdir has the same semantics as -exec (runs in each match's directory).
@@ -482,6 +486,24 @@ DEST_FIRST_SENSITIVE_PATTERNS = [
      "extract archive into sensitive path"),
     (rf'\bunzip\b[^\n]*\s(?-i:-d)[=\s]*["\']?{_DEST_FIRST_WRITE_TARGET}',
      "extract archive into sensitive path"),
+    # 7-Zip `-o{dir}` is glued (`-oDEST`) or spaced. Extract only (`x`/`e`);
+    # `7z a` / `7z l` stay out. Short `-o` is case-preserved so it does not
+    # collide with an unrelated long option after IGNORECASE folding.
+    (rf'\b(?:7z|7za|7zr|7zz)\b(?=[^\n]*\s(?:x|e)\b)[^\n]*[\'"]?(?-i:-o)[=\s]*["\']?{_DEST_FIRST_WRITE_TARGET}',
+     "extract archive into sensitive path"),
+    # Decode/decrypt dest-first `-o`/`-out`/`--output` — same unpaired
+    # lease.json / dock-cdp-port forge as curl -o. Long `-out` can live
+    # here; short `-o` stays `(?-i:)`.
+    (rf'\bopenssl\b[^\n]*\s(?:-out|--out)[=\s]*["\']?{_DEST_FIRST_WRITE_TARGET}',
+     "overwrite system file via openssl --out"),
+    (rf'\bbase64\b[^\n]*\s(?:(?-i:-o)|--output)[=\s]*["\']?{_DEST_FIRST_WRITE_TARGET}',
+     "overwrite system file via base64 --output"),
+    (rf'\b(?:gpg|gpg2)\b[^\n]*\s(?:(?-i:-o)|--output)[=\s]*["\']?{_DEST_FIRST_WRITE_TARGET}',
+     "overwrite system file via gpg --output"),
+    (rf'\bage\b[^\n]*\s(?:(?-i:-o)|--output)[=\s]*["\']?{_DEST_FIRST_WRITE_TARGET}',
+     "overwrite system file via age --output"),
+    (rf'\b(?:zstd|unzstd)\b[^\n]*\s(?:(?-i:-o)|--output-file)[=\s]*["\']?{_DEST_FIRST_WRITE_TARGET}',
+     "overwrite system file via zstd --output"),
 ]
 DEST_FIRST_SENSITIVE_PATTERNS_COMPILED = [
     (re.compile(p, _RE_FLAGS), d) for p, d in DEST_FIRST_SENSITIVE_PATTERNS

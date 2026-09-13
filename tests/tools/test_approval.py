@@ -351,6 +351,7 @@ class TestHermesConfigWriteProtection:
             "echo '  mode: off' >> ~/.hermes/config.yaml",
             "echo x | tee ~/.hermes/config.yaml",
             "echo x | tee $HERMES_HOME/config.yaml",
+            "cat /tmp/evil.yaml | sponge ~/.hermes/config.yaml",
             "cp /tmp/evil.yaml ~/.hermes/config.yaml",
             "ln -sf /tmp/evil.yaml ~/.hermes/config.yaml",
             "rsync /tmp/evil.yaml $HERMES_HOME/config.yaml",
@@ -424,6 +425,26 @@ class TestHermesBotDesktopWriteProtection:
             "bsdtar -C ~/.hermes/bot-desktop -xf /tmp/e.tar",
             "unzip /tmp/e.zip -d ~/.hermes/bot-desktop",
             "unzip -d $HERMES_HOME/bot-desktop /tmp/e.zip",
+            # dest-first extract/decode: 7z glued `-oDEST`, openssl -out,
+            # macOS/busybox base64 -o, gpg/age/zstd -o. dest-last sponge.
+            "7z x /tmp/e.7z -o~/.hermes/bot-desktop",
+            "7za x /tmp/e.7z -o ~/.hermes/bot-desktop",
+            "7zr e /tmp/e.7z -o$HERMES_HOME/bot-desktop",
+            "7zz x /tmp/e.7z '-o~/.hermes/bot-desktop'",
+            "7z -o$HOME/.hermes/bot-desktop x /tmp/e.7z",
+            "openssl enc -d -in /tmp/e -out ~/.hermes/bot-desktop/lease.json",
+            "openssl base64 -d -out $HERMES_HOME/bot-desktop/dock-cdp-port -in /tmp/e",
+            "busybox openssl enc -d -in /tmp/e -out ~/.hermes/bot-desktop/lease.json",
+            "base64 -d -o ~/.hermes/bot-desktop/lease.json /tmp/e",
+            "base64 --decode --output $HERMES_HOME/bot-desktop/lease.json /tmp/e",
+            "gpg -d -o ~/.hermes/bot-desktop/lease.json /tmp/e",
+            "gpg --output $HERMES_HOME/bot-desktop/dock-cdp-port -d /tmp/e",
+            "age -d -o ~/.hermes/bot-desktop/lease.json /tmp/e",
+            "zstd -d -o ~/.hermes/bot-desktop/lease.json /tmp/e",
+            "unzstd -o $HERMES_HOME/bot-desktop/lease.json /tmp/e.zst",
+            "sponge ~/.hermes/bot-desktop/lease.json",
+            "cat /tmp/evil | sponge $HERMES_HOME/bot-desktop/lease.json",
+            "moreutils sponge ~/.hermes/bot-desktop/dock-cdp-port",
         ):
             dangerous, key, desc = detect_dangerous_command(command)
             assert dangerous is True, command
@@ -452,6 +473,16 @@ class TestHermesBotDesktopWriteProtection:
             "tar -cf /tmp/out.tar -C ~/.hermes/bot-desktop .",
             "tar -C ~/.hermes/bot-desktop-backup -xf /tmp/e.tar",
             "unzip /tmp/e.zip -d /tmp/out",
+            "7z x /tmp/e.7z -o/tmp/out",
+            "7z a /tmp/out.7z ~/.hermes/bot-desktop",
+            "7z l /tmp/e.7z -o~/.hermes/bot-desktop",
+            "openssl enc -d -in /tmp/e -out /tmp/out",
+            "base64 -d -o /tmp/out /tmp/e",
+            "gpg -d -o /tmp/out /tmp/e",
+            "age -d -o /tmp/out /tmp/e",
+            "zstd -d -o /tmp/out /tmp/e",
+            "sponge /tmp/out",
+            "cat /tmp/e | sponge /tmp/out",
         ):
             dangerous, key, desc = detect_dangerous_command(cmd)
             assert dangerous is False, cmd
