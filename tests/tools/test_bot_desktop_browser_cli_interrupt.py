@@ -223,10 +223,11 @@ def test_takeover_kills_inflight_browser_exec_without_delivering_it(monkeypatch)
 class _FakeProc:
     """psutil-shaped process for leftover CLI interrupt tests. No live scan."""
 
-    def __init__(self, pid, cmdline, environ=None):
+    def __init__(self, pid, cmdline, environ=None, cwd=None):
         self.pid = pid
         self._cmdline = list(cmdline)
         self._environ = dict(environ or {})
+        self._cwd = cwd
         self.killed = 0
 
     def cmdline(self):
@@ -234,6 +235,11 @@ class _FakeProc:
 
     def environ(self):
         return dict(self._environ)
+
+    def cwd(self):
+        if self._cwd is None:
+            raise OSError("no cwd")
+        return str(self._cwd)
 
     def kill(self):
         self.killed += 1
@@ -501,6 +507,50 @@ def test_unregistered_kills_env_pinned_profile_without_cdp():
     assert unknown.killed == 0
 
 
+def test_unregistered_kills_relative_env_pinned_profile():
+    """Relative ``AGENT_BROWSER_PROFILE`` is the leftover writer's cwd, not ours.
+
+    Finding 95 fixed Chromium argv. The leftover-CLI pin still resolved
+    ``browser-profile`` against the gateway cwd, so Take over left the
+    writer running in the field the human is typing into.
+    """
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    profile = bdb.profile_dir()
+    leftover = _FakeProc(
+        8110, ["agent-browser", "fill", "@e1", "x"],
+        {"AGENT_BROWSER_PROFILE": "browser-profile"},
+        cwd=profile.parent,
+    )
+    dotted = _FakeProc(
+        8111, ["agent-browser", "fill", "@e1", "x"],
+        {"AGENT_BROWSER_PROFILE": "./browser-profile"},
+        cwd=profile.parent,
+    )
+    here = _FakeProc(
+        8112, ["agent-browser", "fill", "@e1", "x"],
+        {"AGENT_BROWSER_PROFILE": "."},
+        cwd=profile,
+    )
+    wrong_cwd = _FakeProc(
+        8113, ["agent-browser", "fill", "@e1", "x"],
+        {"AGENT_BROWSER_PROFILE": "browser-profile"},
+        cwd=profile.parent.parent,
+    )
+    lease.acquire("human")
+    n = interrupt_unregistered_dock_cli(
+        processes=[leftover, dotted, here, wrong_cwd],
+        chromium_pid=9999,
+        owner_daemon_pid=9998,
+    )
+    assert n == 3
+    assert leftover.killed == 1
+    assert dotted.killed == 1
+    assert here.killed == 1
+    assert wrong_cwd.killed == 0
+
+
 def test_unregistered_spares_lan_cdp_even_when_port_matches():
     from tools.bot_desktop import browser as bdb
     from tools.browser_tool_session import interrupt_unregistered_dock_cli
@@ -699,19 +749,34 @@ def test_unregistered_playwright_dock_cdp_killed_on_takeover():
         8906,
         ["/bin/bash", "-c", "npx playwright codegen --cdp-endpoint http://127.0.0.1:9333"],
     )
+    last_wins = _FakeProc(
+        8907,
+        ["npx", "playwright", "codegen",
+         "--cdp", "http://127.0.0.1:1",
+         "--cdp-endpoint", "http://127.0.0.1:9333"],
+    )
+    later_other = _FakeProc(
+        8908,
+        ["npx", "playwright", "codegen",
+         "--cdp-endpoint", "http://127.0.0.1:9333",
+         "--cdp", "http://127.0.0.1:9222"],
+    )
     lease.acquire("human")
     n = interrupt_unregistered_dock_cli(
-        processes=[leftover, via_env, shebang, install, other, bash_parent],
+        processes=[leftover, via_env, shebang, install, other, bash_parent,
+                   last_wins, later_other],
         chromium_pid=9999,
         owner_daemon_pid=9998,
     )
-    assert n == 3
+    assert n == 4
     assert leftover.killed == 1
     assert via_env.killed == 1
     assert shebang.killed == 1
+    assert last_wins.killed == 1
     assert install.killed == 0
     assert other.killed == 0
     assert bash_parent.killed == 0
+    assert later_other.killed == 0
 
 
 def test_unregistered_playwright_mcp_dock_cdp_killed_on_takeover():
@@ -1106,26 +1171,45 @@ def test_unregistered_lighthouse_dock_port_killed_on_takeover():
         ["/bin/bash", "-c",
          "npx lighthouse --port 9333 https://example.com"],
     )
+    last_wins = _FakeProc(
+        9410,
+        ["npx", "lighthouse", "--port", "1", "--port", "9333",
+         "https://example.com"],
+    )
+    later_other = _FakeProc(
+        9411,
+        ["npx", "lighthouse", "--port", "9333", "--port", "1",
+         "https://example.com"],
+    )
+    after_terminator = _FakeProc(
+        9412,
+        ["npx", "lighthouse", "--port", "9333", "--",
+         "--port", "1", "https://example.com"],
+    )
     lease.acquire("human")
     n = interrupt_unregistered_dock_cli(
         processes=[
             leftover, equals, shebang, packaged, no_port, ephemeral,
-            other, lan, cri_short, bash_parent,
+            other, lan, cri_short, bash_parent, last_wins, later_other,
+            after_terminator,
         ],
         chromium_pid=9999,
         owner_daemon_pid=9998,
     )
-    assert n == 4
+    assert n == 6
     assert leftover.killed == 1
     assert equals.killed == 1
     assert shebang.killed == 1
     assert packaged.killed == 1
+    assert last_wins.killed == 1
+    assert after_terminator.killed == 1
     assert no_port.killed == 0
     assert ephemeral.killed == 0
     assert other.killed == 0
     assert lan.killed == 0
     assert cri_short.killed == 0
     assert bash_parent.killed == 0
+    assert later_other.killed == 0
 
 
 def test_stop_reserved_calls_unregistered_interrupt(monkeypatch):

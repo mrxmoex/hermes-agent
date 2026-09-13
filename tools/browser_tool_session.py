@@ -1361,18 +1361,39 @@ def _token_is_playwright_mcp(token: str) -> bool:
 
 
 def _flag_value(tokens: List[str], keys: Tuple[str, ...]) -> Optional[str]:
-    """Value of the first matching flag (``--key val`` or ``--key=val``)."""
-    for i, tok in enumerate(tokens):
-        raw = str(tok) if tok is not None else ""
+    """Value of a flag (``--key val`` or ``--key=val``).
+
+    yargs / commander / Chromium keep the *last* value when a flag
+    repeats and stop at ``--``. First-wins treated
+    ``lighthouse --port=1 --port=<dock>`` as another Chrome, so Take
+    over left the leftover writer running. A following flag is not a
+    value. ``--cdp`` does not eat ``--cdp-endpoint`` (prefix is
+    ``key=``).
+    """
+    found: Optional[str] = None
+    i = 0
+    n = len(tokens)
+    while i < n:
+        raw = str(tokens[i]) if tokens[i] is not None else ""
+        if raw == "--":
+            break
         for key in keys:
-            if raw == key and i + 1 < len(tokens):
-                nxt = str(tokens[i + 1])
-                if nxt.startswith("-"):
-                    continue
-                return nxt
+            if raw == key:
+                if i + 1 < n:
+                    nxt = str(tokens[i + 1])
+                    if nxt.startswith("-"):
+                        found = None
+                    else:
+                        found = nxt
+                        i += 1
+                else:
+                    found = None
+                break
             if raw.startswith(key + "="):
-                return raw.split("=", 1)[1]
-    return None
+                found = raw.split("=", 1)[1]
+                break
+        i += 1
+    return found
 
 
 def _token_is_chrome_remote_interface(token: str) -> bool:
@@ -1580,15 +1601,7 @@ def _is_unregistered_dock_cli_invocation(tokens: List[str]) -> bool:
 
 def _cdp_arg_from_argv(tokens: List[str]) -> Optional[str]:
     """``--cdp`` / ``--cdp-endpoint`` value, or None. Does not guess ``--session``."""
-    keys = ("--cdp-endpoint", "--cdp")
-    for i, tok in enumerate(tokens):
-        raw = str(tok) if tok is not None else ""
-        for key in keys:
-            if raw == key and i + 1 < len(tokens):
-                return str(tokens[i + 1])
-            if raw.startswith(key + "="):
-                return raw.split("=", 1)[1]
-    return None
+    return _flag_value(tokens, ("--cdp-endpoint", "--cdp"))
 
 
 def _unregistered_cli_aims_at_dock(
@@ -1596,6 +1609,8 @@ def _unregistered_cli_aims_at_dock(
     environ: Optional[Dict[str, str]],
     profile: Optional[Path],
     dock_port: Optional[int],
+    *,
+    cwd: Optional[Path] = None,
 ) -> bool:
     """True when this leftover CLI is aimed at *this* profile's dock jar.
 
@@ -1605,6 +1620,10 @@ def _unregistered_cli_aims_at_dock(
 
     browser-use leftover writers (finding 78) aim via ``BU_CDP_*`` /
     ``BROWSER_CDP_URL``. No CDP env stays unknown (cloud / own Chrome).
+
+    A relative ``AGENT_BROWSER_PROFILE`` is the leftover writer's jar,
+    resolved against *that* process cwd (finding 95 for Chromium argv).
+    Gateway cwd must not decide the pin.
     """
     env = environ or {}
     if _is_browser_use_invocation(tokens) and not _is_agent_browser_invocation(tokens):
@@ -1709,7 +1728,7 @@ def _unregistered_cli_aims_at_dock(
         return False
     try:
         from tools.bot_desktop.browser import _paths_same_user_data_dir
-        return _paths_same_user_data_dir(pinned, str(profile))
+        return _paths_same_user_data_dir(pinned, str(profile), cwd=cwd)
     except Exception:
         return False
 
@@ -1856,7 +1875,24 @@ def interrupt_unregistered_dock_cli(
                 environ = proc.environ() if callable(getattr(proc, "environ", None)) else {}
             except Exception:
                 environ = {}
-            if not _unregistered_cli_aims_at_dock(tokens, environ or {}, profile, dock_port):
+            cwd = None
+            cwd_fn = getattr(proc, "cwd", None)
+            if callable(cwd_fn):
+                try:
+                    raw_cwd = cwd_fn()
+                    if raw_cwd:
+                        cwd = Path(raw_cwd)
+                except Exception:
+                    cwd = None
+            if cwd is None:
+                try:
+                    from tools.bot_desktop.browser import _proc_cwd
+                    cwd = _proc_cwd(pid)
+                except Exception:
+                    cwd = None
+            if not _unregistered_cli_aims_at_dock(
+                tokens, environ or {}, profile, dock_port, cwd=cwd,
+            ):
                 continue
             try:
                 killer = getattr(proc, "kill", None)
