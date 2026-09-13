@@ -1727,59 +1727,91 @@ _DIRSTACK_WRITE_DEST = (
     r'(?:["\']?)'
 )
 # Dirname-of-PWD. From ``bot-desktop/<child>`` (browser-profile, pairing)
-# ``${PWD%/*}`` / ``$(dirname $PWD)`` / ``$(realpath ..)`` / ``$(cd .. &&
-# pwd)`` expand to the screen root and write ``lease.json``. From the
-# tree root they expand to ``~/.hermes`` — not a hole. ``${PWD%/*}`` is
+# one-level ``${PWD%/*}`` / ``$(dirname $PWD)`` / ``$(realpath ..)`` /
+# ``$(cd .. && pwd)`` expand to the screen root and write ``lease.json``.
+# Chrome's cookie jar lives one level deeper
+# (``bot-desktop/browser-profile/Default``); two-level
+# ``${PWD%/*/*}`` / ``$(dirname $(dirname $PWD))`` / ``$(realpath ../..)``
+# / ``$(cd ../.. && pwd)`` are the same forge. From a shallower cwd the
+# extra ``/*`` lands in ``~/.hermes`` — not a hole. ``${PWD%/*}`` is
 # not a ``_PWD_PARAM`` (that token is still ``$PWD``).
 _DIRNAME_BIN = r'(?:(?:builtin|command)\s+)?dirname(?:\s+--)?\s+'
-_DIRNAME_PWD_CMD = _DIRNAME_BIN + r'(?:["\']?)(?:\$PWD\b|\$\{PWD\})(?:["\']?)'
-_DIRNAME_OLDPWD_CMD = _DIRNAME_BIN + r'(?:["\']?)(?:\$OLDPWD\b|\$\{OLDPWD\})(?:["\']?)'
-_PARENT_RESOLVE_CMD = (
-    r'(?:'
-    r'realpath(?:\s+-[esP]+)?\s+\.\.'
-    r'|readlink\s+(?:-[fe]+|--canonicalize(?:-existing|-missing)?)\s+\.\.'
-    r')'
-)
-_CD_PARENT_PWD_CMD = (
-    r'cd\s+\.\./?\s*(?:&&|;)\s*(?:(?:builtin|command)\s+)?pwd(?:\s+-[PL]+)*'
-)
-_PWD_PARENT_TOKEN = (
-    r'(?:'
-    r'\$\{PWD%/\*\}'
-    r'|\$\(\s*(?:' + _DIRNAME_PWD_CMD + r'|' + _PARENT_RESOLVE_CMD + r'|'
-    + _CD_PARENT_PWD_CMD + r')\s*\)'
-    r'|`(?:' + _DIRNAME_PWD_CMD + r'|' + _PARENT_RESOLVE_CMD + r'|'
-    + _CD_PARENT_PWD_CMD + r')`'
-    r')'
-)
-_OLDPWD_PARENT_TOKEN = (
-    r'(?:'
-    r'\$\{OLDPWD%/\*\}'
-    r'|\$\(\s*(?:' + _DIRNAME_OLDPWD_CMD + r')\s*\)'
-    r'|`(?:' + _DIRNAME_OLDPWD_CMD + r')`'
-    r')'
-)
-_PWD_PARENT_WRITE_DEST = (
-    r'(?:["\']?)' + _PWD_PARENT_TOKEN + r'(?:["\']?)'
-    r'/'
-    r'(?:["\']?)'
-    r'[^\s;&|<>"\']+'
-    r'(?:["\']?)'
-)
-_OLDPWD_PARENT_WRITE_DEST = (
-    r'(?:["\']?)' + _OLDPWD_PARENT_TOKEN + r'(?:["\']?)'
-    r'/'
-    r'(?:["\']?)'
-    r'[^\s;&|<>"\']+'
-    r'(?:["\']?)'
-)
+_MAX_PARENT_LEVELS = 8
+
+
+def _dirname_chain(base: str, levels: int) -> str:
+    """``dirname`` applied *levels* times to *base* (``$PWD`` / ``$OLDPWD``)."""
+    expr = base
+    for i in range(levels):
+        inner = (
+            r'(?:["\']?)' + expr + r'(?:["\']?)'
+            if i == 0
+            else r'(?:\$\(\s*' + expr + r'\s*\)|`' + expr + r'`)'
+        )
+        expr = _DIRNAME_BIN + inner
+    return expr
+
+
+def _parent_dots(levels: int) -> str:
+    """``..`` / ``../..`` / ``../../..`` (*levels* hops)."""
+    return r'(?:\.\./){' + str(levels - 1) + r'}\.\.'
+
+
+def _parent_resolve_cmd(levels: int) -> str:
+    dots = _parent_dots(levels)
+    return (
+        r'(?:'
+        r'realpath(?:\s+-[esP]+)?\s+' + dots +
+        r'|readlink\s+(?:-[fe]+|--canonicalize(?:-existing|-missing)?)\s+' + dots +
+        r')'
+    )
+
+
+def _cd_parent_pwd_cmd(levels: int) -> str:
+    return (
+        r'cd\s+' + _parent_dots(levels) + r'/?\s*(?:&&|;)\s*'
+        r'(?:(?:builtin|command)\s+)?pwd(?:\s+-[PL]+)*'
+    )
+
+
+def _pwd_parent_token(levels: int) -> str:
+    """Dest token that expands to *levels*-up from ``$PWD``."""
+    strip = r'\$\{PWD%(?:/\*){' + str(levels) + r'}\}'
+    dirname_cmd = _dirname_chain(r'(?:\$PWD\b|\$\{PWD\})', levels)
+    body = dirname_cmd + r'|' + _parent_resolve_cmd(levels) + r'|' + _cd_parent_pwd_cmd(levels)
+    return (
+        r'(?:'
+        + strip +
+        r'|\$\(\s*(?:' + body + r')\s*\)'
+        r'|`(?:' + body + r')`'
+        r')'
+    )
+
+
+def _oldpwd_parent_token(levels: int) -> str:
+    """Dest token that expands to *levels*-up from ``$OLDPWD``."""
+    strip = r'\$\{OLDPWD%(?:/\*){' + str(levels) + r'}\}'
+    dirname_cmd = _dirname_chain(r'(?:\$OLDPWD\b|\$\{OLDPWD\})', levels)
+    return (
+        r'(?:'
+        + strip +
+        r'|\$\(\s*(?:' + dirname_cmd + r')\s*\)'
+        r'|`(?:' + dirname_cmd + r')`'
+        r')'
+    )
+
+
+def _parent_write_dest(token: str) -> str:
+    return (
+        r'(?:["\']?)' + token + r'(?:["\']?)'
+        r'/'
+        r'(?:["\']?)'
+        r'[^\s;&|<>"\']+'
+        r'(?:["\']?)'
+    )
+
+
 _COMMAND_SUBST_RE = re.compile(r'\$\([^)]*\)|`[^`]*`')
-# ``cd bot-desktop/browser-profile`` (relative) — CDPATH or join vs
-# ``~/.hermes`` lands in a *child* of the screen, not the root.
-_RELATIVE_BOT_DESKTOP_SUBDIR_TARGET_RE = re.compile(
-    r'(?:\./)?bot-desktop/.+',
-    _RE_FLAGS,
-)
 _CHDIR_BOT_DESKTOP_RE = re.compile(
     rf'(?:(?:\bcd\b|\bpushd\b)\s+|\benv\b[^\n]*\s(?:-C|--chdir)[=\s]*)["\']?{_HERMES_BOT_DESKTOP_PATH}',
     _RE_FLAGS,
@@ -1834,15 +1866,6 @@ _SHELL_CHDIR_RE = re.compile(r'\b(?:cd|pushd|popd)\b', _RE_FLAGS)
 # PWD on a one-entry stack and live on the PWD dest.
 _DIRSTACK_MUTATE_RE = re.compile(r'\b(?:pushd|popd)\b', _RE_FLAGS)
 _BOT_DESKTOP_CWD_RE = re.compile(_HERMES_BOT_DESKTOP_PATH, _RE_FLAGS)
-_BOT_DESKTOP_INSIDE_RE = re.compile(
-    r'(?:'
-    r'~\/\.hermes/' + _HERMES_PROFILE_INFIX +
-    r'|(?:\$home|\$\{home\})/\.hermes/' + _HERMES_PROFILE_INFIX +
-    r'|(?:\$hermes_home|\$\{hermes_home\})/' + _HERMES_PROFILE_INFIX +
-    r')'
-    r'bot-desktop/.+',
-    _RE_FLAGS,
-)
 
 
 def _bot_desktop_cwd_write_re(dest: str) -> re.Pattern:
@@ -1873,8 +1896,14 @@ _RELATIVE_BOT_DESKTOP_WRITE_RE = _bot_desktop_cwd_write_re(
 )
 _OLDPWD_BOT_DESKTOP_WRITE_RE = _bot_desktop_cwd_write_re(_OLDPWD_WRITE_DEST)
 _DIRSTACK_BOT_DESKTOP_WRITE_RE = _bot_desktop_cwd_write_re(_DIRSTACK_WRITE_DEST)
-_PWD_PARENT_BOT_DESKTOP_WRITE_RE = _bot_desktop_cwd_write_re(_PWD_PARENT_WRITE_DEST)
-_OLDPWD_PARENT_BOT_DESKTOP_WRITE_RE = _bot_desktop_cwd_write_re(_OLDPWD_PARENT_WRITE_DEST)
+_PWD_PARENT_WRITE_RES = [
+    _bot_desktop_cwd_write_re(_parent_write_dest(_pwd_parent_token(n)))
+    for n in range(1, _MAX_PARENT_LEVELS + 1)
+]
+_OLDPWD_PARENT_WRITE_RES = [
+    _bot_desktop_cwd_write_re(_parent_write_dest(_oldpwd_parent_token(n)))
+    for n in range(1, _MAX_PARENT_LEVELS + 1)
+]
 _CHDIR_BOT_DESKTOP_WRITE_DESCRIPTION = "write into bot-desktop after chdir"
 
 
@@ -1909,18 +1938,50 @@ def _cwd_is_hermes_bot_desktop(cwd: Optional[str]) -> bool:
     return bool(_BOT_DESKTOP_CWD_RE.search(folded))
 
 
-def _cwd_is_inside_hermes_bot_desktop(cwd: Optional[str]) -> bool:
-    """True when *cwd* is a *subdirectory* of the screen (not the tree root).
+_BOT_DESKTOP_DEPTH_RE = re.compile(
+    r'(?:'
+    r'~\/\.hermes/' + _HERMES_PROFILE_INFIX +
+    r'|(?:\$home|\$\{home\})/\.hermes/' + _HERMES_PROFILE_INFIX +
+    r'|(?:\$hermes_home|\$\{hermes_home\})/' + _HERMES_PROFILE_INFIX +
+    r')'
+    r'bot-desktop(?:/(?P<rest>.+))?$',
+    _RE_FLAGS,
+)
 
-    ``${PWD%/*}/lease.json`` from ``bot-desktop/browser-profile`` writes the
-    lease; the same dest from the tree root writes ``~/.hermes/lease.json``.
+
+def _cwd_bot_desktop_depth(cwd: Optional[str]) -> int:
+    """How many path components *cwd* sits under the screen tree.
+
+    ``0`` is the tree root (or not the screen). ``1`` is
+    ``bot-desktop/browser-profile``. ``2`` is Chrome's ``Default`` —
+    ``${PWD%/*/*}/lease.json`` from there is the screen lease.
     """
     if not cwd or not isinstance(cwd, str):
-        return False
+        return 0
     folded = _rewrite_resolved_user_home(
-        _rewrite_resolved_hermes_home(os.path.expanduser(cwd.rstrip("/\\")) + "/")
-    )
-    return bool(_BOT_DESKTOP_INSIDE_RE.search(folded))
+        _rewrite_resolved_hermes_home(os.path.expanduser(cwd.rstrip("/\\")))
+    ).rstrip("/\\")
+    match = _BOT_DESKTOP_DEPTH_RE.search(folded)
+    if not match:
+        return 0
+    rest = (match.group("rest") or "").strip("/\\")
+    if not rest:
+        return 0
+    return len([part for part in rest.split("/") if part and part != "."])
+
+
+def _relative_bot_desktop_depth(target: str) -> int:
+    """Depth of a relative ``bot-desktop/…`` chdir, or ``-1`` if it is not one."""
+    text = (target or "").strip()
+    while text.startswith("./"):
+        text = text[2:]
+    if text in ("bot-desktop", "bot-desktop/"):
+        return 0
+    prefix = "bot-desktop/"
+    if not text.startswith(prefix):
+        return -1
+    rest = text[len(prefix):].strip("/")
+    return len([part for part in rest.split("/") if part]) if rest else 0
 
 
 def _without_command_subst(command: str) -> str:
@@ -1932,35 +1993,35 @@ def _without_command_subst(command: str) -> str:
     return _COMMAND_SUBST_RE.sub(" ", command)
 
 
-def _is_relative_bot_desktop_subdir(target: str) -> bool:
-    return bool(_RELATIVE_BOT_DESKTOP_SUBDIR_TARGET_RE.fullmatch(target or ""))
-
-
 def _shell_chdir_inside_state(command: str, cwd: Optional[str]) -> tuple:
     """Walk outer ``cd``/``pushd`` (not ``env -C``) for dirname-of-PWD dests.
 
-    Returns ``(visited_subdir, last_is_subdir)``. ``env -C`` does not change
+    Returns ``(pwd_depth, oldpwd_depth)``. ``env -C`` does not change
     parent-shell ``$PWD`` for redirects. Command-subst ``cd`` is stripped
     first. ``CDPATH=~/.hermes cd bot-desktop/foo`` from ``/tmp`` still lands
-    in a child of the screen.
+    in a child of the screen. *oldpwd_depth* is ``0`` when the command
+    never ``cd``/``pushd``s.
     """
     outer = _without_command_subst(command)
-    visited = False
-    last = False
-    sim = cwd if cwd and isinstance(cwd, str) else ""
+    start = cwd if cwd and isinstance(cwd, str) else ""
+    pwd_depth = _cwd_bot_desktop_depth(start)
+    oldpwd_depth = 0
+    sim = start
     cdpath = bool(_CDPATH_HERMES_RE.search(command))
     for match in _SHELL_CHDIR_TARGET_RE.finditer(outer):
         target = match.group("target")
         if target in (".", "-", "--"):
             continue
+        prev = pwd_depth
         sim = _join_chdir_target(sim, target)
-        inside = _cwd_is_inside_hermes_bot_desktop(sim)
-        if not inside and cdpath and _is_relative_bot_desktop_subdir(target):
-            inside = True
-        if inside:
-            visited = True
-        last = inside
-    return visited, last
+        nxt = _cwd_bot_desktop_depth(sim)
+        if nxt == 0 and cdpath:
+            rel = _relative_bot_desktop_depth(target)
+            if rel >= 0:
+                nxt = rel
+        oldpwd_depth = prev
+        pwd_depth = nxt
+    return pwd_depth, oldpwd_depth
 
 
 def _join_chdir_target(cwd: str, target: str) -> str:
@@ -2007,9 +2068,16 @@ def _command_mutates_dirstack(command: str) -> bool:
     return bool(_DIRSTACK_MUTATE_RE.search(command))
 
 
+def _has_parent_bot_desktop_write(
+    command: str, res_list: list, levels: int,
+) -> bool:
+    cap = min(max(levels, 0), _MAX_PARENT_LEVELS)
+    return any(res_list[n].search(command) for n in range(cap))
+
+
 def _has_relative_bot_desktop_write(
     command: str, *, include_oldpwd: bool = False, include_dirstack: bool = False,
-    include_pwd_parent: bool = False, include_oldpwd_parent: bool = False,
+    pwd_parent_levels: int = 0, oldpwd_parent_levels: int = 0,
 ) -> bool:
     if _RELATIVE_BOT_DESKTOP_WRITE_RE.search(command):
         return True
@@ -2017,9 +2085,11 @@ def _has_relative_bot_desktop_write(
         return True
     if include_dirstack and _DIRSTACK_BOT_DESKTOP_WRITE_RE.search(command):
         return True
-    if include_pwd_parent and _PWD_PARENT_BOT_DESKTOP_WRITE_RE.search(command):
+    if _has_parent_bot_desktop_write(command, _PWD_PARENT_WRITE_RES, pwd_parent_levels):
         return True
-    return bool(include_oldpwd_parent and _OLDPWD_PARENT_BOT_DESKTOP_WRITE_RE.search(command))
+    return _has_parent_bot_desktop_write(
+        command, _OLDPWD_PARENT_WRITE_RES, oldpwd_parent_levels,
+    )
 
 
 def detect_dangerous_command(command: str, *, cwd: Optional[str] = None) -> tuple:
@@ -2050,19 +2120,18 @@ def detect_dangerous_command(command: str, *, cwd: Optional[str] = None) -> tupl
     include_dirstack = (chdir_bot_desktop or cwd_is_bot_desktop) and (
         _command_mutates_dirstack(normalized_for_cwd)
     )
-    # Dirname-of-PWD is the screen only from a *subdirectory*. Tree-root
-    # ``${PWD%/*}`` writes ``~/.hermes/lease.json``. Inner ``$(cd .. &&
-    # pwd)`` is a dest token — strip substs so it is not an outer chdir.
-    cwd_inside = _cwd_is_inside_hermes_bot_desktop(cwd)
+    # Dirname-of-PWD is the screen only from a *subdirectory*, and only
+    # for as many ``/*`` hops as the cwd is deep. Tree-root
+    # ``${PWD%/*}`` and two-level ``${PWD%/*/*}`` from
+    # ``browser-profile`` write ``~/.hermes/lease.json``. Inner
+    # ``$(cd ../.. && pwd)`` is a dest token — strip substs so it is
+    # not an outer chdir.
     outer_chdir = _without_command_subst(normalized_for_cwd)
-    visited_inside, last_inside = _shell_chdir_inside_state(
+    pwd_parent_levels, oldpwd_parent_levels = _shell_chdir_inside_state(
         normalized_for_cwd, cwd=cwd,
     )
-    shell_chdir_outer = _command_shell_chdirs(outer_chdir)
-    include_pwd_parent = (cwd_inside and not shell_chdir_outer) or last_inside
-    include_oldpwd_parent = (cwd_inside and shell_chdir_outer) or (
-        visited_inside and shell_chdir_outer and not last_inside
-    )
+    if not _command_shell_chdirs(outer_chdir):
+        oldpwd_parent_levels = 0
     for command_variant in _command_detection_variants(command):
         # Case-preserved: dest-first short flags (`-t` vs `-T`, tar `-C` vs `-c`).
         for pattern_re, description in DEST_FIRST_SENSITIVE_PATTERNS_COMPILED:
@@ -2074,14 +2143,14 @@ def detect_dangerous_command(command: str, *, cwd: Optional[str] = None) -> tupl
                 return (True, description, description)
         if in_bot_desktop and _has_relative_bot_desktop_write(
             command_variant, include_oldpwd=include_oldpwd, include_dirstack=include_dirstack,
-            include_pwd_parent=include_pwd_parent,
-            include_oldpwd_parent=include_oldpwd_parent,
+            pwd_parent_levels=pwd_parent_levels,
+            oldpwd_parent_levels=oldpwd_parent_levels,
         ):
             return (True, _CHDIR_BOT_DESKTOP_WRITE_DESCRIPTION, _CHDIR_BOT_DESKTOP_WRITE_DESCRIPTION)
     if in_bot_desktop and _has_relative_bot_desktop_write(
         normalized_for_cwd, include_oldpwd=include_oldpwd, include_dirstack=include_dirstack,
-        include_pwd_parent=include_pwd_parent,
-        include_oldpwd_parent=include_oldpwd_parent,
+        pwd_parent_levels=pwd_parent_levels,
+        oldpwd_parent_levels=oldpwd_parent_levels,
     ):
         return (True, _CHDIR_BOT_DESKTOP_WRITE_DESCRIPTION, _CHDIR_BOT_DESKTOP_WRITE_DESCRIPTION)
     normalized = _normalize_command_for_detection(command)
