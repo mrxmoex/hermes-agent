@@ -203,8 +203,47 @@ def install_computer_use_lease_hook() -> None:
             ).start()
 
 
+def _persist_watched_dock_ports() -> None:
+    """Stamp each cua-backend home's live dock port while DevTools is readable.
+
+    Finding 65 persists on ``lease.acquire``. Finding 66 persists on the
+    leftover CDP watch (only after leftover / browser hooks). Finding 67
+    persists in ``hermes serve``. A messaging-only gateway drives the
+    screen via ``computer_use`` with no leftover hook and no serve
+    process; this 0.25s walk already visits those homes and never
+    stamped ``dock-cdp-port``. A later DevTools miss then treated
+    leftover CDP attach as another Chrome. Unrelated Chromes stay
+    unstamped.
+    """
+    from tools.bot_desktop.browser import persist_live_dock_cdp_port
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    homes: List[Optional[str]] = [None]
+    with _backend_lock:
+        homes.extend(_backend_homes.values())
+    seen: set[str] = set()
+    for home in homes:
+        key = home or ""
+        if key in seen:
+            continue
+        seen.add(key)
+        token = None
+        try:
+            if home:
+                token = set_hermes_home_override(home)
+            persist_live_dock_cdp_port()
+        except Exception:
+            pass
+        finally:
+            if token is not None:
+                reset_hermes_home_override(token)
+
+
 def _watch_loop() -> None:
     while True:
+        try:
+            _persist_watched_dock_ports()
+        except Exception:
+            pass
         try:
             interrupt_reserved_backends()
         except Exception:
@@ -359,6 +398,14 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
         admitted = _bd_lease.assert_agent_may_act()
     except _bd_lease.HumanHasControl as e:
         return _refused(e)
+    # Stamp the live dock port on every agent-held call so a later
+    # DevTools miss still fences leftover CDP. Persist failure must
+    # not fail the action.
+    try:
+        from tools.bot_desktop.browser import persist_live_dock_cdp_port
+        persist_live_dock_cdp_port()
+    except Exception:
+        pass
     _bd_ensure_started()  # headless gateway: bring the profile's screen up before the backend probes DISPLAY
     if (err := _reject_unsafe(action, args)) is not None:
         return err

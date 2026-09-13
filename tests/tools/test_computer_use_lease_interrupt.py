@@ -138,6 +138,96 @@ def test_interrupt_spares_a_sibling_profile_backend(tmp_path: Path):
     assert hermes_home_key(home_b) != hermes_home_key(home_a)
 
 
+def test_computer_use_dispatch_persists_dock_port_before_devtools_miss(monkeypatch):
+    """Messaging-only ``computer_use`` used to never stamp ``dock-cdp-port``.
+    A DevTools miss before Take over then treated leftover CDP as another
+    Chrome (admit None), even after findings 65–67 (acquire / leftover
+    watch / serve status)."""
+    import tools.bot_desktop.browser as bdb
+    from tools.bot_desktop.lease import HumanHasControl
+    from tools.computer_use import tool
+    from tools.browser_tool_session import (
+        _admit_resolved_cdp_for_attach,
+        _admit_shared_browser,
+        _cdp_url_is_bot_desktop_browser,
+        _last_dock_cdp_port,
+        _reset_dock_port_memory_for_tests,
+    )
+
+    _reset_dock_port_memory_for_tests()
+    dock = "ws://127.0.0.1:9333/devtools/browser/x"
+    other = "ws://127.0.0.1:9222/devtools/browser/x"
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: 9333)
+    monkeypatch.setattr("tools.bot_desktop.runtime.ensure_started_for_tool", lambda: None)
+    monkeypatch.setattr(
+        tool, "_get_backend",
+        lambda **k: (_ for _ in ()).throw(RuntimeError("no backend")),
+    )
+    assert bdb.last_known_dock_cdp_port() is None
+    tool.handle_computer_use({"action": "list_apps"})
+    assert bdb.last_known_dock_cdp_port() == 9333
+
+    _last_dock_cdp_port.clear()
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: None)
+    lease.acquire("human-viewer")
+    assert bdb.last_known_dock_cdp_port() == 9333
+    assert _cdp_url_is_bot_desktop_browser(dock) is True
+    assert _cdp_url_is_bot_desktop_browser(other) is False
+    with pytest.raises(HumanHasControl):
+        _admit_shared_browser(cdp_url=dock)
+    assert _admit_resolved_cdp_for_attach(dock) is False
+    assert _admit_shared_browser(cdp_url=other) is None
+    assert _admit_resolved_cdp_for_attach(other) is True
+    _reset_dock_port_memory_for_tests()
+
+
+def test_computer_use_watch_persists_sibling_dock_under_backend_home(monkeypatch, tmp_path: Path):
+    """A cua backend minted under a bot home must stamp that home's
+    ``dock-cdp-port``, not invent a port on the launch profile."""
+    import tools.bot_desktop.browser as bdb
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.computer_use import tool
+    from tools.browser_tool_session import _reset_dock_port_memory_for_tests
+
+    launch = tmp_path / "launch"
+    bot = tmp_path / "bot"
+    launch.mkdir()
+    bot.mkdir()
+    token_bot = set_hermes_home_override(str(bot))
+    try:
+        with tool._backend_lock:
+            tool._install_backend("review", _RecordingBackend(), "standard")
+        assert bdb.last_known_dock_cdp_port() is None
+    finally:
+        reset_hermes_home_override(token_bot)
+
+    bot_profile = (bot / "bot-desktop" / "browser-profile").resolve()
+
+    def live_port(user_data_dir, **_k):
+        try:
+            return 9333 if Path(user_data_dir).resolve() == bot_profile else None
+        except OSError:
+            return None
+
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", live_port)
+    _reset_dock_port_memory_for_tests()
+
+    token_launch = set_hermes_home_override(str(launch))
+    try:
+        assert bdb.last_known_dock_cdp_port() is None
+        tool._persist_watched_dock_ports()
+        assert bdb.last_known_dock_cdp_port() is None
+    finally:
+        reset_hermes_home_override(token_launch)
+
+    token_bot = set_hermes_home_override(str(bot))
+    try:
+        assert bdb.last_known_dock_cdp_port() == 9333
+    finally:
+        reset_hermes_home_override(token_bot)
+        _reset_dock_port_memory_for_tests()
+
+
 def test_interrupt_is_noop_while_agent_holds():
     from tools.computer_use import tool
 
