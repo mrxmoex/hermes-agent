@@ -14,6 +14,7 @@ Bodies are rebound onto server.py's globals (method_ctx.bind_module) and referen
 """
 
 import logging
+import secrets
 import threading
 import weakref
 
@@ -29,15 +30,9 @@ _lease_listener_installed = threading.Event()
 
 
 def _lease_view(lease) -> dict:
-    """The lease as clients may see it: the holder's viewer id is a capability (whoever presents it
-    co-drives or releases the lease), so it is replaced by a short hash the holder can match against
-    its own id to know it is the one in control."""
-    import hashlib
-    d = lease.as_dict()
-    vid = d.pop("viewer_id")
-    d["viewer_id"] = None
-    d["viewer_hash"] = hashlib.sha256(vid.encode()).hexdigest()[:12] if vid else None
-    return d
+    """The lease as clients may see it. Redaction lives on ``Lease.public_view`` so RPC,
+    tool results and CLI JSON cannot drift back to leaking the raw viewer id."""
+    return lease.public_view()
 
 
 def _display_snapshot() -> dict:
@@ -76,10 +71,16 @@ def _(rid, params: dict) -> dict:
     Suppressed while a human holds the lease — the frame may show what they are typing."""
     try:
         from tools.bot_desktop import lease as _bd_lease
-        if _bd_lease.human_holds():
+        admitted = _bd_lease.get()
+        if admitted.holder == _bd_lease.HUMAN:
             return _ok(rid, {"data_url": None, "suppressed": "human_has_control"})
         from tools.bot_desktop.thumbnail import thumbnail_data_url
-        return _ok(rid, {"data_url": thumbnail_data_url()})
+        data_url = thumbnail_data_url()
+        # Same epoch fence as computer_use capture: a takeover (or a full take-over /
+        # hand-back cycle) during ImageGrab must not ship the frame the human typed on.
+        if _bd_lease.get().epoch != admitted.epoch:
+            return _ok(rid, {"data_url": None, "suppressed": "human_has_control"})
+        return _ok(rid, {"data_url": data_url})
     except Exception as e:
         return _err(rid, _DISPLAY_ERR, str(e))
 
@@ -111,16 +112,33 @@ def _(rid, params: dict) -> dict:
 # viewer ids minted per connection (keyed by the transport that asked), so a reconnecting pane can
 # keep its identity — and its lease — while nobody can claim an id minted for another connection.
 _minted_viewer_ids: "weakref.WeakKeyDictionary[object, set[str]]" = weakref.WeakKeyDictionary()
+# Transports that cannot be weak-referenced (stdio / slotted / handle_request with no
+# transport) still need a durable bucket: otherwise observe returns an id that acquire
+# cannot recognise, and Take over from those callers would always fail closed.
+_minted_fallback: dict[int, set[str]] = {}
+
+
+def _caller_minted_ids() -> set[str]:
+    transport = current_transport()
+    try:
+        return _minted_viewer_ids.setdefault(transport, set())
+    except TypeError:
+        return _minted_fallback.setdefault(id(transport) if transport is not None else 0, set())
+
+
+def _viewer_id_is_minted(viewer_id: str) -> bool:
+    return bool(viewer_id) and viewer_id in _caller_minted_ids()
+
+
+def _reset_minted_for_tests() -> None:
+    _minted_viewer_ids.clear()
+    _minted_fallback.clear()
 
 
 def _mint_viewer_id(requested: str) -> str:
     """Server-minted viewer identity. ``requested`` is honoured only when THIS connection minted it
     earlier; anything else (including a holder id read off display.status) gets a fresh id."""
-    import secrets
-    try:
-        mine = _minted_viewer_ids.setdefault(current_transport(), set())
-    except TypeError:  # stdio / slotted transports cannot be weakly referenced: always mint
-        mine = set()
+    mine = _caller_minted_ids()
     if requested in mine:
         return requested
     viewer_id = secrets.token_urlsafe(16)
@@ -199,6 +217,12 @@ def _(rid, params: dict) -> dict:
     viewer_id = str(params.get("viewer_id") or "").strip()
     if not viewer_id:
         return _err(rid, _DISPLAY_ERR, "viewer_id required")
+    # observe mints the id; acquire must not accept a client-invented string. A forged
+    # id evicts the real holder and freezes the agent while nobody can type (the
+    # forger's later observe mints a different id than the one now on the lease).
+    if not _viewer_id_is_minted(viewer_id):
+        return _err(rid, _DISPLAY_ERR, "viewer_id is not valid for this connection",
+                    data={"code": "viewer_unminted"})
     lease = _bd_lease.acquire(viewer_id, reason=str(params.get("reason") or ""))
     return _ok(rid, {"lease": _lease_view(lease)})
 

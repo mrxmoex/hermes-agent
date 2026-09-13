@@ -60,6 +60,8 @@ def test_computer_use_refuses_every_action_while_a_human_holds_the_screen(monkey
     # Handoff round trip: the agent asks, the human takes over and hands back, the agent is unblocked.
     asked = json.loads(tool.handle_computer_use({"action": "request_handoff", "reason": "log in"}))
     assert asked["ok"] and asked["state"]["pending_handoff"] == "log in"
+    assert asked["state"]["viewer_id"] is None
+    assert "viewer_hash" in asked["state"]
     lease.acquire("human", reason="log in")
     assert lease.get().pending_handoff is None
     lease.release("human")
@@ -129,6 +131,18 @@ def test_takeover_handback_during_approval_does_not_start_the_device_op(monkeypa
     res = json.loads(tool.handle_computer_use({"action": "click", "coordinate": [1, 1]}))
     assert rec.calls == []
     assert res.get("code") == "human_has_control"
+
+
+def test_public_view_replaces_the_raw_viewer_id_with_a_hash():
+    """RPC, tool results and CLI JSON must share one redaction: the raw id is a capability."""
+    import hashlib
+    held = lease.Lease(holder=lease.HUMAN, viewer_id="secret-viewer")
+    view = held.public_view()
+    assert view["viewer_id"] is None
+    assert view["holder"] == lease.HUMAN
+    assert view["viewer_hash"] == hashlib.sha256(b"secret-viewer").hexdigest()[:12]
+    assert held.as_dict()["viewer_id"] == "secret-viewer"
+    assert lease.Lease().public_view()["viewer_hash"] is None
 
 
 def test_unreadable_lease_file_fails_closed_and_takeover_keeps_the_agents_reason(tmp_path):

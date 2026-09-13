@@ -14,6 +14,7 @@ an action admitted under one lease can tell that control changed underneath it.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -52,6 +53,21 @@ class Lease:
 
     def as_dict(self) -> Dict[str, object]:
         return asdict(self)
+
+    def public_view(self) -> Dict[str, object]:
+        """Lease as it may leave this process (RPC, tool results, CLI JSON).
+
+        ``viewer_id`` is a capability — whoever presents it can take or release the
+        lease — so it is replaced by a short hash the holder can match against its
+        own minted id. On-disk ``as_dict()`` still stores the raw id.
+        """
+        d = self.as_dict()
+        vid = d.pop("viewer_id")
+        d["viewer_id"] = None
+        d["viewer_hash"] = (
+            hashlib.sha256(vid.encode()).hexdigest()[:12] if isinstance(vid, str) and vid else None
+        )
+        return d
 
 
 _lock = threading.Condition()

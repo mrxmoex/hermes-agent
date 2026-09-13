@@ -40,9 +40,12 @@ def test_install_worker_keeps_the_requested_profile_scope(tmp_path, monkeypatch)
 @pytest.fixture
 def _fresh_lease():
     from tools.bot_desktop import lease
+    import tui_gateway.server as server
     lease._reset_for_tests()
+    server._reset_minted_for_tests()
     yield lease
     lease._reset_for_tests()
+    server._reset_minted_for_tests()
 
 
 def _call(server, method, params):
@@ -91,6 +94,7 @@ def test_observe_mints_the_viewer_id_and_status_never_discloses_the_holder(monke
 
     monkeypatch.setattr(runtime, "rfb_socket_path", lambda: tmp_path / "rfb.sock")
     lease._reset_for_tests()
+    server._reset_minted_for_tests()
     broadcasts = []
     monkeypatch.setattr(server, "_broadcast_global_event", lambda ev, payload=None: broadcasts.append((ev, payload)))
     try:
@@ -123,3 +127,57 @@ def test_observe_mints_the_viewer_id_and_status_never_discloses_the_holder(monke
         assert lease_events and all(holder not in json.dumps(p) for p in lease_events)
     finally:
         lease._reset_for_tests()
+        server._reset_minted_for_tests()
+
+
+class _Peer:
+    def write(self, obj):
+        return True
+
+
+def test_acquire_refuses_a_viewer_id_this_connection_did_not_mint(monkeypatch, tmp_path, _fresh_lease):
+    """observe mints the id; acquire must not accept a client-invented string. A forged id
+    evicts the real holder and freezes the agent while nobody can type."""
+    from tools.bot_desktop import runtime
+    import tui_gateway.server as server
+
+    monkeypatch.setattr(runtime, "rfb_socket_path", lambda: tmp_path / "rfb.sock")
+    forged = _rpc(server, "display.lease.acquire", {"viewer_id": "forged-id"})
+    assert forged["error"]["data"]["code"] == "viewer_unminted"
+    assert _fresh_lease.get().holder == _fresh_lease.AGENT
+
+    # Same unkeyed caller (handle_request has no transport): observe then acquire must still work.
+    observed = _rpc(server, "display.observe", {})["result"]["viewer_id"]
+    taken_here = _rpc(server, "display.lease.acquire", {"viewer_id": observed})
+    assert taken_here["result"]["lease"]["holder"] == _fresh_lease.HUMAN
+    assert observed not in json.dumps(taken_here)
+    _fresh_lease.release(observed)
+
+    mine, other = _Peer(), _Peer()
+    minted = server.dispatch({"jsonrpc": "2.0", "id": 8, "method": "display.observe", "params": {}}, mine)["result"]["viewer_id"]
+    stolen = server.dispatch({"jsonrpc": "2.0", "id": 9, "method": "display.lease.acquire",
+                              "params": {"viewer_id": minted}}, other)
+    assert stolen["error"]["data"]["code"] == "viewer_unminted"
+    assert _fresh_lease.get().holder == _fresh_lease.AGENT
+
+    taken = server.dispatch({"jsonrpc": "2.0", "id": 10, "method": "display.lease.acquire",
+                             "params": {"viewer_id": minted}}, mine)
+    assert taken["result"]["lease"]["holder"] == _fresh_lease.HUMAN
+    assert taken["result"]["lease"]["viewer_id"] is None
+    assert minted not in json.dumps(taken)
+
+
+def test_thumbnail_discards_a_frame_grabbed_across_a_lease_epoch_change(monkeypatch, _fresh_lease):
+    """human_holds() is checked before ImageGrab; a takeover during the grab is the same
+    class as a capture admitted before takeover — the frame must not ship."""
+    import tui_gateway.server as server
+    from tools.bot_desktop import thumbnail
+
+    def grab_after_takeover():
+        _fresh_lease.acquire("human")
+        return "data:image/jpeg;base64,SECRET"
+
+    monkeypatch.setattr(thumbnail, "thumbnail_data_url", grab_after_takeover)
+    result = _call(server, "display.thumbnail", {})["result"]
+    assert result["data_url"] is None and result["suppressed"] == "human_has_control"
+    assert "SECRET" not in json.dumps(result)
