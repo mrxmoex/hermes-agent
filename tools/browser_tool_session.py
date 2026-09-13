@@ -972,6 +972,11 @@ def interrupt_reserved_browser_cli(home: Optional[str] = None) -> None:
 
 _NPX_LAUNCHERS = frozenset({"npx", "pnpx", "bunx"})
 _UVX_LAUNCHERS = frozenset({"uvx", "uv"})
+_NODE_LAUNCHERS = frozenset({"node", "nodejs", "iojs"})
+_ENV_LAUNCHERS = frozenset({"env"})
+_AGENT_BROWSER_NODE_ENTRYPOINTS = frozenset({
+    "agent-browser", "cli.js", "cli.mjs", "cli.cjs", "index.js",
+})
 
 
 def _token_basename_is(token: str, name: str) -> bool:
@@ -993,6 +998,49 @@ def _token_basename_is(token: str, name: str) -> bool:
 
 def _token_basename_is_agent_browser(token: str) -> bool:
     return _token_basename_is(token, "agent-browser")
+
+
+def _is_python_launcher(name0: str) -> bool:
+    return name0 == "python" or name0.startswith("python3")
+
+
+def _token_is_agent_browser_script(token: str) -> bool:
+    """True when this token is the agent-browser binary or its Node entry.
+
+    Linux shebang rewrites argv0 to ``node`` and the script path. A package
+    path ``…/agent-browser/dist/cli.js`` is an invocation; ``cli.js`` outside
+    that package and ``--user-data-dir=…/agent-browser`` are not.
+    """
+    if _token_basename_is_agent_browser(token):
+        return True
+    raw = (token or "").strip().strip("\"'")
+    if not raw:
+        return False
+    path = Path(raw)
+    parts = [p.lower() for p in path.parts]
+    if "agent-browser" not in parts:
+        return False
+    return path.name.lower() in _AGENT_BROWSER_NODE_ENTRYPOINTS
+
+
+def _env_command_tokens(tokens: List[str]) -> List[str]:
+    """Argv after ``env`` [assignments] [flags], or empty."""
+    i = 1
+    while i < len(tokens):
+        raw = str(tokens[i])
+        if raw == "--":
+            return [str(t) for t in tokens[i + 1:]]
+        if raw.startswith("-"):
+            if raw in {"-u", "--unset"}:
+                i += 2
+                continue
+            i += 1
+            continue
+        if "=" in raw and not raw.startswith("="):
+            i += 1
+            continue
+        return [str(t) for t in tokens[i:]]
+    return []
 
 
 def _launcher_basename(token: str) -> str:
@@ -1029,19 +1077,33 @@ def _first_non_flag_tokens(tokens: List[str], skip: int = 1) -> List[str]:
 
 
 def _is_agent_browser_invocation(tokens: List[str]) -> bool:
-    """True when argv launches agent-browser (direct binary or npx/pnpx/bunx)."""
+    """True when argv launches agent-browser (binary, npx, or shebang node).
+
+    ``terminal()`` is ``bash -c`` (new session). After Linux shebang the
+    leftover writer is ``node /path/to/agent-browser``, not argv0
+    ``agent-browser``. Do not treat the bash parent as the writer — PID-only
+    kill of bash orphans the Node child still sending CDP.
+    """
     if not tokens:
         return False
     if _token_basename_is_agent_browser(tokens[0]):
         return True
-    if _launcher_basename(tokens[0]) not in _NPX_LAUNCHERS:
-        return False
-    rest = _first_non_flag_tokens(tokens)
-    return bool(rest) and _token_basename_is_agent_browser(rest[0])
+    name0 = _launcher_basename(tokens[0])
+    if name0 in _ENV_LAUNCHERS:
+        return _is_agent_browser_invocation(_env_command_tokens(tokens))
+    if name0 in _NPX_LAUNCHERS:
+        rest = _first_non_flag_tokens(tokens)
+        return bool(rest) and _token_basename_is_agent_browser(rest[0])
+    if name0 in _NODE_LAUNCHERS:
+        return any(_token_is_agent_browser_script(t) for t in _first_non_flag_tokens(tokens))
+    if _is_python_launcher(name0):
+        rest = _first_non_flag_tokens(tokens)
+        return bool(rest) and _token_basename_is_agent_browser(rest[0])
+    return False
 
 
 def _is_browser_use_invocation(tokens: List[str]) -> bool:
-    """True when argv launches the browser-use CLI (direct, uvx, or uv run).
+    """True when argv launches the browser-use CLI (direct, uvx, uv run, python).
 
     Token-match only. ``cat browser-use.log`` and ``uvx ruff`` are not
     invocations. Finding 42 only tracks Hermes-spawned ``browser_exec``.
@@ -1051,6 +1113,11 @@ def _is_browser_use_invocation(tokens: List[str]) -> bool:
     if _token_basename_is(tokens[0], "browser-use"):
         return True
     name0 = _launcher_basename(tokens[0])
+    if name0 in _ENV_LAUNCHERS:
+        return _is_browser_use_invocation(_env_command_tokens(tokens))
+    if _is_python_launcher(name0):
+        rest = _first_non_flag_tokens(tokens)
+        return bool(rest) and _token_basename_is(rest[0], "browser-use")
     if name0 not in _UVX_LAUNCHERS:
         return False
     rest = _first_non_flag_tokens(tokens)
@@ -1178,9 +1245,11 @@ def interrupt_unregistered_dock_cli(
     and ``browser-use`` / ``uvx browser-use`` never enter
     ``_inflight_dock_cli``, so Take over would wait those writers out —
     leftover *action* in the field the human is typing into, the same
-    class as leftover ``ws.send``. This is not a lease-gated terminal
-    fence: ``terminal()`` still runs the CLI; Take over drops a
-    dock-aimed leftover.
+    class as leftover ``ws.send``. After Linux shebang the writer is
+    ``node /path/agent-browser`` (or ``python3 …/browser-use``), not
+    argv0. The bash ``-c`` parent is not the writer — PID-only kill of
+    bash orphans the child. This is not a lease-gated terminal fence:
+    ``terminal()`` still runs the CLI; Take over drops a dock-aimed leftover.
 
     Never ``killpg`` / tree-kill. Skip the shared Chromium and the daemon
     that spawned it (finding 40). Skip already-registered inflight PIDs

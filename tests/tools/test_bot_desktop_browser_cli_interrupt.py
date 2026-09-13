@@ -254,11 +254,26 @@ def test_agent_browser_invocation_is_token_match_not_substring():
         ["chrome", "--user-data-dir=/tmp/agent-browser"])
     assert not _is_agent_browser_invocation(["npx", "playwright", "install"])
     assert not _is_agent_browser_invocation(["agent-browser-mcp", "serve"])
+    # Linux shebang: leftover writer is node, not argv0 agent-browser.
+    assert _is_agent_browser_invocation(
+        ["/usr/bin/node", "/usr/bin/agent-browser", "--cdp", "http://127.0.0.1:9333"])
+    assert _is_agent_browser_invocation(
+        ["node", "/home/x/node_modules/agent-browser/dist/cli.js", "fill"])
+    assert _is_agent_browser_invocation(
+        ["/usr/bin/env", "node", "/usr/bin/agent-browser", "fill"])
+    assert not _is_agent_browser_invocation(
+        ["node", "/tmp/other.js", "--cdp", "http://127.0.0.1:9333"])
+    assert not _is_agent_browser_invocation(
+        ["node", "/tmp/agent-browser/malware.js"])
+    assert not _is_agent_browser_invocation(
+        ["/bin/bash", "-c", "agent-browser --cdp http://127.0.0.1:9333 fill"])
     assert _is_browser_use_invocation(["browser-use", "exec"])
     assert _is_browser_use_invocation(["uvx", "browser-use"])
     assert _is_browser_use_invocation(["uvx", "--from", "browser-use==1", "browser-use"])
     assert _is_browser_use_invocation(["uv", "tool", "run", "browser-use"])
     assert _is_browser_use_invocation(["uv", "run", "browser-use"])
+    assert _is_browser_use_invocation(
+        ["python3", "/home/x/.hermes/bin/browser-use", "exec"])
     assert not _is_browser_use_invocation(["/usr/bin/cat", "browser-use.log"])
     assert not _is_browser_use_invocation(["uvx", "ruff", "check"])
 
@@ -449,6 +464,68 @@ def test_unregistered_does_not_use_killpg(monkeypatch):
     )
     assert leftover.killed == 1
     assert killed_pg == []
+
+
+def test_unregistered_node_shebang_dock_cli_killed_on_takeover():
+    """After shebang, terminal leftover is node /path/agent-browser, not argv0."""
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    bdb.remember_dock_cdp_port(9333)
+    leftover = _FakeProc(8700, [
+        "/usr/bin/node", "/usr/bin/agent-browser",
+        "--cdp", "http://127.0.0.1:9333", "fill", "@e1", "x",
+    ])
+    packaged = _FakeProc(8701, [
+        "node", "/home/x/node_modules/agent-browser/dist/cli.js",
+        "--cdp=ws://127.0.0.1:9333", "fill",
+    ])
+    via_env = _FakeProc(8702, [
+        "/usr/bin/env", "NODE_ENV=production", "node",
+        "/usr/bin/agent-browser", "--cdp", "http://127.0.0.1:9333", "fill",
+    ])
+    other_js = _FakeProc(8703, [
+        "node", "/tmp/other.js", "--cdp", "http://127.0.0.1:9333",
+    ])
+    bash_parent = _FakeProc(8704, [
+        "/bin/bash", "-c", "agent-browser --cdp http://127.0.0.1:9333 fill",
+    ])
+    lease.acquire("human")
+    n = interrupt_unregistered_dock_cli(
+        processes=[leftover, packaged, via_env, other_js, bash_parent],
+        chromium_pid=9999,
+        owner_daemon_pid=9998,
+    )
+    assert n == 3
+    assert leftover.killed == 1
+    assert packaged.killed == 1
+    assert via_env.killed == 1
+    assert other_js.killed == 0
+    assert bash_parent.killed == 0
+
+
+def test_unregistered_python_browser_use_dock_env_killed_on_takeover():
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    bdb.remember_dock_cdp_port(9333)
+    leftover = _FakeProc(
+        8800,
+        ["python3", "/home/x/.local/bin/browser-use", "exec"],
+        {"BU_CDP_URL": "http://127.0.0.1:9333"},
+    )
+    other = _FakeProc(
+        8801,
+        ["python3", "/home/x/.local/bin/browser-use", "exec"],
+        {"BU_CDP_URL": "http://127.0.0.1:9222"},
+    )
+    lease.acquire("human")
+    n = interrupt_unregistered_dock_cli(
+        processes=[leftover, other], chromium_pid=9999, owner_daemon_pid=9998,
+    )
+    assert n == 1
+    assert leftover.killed == 1
+    assert other.killed == 0
 
 
 def test_unregistered_browser_use_dock_env_killed_on_takeover():
