@@ -325,7 +325,7 @@ class TestBrowserVaultTools:
 
         secret_exprs = []
 
-        def fake_eval_secret(task_id, expression):
+        def fake_eval_secret(task_id, expression, admitted=None):
             secret_exprs.append(expression)
             return {"success": True, "result": json.dumps({"filled": 1})}
 
@@ -368,7 +368,7 @@ class TestBrowserVaultTools:
                 return {"success": True, "result": "https://example.com/login"}
             return {"success": True, "result": json.dumps(controls)}
 
-        def fake_eval_secret(task_id, expression):
+        def fake_eval_secret(task_id, expression, admitted=None):
             # The evaluated script itself must carry the origin assert.
             assert "window.location.origin" in expression
             assert '"https://example.com"' in expression
@@ -453,7 +453,7 @@ class TestBrowserVaultTools:
                 return {"success": True, "result": "https://example.com/login"}
             return {"success": True, "result": json.dumps(controls)}
 
-        def fake_eval_secret(task_id, expression):
+        def fake_eval_secret(task_id, expression, admitted=None):
             return {"success": True, "result": json.dumps({"filled": 1})}
 
         try:
@@ -501,7 +501,7 @@ class TestBrowserVaultTools:
 
         secret_exprs = []
 
-        def fake_eval_secret(task_id, expression):
+        def fake_eval_secret(task_id, expression, admitted=None):
             secret_exprs.append(expression)
             return {"success": True, "result": json.dumps({"filled": 3})}
 
@@ -717,7 +717,7 @@ class TestTwoFactor:
         def fake_eval(task_id, expr):
             return {"success": True, "result": json.dumps(controls) if "querySelectorAll" in expr else "https://github.com/sessions/two-factor"}
 
-        def fake_secret(task_id, expr):
+        def fake_secret(task_id, expr, admitted=None):
             seen["expr"] = expr
             return {"success": True, "result": json.dumps({"filled": 1})}
 
@@ -742,7 +742,7 @@ class TestTwoFactor:
         seen = {}
         fake_eval = lambda t, e: {"success": True, "result": json.dumps(boxes) if "querySelectorAll" in e else "https://acme.test/2fa"}
 
-        def fake_secret(t, e):
+        def fake_secret(t, e, admitted=None):
             seen["expr"] = e
             return {"success": True, "result": json.dumps({"filled": 6})}
 

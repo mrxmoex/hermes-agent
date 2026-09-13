@@ -426,12 +426,64 @@ def test_vault_fill_does_not_inject_after_inspect_crossed_a_takeover(monkeypatch
         lease.release("human-viewer")
         return {"success": True, "result": json.dumps(controls)}
 
-    def fake_secret(_task, expression):
+    def fake_secret(_task, expression, admitted=None):
         injected.append(expression)
         return {"success": True, "result": json.dumps({"filled": 1})}
 
     monkeypatch.setattr(vault, "_eval_js", fake_eval)
     monkeypatch.setattr(vault, "_eval_js_secret", fake_secret)
+    result = json.loads(vault.browser_vault_fill(meta.id, task_id="review"))
+    assert injected == [], f"password was injected after a completed takeover: {injected}"
+    assert result.get("code") == "human_has_control"
+
+
+def test_vault_fill_does_not_inject_after_classify_crossed_a_takeover(monkeypatch, tmp_path):
+    """Inspect succeeding is not a new admit: takeover before the write must not remint."""
+    from agent.vault_login_classifier import select_password_fill as real_select
+    from agent.vault_store import VaultStore
+    from tools import browser_vault_tool as vault
+
+    store = VaultStore(base_dir=tmp_path / "vault")
+    meta = store.add_item(
+        kind="login",
+        label="Example login",
+        origin="https://example.com",
+        secret={
+            "identifier_type": "email",
+            "identifier": "user@example.com",
+            "password": "s3cret-pw",
+            "origin": "https://example.com",
+        },
+    )
+    monkeypatch.setattr(session_mod, "_get_session_info", lambda *a, **k: {
+        "session_name": "review", "cdp_url": None, "features": {"local": True}})
+    monkeypatch.setattr("agent.vault_store.get_vault_store", lambda: store)
+    monkeypatch.setattr(vault, "_focus_bound_origin", lambda *a, **k: "https://example.com")
+
+    injected: list = []
+    controls = [
+        {"autocomplete": "email", "formIndex": 0, "index": 0, "label": "", "name": "email", "type": "email"},
+        {"autocomplete": "current-password", "formIndex": 0, "index": 1, "label": "", "name": "pw", "type": "password"},
+    ]
+
+    def fake_eval(_task, expression):
+        if "location.href" in expression:
+            return {"success": True, "result": "https://example.com/login"}
+        return {"success": True, "result": json.dumps(controls)}
+
+    def fake_secret(_task, expression, admitted=None):
+        injected.append(expression)
+        return {"success": True, "result": json.dumps({"filled": 1})}
+
+    def select_then_takeover(*args, **kwargs):
+        fills = real_select(*args, **kwargs)
+        lease.acquire("human-viewer")
+        lease.release("human-viewer")
+        return fills
+
+    monkeypatch.setattr(vault, "_eval_js", fake_eval)
+    monkeypatch.setattr(vault, "_eval_js_secret", fake_secret)
+    monkeypatch.setattr("agent.vault_login_classifier.select_password_fill", select_then_takeover)
     result = json.loads(vault.browser_vault_fill(meta.id, task_id="review"))
     assert injected == [], f"password was injected after a completed takeover: {injected}"
     assert result.get("code") == "human_has_control"
@@ -458,6 +510,31 @@ def test_vault_secret_eval_does_not_inject_after_attach_crossed_a_takeover(monke
     monkeypatch.setattr(vault, "_ensure_supervisor", ensure)
     result = vault._eval_js_secret("review", "document.querySelector('input').value='s3cret-pw'")
     assert ran == [], f"password JS ran after a completed takeover: {ran}"
+    assert result.get("code") == "human_has_control"
+    assert "WHAT-THE-HUMAN-TYPED" not in json.dumps(result)
+
+
+def test_vault_secret_eval_keeps_caller_epoch(monkeypatch):
+    """A write hop must not remint; the caller's ticket is the ownership epoch."""
+    from tools import browser_vault_tool as vault
+
+    monkeypatch.setattr(session_mod, "_get_session_info", lambda *a, **k: {
+        "session_name": "review", "cdp_url": None, "features": {"local": True}})
+    admitted, refuse = session_mod._shared_browser_fence("review")
+    assert refuse is None and admitted is not None
+    lease.acquire("human-viewer")
+    lease.release("human-viewer")
+    ran: list = []
+
+    class _Sup:
+        def evaluate_runtime(self, expr):
+            ran.append(expr)
+            return {"ok": True, "result": "WHAT-THE-HUMAN-TYPED"}
+
+    monkeypatch.setattr(vault, "_ensure_supervisor", lambda *_a, **_k: _Sup())
+    result = vault._eval_js_secret(
+        "review", "document.querySelector('input').value='s3cret-pw'", admitted=admitted)
+    assert ran == [], f"password JS ran after the caller's epoch moved: {ran}"
     assert result.get("code") == "human_has_control"
     assert "WHAT-THE-HUMAN-TYPED" not in json.dumps(result)
 

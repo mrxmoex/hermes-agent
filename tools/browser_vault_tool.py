@@ -135,7 +135,7 @@ def _ensure_supervisor(task_id: str):
         return None
 
 
-def _eval_js_secret(task_id: str, expression: str) -> Dict[str, Any]:
+def _eval_js_secret(task_id: str, expression: str, *, admitted=None) -> Dict[str, Any]:
     """Evaluate a SECRET-BEARING JS expression. Supervisor CDP-WS only.
 
     Fails closed: there is deliberately NO fallback to the agent-browser CLI
@@ -143,10 +143,18 @@ def _eval_js_secret(task_id: str, expression: str) -> Dict[str, Any]:
     credential bytes — in subprocess argv, visible to any process listing.
     When no supervisor session is available the caller gets a typed refusal
     (``error_type='supervisor_required'``) and nothing is written.
+
+    ``admitted`` is the caller's lease ticket when this write is one hop of a
+    larger inspect→fill. Reminting here would authorize a completed takeover.
     """
-    admitted, refuse = _shared_browser_fence(task_id)
-    if refuse:
-        return refuse
+    if admitted is None:
+        admitted, refuse = _shared_browser_fence(task_id)
+        if refuse:
+            return refuse
+    else:
+        stole = _discard_if_lease_moved(admitted)
+        if stole:
+            return stole
     try:
         supervisor = _ensure_supervisor(task_id)
     except Exception as exc:
@@ -426,7 +434,10 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
     if moved:
         del code
         return moved
-    result = _eval_js_secret(effective_task_id, build_fill_js(fills, expected_origin=origin, nonce=nonce))
+    result = _eval_js_secret(
+        effective_task_id, build_fill_js(fills, expected_origin=origin, nonce=nonce),
+        admitted=admitted,
+    )
     del code
     moved = _json_if_lease_moved(admitted)
     if moved:
@@ -577,7 +588,8 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
         return moved
     try:
         fill_result = _eval_js_secret(
-            effective_task_id, build_fill_js(fills, expected_origin=str(meta.origin), nonce=nonce)
+            effective_task_id, build_fill_js(fills, expected_origin=str(meta.origin), nonce=nonce),
+            admitted=admitted,
         )
     except Exception as exc:
         # Strip any secret material from exception text before surfacing.
