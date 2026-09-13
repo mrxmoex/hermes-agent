@@ -716,6 +716,15 @@ def _lease_moved_json(admitted) -> Optional[str]:
     return _dumps(stole) if stole else None
 
 
+def _refuse_if_lease_moved_or_blocked(admitted, blocked: Optional[str]) -> Optional[str]:
+    """After a subsidiary page-URL probe: discard if the epoch moved, else ``blocked``.
+
+    ``_run_browser_command`` remints. A take-over during ``_blocked_private_page*``
+    used to let get_images / back / eval return the earlier epoch's payload.
+    """
+    return _lease_moved_json(admitted) or blocked
+
+
 def _attach_auto_snapshot(response: Dict[str, Any], nav_session_key: str) -> None:
     """Add a compact snapshot to a navigate response so the model can act without browser_snapshot."""
     try:
@@ -848,11 +857,9 @@ def browser_snapshot(
         return moved
 
     blocked = _blocked_private_page_content(effective_task_id)
-    moved = _lease_moved_json(admitted)
-    if moved:
-        return moved
-    if blocked is not None:
-        return blocked
+    refused = _refuse_if_lease_moved_or_blocked(admitted, blocked)
+    if refused is not None:
+        return refused
 
     response = {"success": True, **_snapshot_fields(result)}
     _lp._copy_fallback_warning(response, result)
@@ -959,13 +966,20 @@ def browser_back(task_id: Optional[str] = None) -> str:
     if _is_camofox_mode():
         return _camofox("camofox_back", task_id)
     effective_task_id = _last_session_key(task_id or "default")
+    admitted, refuse = _session._shared_browser_fence(effective_task_id)
+    if refuse:
+        return _dumps(refuse)
     result = _session._run_browser_command(effective_task_id, "back", [])
     if result.get("success"):
         # History can land on a private/internal/metadata address the navigate
         # preflight never saw (earlier redirect chain, manipulated client-side history).
         blocked = _blocked_private_page(effective_task_id, "Browser history navigation (back) landed on this address.")
-        if blocked is not None:
-            return blocked
+        refused = _refuse_if_lease_moved_or_blocked(admitted, blocked)
+        if refused is not None:
+            return refused
+    moved = _lease_moved_json(admitted)
+    if moved:
+        return moved
     return _tool_response(result, {"url": result.get("data", {}).get("url", "")}, "Failed to go back")
 
 
@@ -1069,16 +1083,19 @@ def _eval_ok_response(parsed: Any, **extra) -> Dict[str, Any]:
     return {"success": True, "result": _snapshot._redact_browser_output(parsed), "result_type": type(parsed).__name__, **extra}
 
 
-def _eval_result_or_blocked(effective_task_id: str, parsed: Any, result: Dict[str, Any], **extra) -> str:
+def _eval_result_or_blocked(effective_task_id: str, parsed: Any, result: Dict[str, Any],
+                            admitted=None, **extra) -> str:
     """Eval tool JSON, unless the post-eval page-URL recheck finds an eval navigated the
-    page to a private address — then the result is withheld."""
+    page to a private address — then the result is withheld. A take-over during that
+    probe must discard the eval payload (same ticket as the eval, not a remint)."""
     blocked = _blocked_private_page_content(effective_task_id)
-    if blocked is not None:
-        return blocked
+    refused = _refuse_if_lease_moved_or_blocked(admitted, blocked)
+    if refused is not None:
+        return refused
     return _dumps(_lp._copy_fallback_warning(_eval_ok_response(parsed, **extra), result), default=str)
 
 
-def _eval_supervisor_fast_path(effective_task_id: str, expression: str) -> Optional[str]:
+def _eval_supervisor_fast_path(effective_task_id: str, expression: str, admitted=None) -> Optional[str]:
     """``Runtime.evaluate`` on the CDP supervisor's persistent WebSocket (no subprocess cost).
     Tool JSON when the supervisor gave a definitive answer (value, blocked page, or a real
     JS-side exception — NOT retried via subprocess, that would just reproduce it slower);
@@ -1091,7 +1108,8 @@ def _eval_supervisor_fast_path(effective_task_id: str, expression: str) -> Optio
         sup_result = supervisor.evaluate_runtime(expression)
         if sup_result.get("ok"):
             return _eval_result_or_blocked(
-                effective_task_id, _parse_eval_value(sup_result.get("result")), {}, method="cdp_supervisor")
+                effective_task_id, _parse_eval_value(sup_result.get("result")), {},
+                admitted=admitted, method="cdp_supervisor")
         err = sup_result.get("error") or "evaluate_runtime failed"
         if "supervisor" not in err.lower():
             return _dumps(_err(err))
@@ -1146,7 +1164,7 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
     if refuse:
         return _dumps(refuse)
 
-    fast = _eval_supervisor_fast_path(effective_task_id, expression)
+    fast = _eval_supervisor_fast_path(effective_task_id, expression, admitted=admitted)
     if fast is not None:
         stole = _session._discard_if_lease_moved(admitted)
         return _dumps(stole) if stole else fast
@@ -1157,7 +1175,9 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
         return _dumps(stole)
     if not result.get("success"):
         return _eval_failure_response(result)
-    return _eval_result_or_blocked(effective_task_id, _parse_eval_value(result.get("data", {}).get("result")), result)
+    return _eval_result_or_blocked(
+        effective_task_id, _parse_eval_value(result.get("data", {}).get("result")), result,
+        admitted=admitted)
 
 
 def _camofox_eval(expression: str, task_id: Optional[str] = None) -> str:
@@ -1237,13 +1257,17 @@ def browser_get_images(task_id: Optional[str] = None) -> str:
         return _camofox("camofox_get_images", task_id)
 
     effective_task_id = _last_session_key(task_id or "default")
+    admitted, refuse = _session._shared_browser_fence(effective_task_id)
+    if refuse:
+        return _dumps(refuse)
     result = _session._run_browser_command(effective_task_id, "eval", [_GET_IMAGES_JS])
     if not result.get("success"):
         return _failed_response(result, "Failed to get images")
 
     blocked = _blocked_private_page_content(effective_task_id)
-    if blocked is not None:
-        return blocked
+    refused = _refuse_if_lease_moved_or_blocked(admitted, blocked)
+    if refused is not None:
+        return refused
 
     raw_result = result.get("data", {}).get("result", "[]")
     try:

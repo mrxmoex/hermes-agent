@@ -763,9 +763,76 @@ def test_browser_navigate_does_not_retarget_on_blocked_metadata_redirect(monkeyp
     assert "review" not in browser._last_active_session_key
 
 
+def test_browser_get_images_discards_payload_when_epoch_moves_after_eval(monkeypatch):
+    """The SSRF recheck remints. Images from the earlier eval must not ship after hand-back."""
+    browser, session = _wire(monkeypatch, [])
+    monkeypatch.setattr(session, "_run_browser_command", lambda *_a, **_k: {
+        "success": True,
+        "data": {"result": json.dumps([
+            {"src": "https://human.example/secret.png", "alt": "WHAT-THE-HUMAN-TYPED"},
+        ])},
+    })
+
+    def steal(*_a, **_k):
+        lease.acquire("human-viewer")
+        lease.release("human-viewer")
+        return None
+
+    monkeypatch.setattr(browser, "_blocked_private_page_content", steal)
+    result = json.loads(browser.browser_get_images(task_id="review"))
+    assert result.get("code") == "human_has_control"
+    assert result.get("success") is not True
+    assert "WHAT-THE-HUMAN-TYPED" not in json.dumps(result)
+
+
+def test_browser_back_discards_url_when_epoch_moves_after_back(monkeypatch):
+    """History URL from the agent's ``back`` belongs to that epoch, not a later one."""
+    browser, session = _wire(monkeypatch, [])
+    monkeypatch.setattr(session, "_run_browser_command", lambda *_a, **_k: {
+        "success": True, "data": {"url": "https://human-private.example/"}})
+
+    def steal(*_a, **_k):
+        lease.acquire("human-viewer")
+        lease.release("human-viewer")
+        return None
+
+    monkeypatch.setattr(browser, "_blocked_private_page", steal)
+    result = json.loads(browser.browser_back(task_id="review"))
+    assert result.get("code") == "human_has_control"
+    assert result.get("success") is not True
+    assert "human-private.example" not in json.dumps(result)
+
+
+def test_browser_eval_subprocess_discards_when_epoch_moves_during_ssrf_recheck(monkeypatch):
+    """Subprocess eval discarded after the command, then reminted the URL probe.
+
+    Supervisor already discards after ``_eval_result_or_blocked``; the CLI path
+    used to return the eval payload if the probe itself crossed a take-over.
+    """
+    browser, session = _wire(monkeypatch, [])
+    monkeypatch.setattr(browser._eval_policy, "_eval_ssrf_guard_active", lambda *_a: False)
+    monkeypatch.setattr(browser, "_eval_supervisor_fast_path", lambda *_a, **_k: None)
+    monkeypatch.setattr(session, "_run_browser_command", lambda *_a, **_k: {
+        "success": True, "data": {"result": "WHAT-THE-HUMAN-TYPED"}})
+
+    def steal(*_a, **_k):
+        lease.acquire("human-viewer")
+        lease.release("human-viewer")
+        return None
+
+    monkeypatch.setattr(browser, "_blocked_private_page_content", steal)
+    raw = browser._browser_eval("document.body.innerText", task_id="review")
+    text = raw if isinstance(raw, str) else json.dumps(raw)
+    parsed = json.loads(text)
+    assert parsed.get("code") == "human_has_control"
+    assert "WHAT-THE-HUMAN-TYPED" not in text
+
+
 @pytest.mark.parametrize("invoke", [
     lambda browser: browser.browser_click("e1", task_id="review"),
     lambda browser: browser.browser_navigate("https://example.com", task_id="review"),
+    lambda browser: browser.browser_get_images(task_id="review"),
+    lambda browser: browser.browser_back(task_id="review"),
 ])
 def test_human_hold_does_not_create_or_recycle_shared_session(monkeypatch, invoke):
     """Admit before session create: a human lease must not launch or tear down Chromium.
