@@ -294,9 +294,12 @@ def interrupt_reserved_backends(home: Optional[str] = None) -> None:
 
 def _get_backend(session_id: str = "") -> ComputerUseBackend:
     sid = str(session_id or "")
+    # First call imports tools.approval (cwd-aware regexes used to compile
+    # here). Do that before the cache lock so Take over can still interrupt
+    # a sibling session. Re-read under the lock: YOLO can flip in between.
+    _cua_permission_mode(sid)
     while True:
         with _backend_lock:
-            # Mode resolved under the cache lock; YOLO mutation never holds the approval lock while releasing it.
             permission_mode = _cua_permission_mode(sid)
             if sid == "" and _backend is not None and sid not in _backends:
                 _install_backend(sid, _backend, permission_mode)  # fold the injection hook into the cache

@@ -2070,21 +2070,41 @@ def _bot_desktop_cwd_write_re(dest: str) -> re.Pattern:
     )
 
 
-_RELATIVE_BOT_DESKTOP_WRITE_RE = _bot_desktop_cwd_write_re(
-    rf'(?:{_RELATIVE_WRITE_DEST}|{_PWD_WRITE_DEST}|{_PWD_PRINTED_FILE_DEST})'
-)
-_OLDPWD_BOT_DESKTOP_WRITE_RE = _bot_desktop_cwd_write_re(
-    rf'(?:{_OLDPWD_WRITE_DEST}|{_OLDPWD_PRINTED_FILE_DEST})'
-)
-_DIRSTACK_BOT_DESKTOP_WRITE_RE = _bot_desktop_cwd_write_re(_DIRSTACK_WRITE_DEST)
-_PWD_PARENT_WRITE_RES = [
-    _bot_desktop_cwd_write_re(_parent_write_dest(_pwd_parent_token(n)))
-    for n in range(1, _MAX_PARENT_LEVELS + 1)
-]
-_OLDPWD_PARENT_WRITE_RES = [
-    _bot_desktop_cwd_write_re(_parent_write_dest(_oldpwd_parent_token(n)))
-    for n in range(1, _MAX_PARENT_LEVELS + 1)
-]
+# Compile on first detect, not at import. Parent-level dests (especially
+# 6–8 hops) explode to ~1MB patterns; compiling all of them at import
+# made ``import tools.approval`` take ~10s. computer_use's first
+# ``_get_backend`` imports that module to read the YOLO bypass and used
+# to hold ``_backend_lock`` across the compile — Take over could not
+# interrupt a sibling session, and in-flight type never started in time.
+@functools.lru_cache(maxsize=1)
+def _relative_bot_desktop_write_re() -> re.Pattern:
+    return _bot_desktop_cwd_write_re(
+        rf'(?:{_RELATIVE_WRITE_DEST}|{_PWD_WRITE_DEST}|{_PWD_PRINTED_FILE_DEST})'
+    )
+
+
+@functools.lru_cache(maxsize=1)
+def _oldpwd_bot_desktop_write_re() -> re.Pattern:
+    return _bot_desktop_cwd_write_re(
+        rf'(?:{_OLDPWD_WRITE_DEST}|{_OLDPWD_PRINTED_FILE_DEST})'
+    )
+
+
+@functools.lru_cache(maxsize=1)
+def _dirstack_bot_desktop_write_re() -> re.Pattern:
+    return _bot_desktop_cwd_write_re(_DIRSTACK_WRITE_DEST)
+
+
+@functools.lru_cache(maxsize=_MAX_PARENT_LEVELS)
+def _pwd_parent_write_re(level: int) -> re.Pattern:
+    return _bot_desktop_cwd_write_re(_parent_write_dest(_pwd_parent_token(level)))
+
+
+@functools.lru_cache(maxsize=_MAX_PARENT_LEVELS)
+def _oldpwd_parent_write_re(level: int) -> re.Pattern:
+    return _bot_desktop_cwd_write_re(_parent_write_dest(_oldpwd_parent_token(level)))
+
+
 _CHDIR_BOT_DESKTOP_WRITE_DESCRIPTION = "write into bot-desktop after chdir"
 
 
@@ -2250,26 +2270,26 @@ def _command_mutates_dirstack(command: str) -> bool:
 
 
 def _has_parent_bot_desktop_write(
-    command: str, res_list: list, levels: int,
+    command: str, write_re, levels: int,
 ) -> bool:
     cap = min(max(levels, 0), _MAX_PARENT_LEVELS)
-    return any(res_list[n].search(command) for n in range(cap))
+    return any(write_re(n + 1).search(command) for n in range(cap))
 
 
 def _has_relative_bot_desktop_write(
     command: str, *, include_oldpwd: bool = False, include_dirstack: bool = False,
     pwd_parent_levels: int = 0, oldpwd_parent_levels: int = 0,
 ) -> bool:
-    if _RELATIVE_BOT_DESKTOP_WRITE_RE.search(command):
+    if _relative_bot_desktop_write_re().search(command):
         return True
-    if include_oldpwd and _OLDPWD_BOT_DESKTOP_WRITE_RE.search(command):
+    if include_oldpwd and _oldpwd_bot_desktop_write_re().search(command):
         return True
-    if include_dirstack and _DIRSTACK_BOT_DESKTOP_WRITE_RE.search(command):
+    if include_dirstack and _dirstack_bot_desktop_write_re().search(command):
         return True
-    if _has_parent_bot_desktop_write(command, _PWD_PARENT_WRITE_RES, pwd_parent_levels):
+    if _has_parent_bot_desktop_write(command, _pwd_parent_write_re, pwd_parent_levels):
         return True
     return _has_parent_bot_desktop_write(
-        command, _OLDPWD_PARENT_WRITE_RES, oldpwd_parent_levels,
+        command, _oldpwd_parent_write_re, oldpwd_parent_levels,
     )
 
 

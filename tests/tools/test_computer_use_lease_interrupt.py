@@ -77,6 +77,41 @@ class _RecordingBackend:
         return True
 
 
+def test_approval_detection_import_defers_cwd_write_compile():
+    """``_cua_permission_mode`` imports ``tools.approval`` on the first
+    ``computer_use`` call. Compiling the cwd-aware write regexes at
+    import held ``_backend_lock`` for ~10s — Take over could not
+    interrupt a sibling, and in-flight type never started in time."""
+    import tools.approval_detection as ad
+
+    assert ad._relative_bot_desktop_write_re.cache_info().currsize == 0
+    assert ad._oldpwd_bot_desktop_write_re.cache_info().currsize == 0
+    assert ad._dirstack_bot_desktop_write_re.cache_info().currsize == 0
+    assert ad._pwd_parent_write_re.cache_info().currsize == 0
+    assert ad._oldpwd_parent_write_re.cache_info().currsize == 0
+
+
+def test_permission_mode_warmup_does_not_hold_backend_lock(monkeypatch):
+    """First ``_cua_permission_mode`` (approval import) must not hold
+    the cache lock — ``interrupt_reserved_backends`` needs that lock."""
+    from tools.computer_use import tool
+
+    unlocked: list[bool] = []
+    orig = tool._cua_permission_mode
+
+    def wrapped(sid):
+        got = tool._backend_lock.acquire(blocking=False)
+        unlocked.append(got)
+        if got:
+            tool._backend_lock.release()
+        return orig(sid)
+
+    monkeypatch.setattr(tool, "_cua_permission_mode", wrapped)
+    monkeypatch.setattr(tool, "_new_backend", lambda permission_mode="standard": _RecordingBackend())
+    tool._get_backend()
+    assert unlocked and unlocked[0] is True
+
+
 def test_takeover_interrupts_inflight_type_without_delivering_it(monkeypatch):
     from tools.computer_use import tool
 
