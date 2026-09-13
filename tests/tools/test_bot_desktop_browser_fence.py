@@ -3172,6 +3172,9 @@ def test_supervisor_belongs_to_session_is_endpoint_identity(monkeypatch):
     assert session_mod._supervisor_belongs_to_session(
         dock, {"session_name": "local", "features": {"local": True}},
     ) is True
+    assert session_mod._supervisor_belongs_to_session(
+        type("S", (), {"cdp_url": object()})(), {},
+    ) is True
 
 
 def test_live_supervisor_for_session_skips_leftover_on_another_browser(monkeypatch):
