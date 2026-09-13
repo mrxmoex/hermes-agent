@@ -386,9 +386,10 @@ def _discover_named_profiles():
 
 
 def _uninstall_profile(profile) -> None:
-    """Fully uninstall a named profile: stop its gateway, remove its alias, wipe its home. Shells
-    out to ``hermes -p <name> gateway stop|uninstall`` because service names / unit paths derive
-    from the current HERMES_HOME and can't be switched in-process."""
+    """Fully uninstall a named profile: stop its gateway, stop its Bot Desktop, remove its
+    alias, wipe its home. Shells out to ``hermes -p <name> gateway stop|uninstall`` because
+    service names / unit paths derive from the current HERMES_HOME and can't be switched
+    in-process."""
     name = profile.name
     log_info(f"Uninstalling profile '{name}'...")
 
@@ -404,7 +405,12 @@ def _uninstall_profile(profile) -> None:
         except Exception as e:
             log_warn(f"  Could not run gateway {subcmd} for '{name}': {e}")
 
-    # 2. Remove the wrapper alias script at ~/.local/bin/<name> (if any).
+    # 2. The launcher is not a gateway. Stop it (and release a human lease)
+    #    before the home vanishes — same hole as profile delete/rename.
+    from hermes_cli.profiles import _stop_bot_desktop
+    _stop_bot_desktop(profile.path)
+
+    # 3. Remove the wrapper alias script at ~/.local/bin/<name> (if any).
     alias_path = getattr(profile, "alias_path", None)
     if alias_path and alias_path.exists():
         try:
@@ -412,7 +418,7 @@ def _uninstall_profile(profile) -> None:
             log_success(f"  Removed alias {alias_path}")
         except Exception as e:
             log_warn(f"  Could not remove alias {alias_path}: {e}")
-    # 3. Wipe the profile's HERMES_HOME directory.
+    # 4. Wipe the profile's HERMES_HOME directory.
     _rmtree_step(profile.path, indent="  ", fully=False)
 
 
@@ -576,6 +582,7 @@ def _print_uninstall_dry_run(*, project_root: Path, hermes_home: Path, full_unin
     if not full_uninstall:
         print(f"  • Keep Hermes config/data: {hermes_home}")
     else:
+        print("  • Bot Desktop screens whose homes this wipe deletes")
         print(f"  • Hermes config/data: {hermes_home}")
         profiles = _discover_named_profiles() if _is_default_hermes_home(hermes_home) else []
         if profiles:
@@ -593,6 +600,54 @@ def _remove_step(label: str, remove, success_fmt: str, none_msg: str) -> None:
         log_success(success_fmt.format(item))
     if not removed:
         log_info(none_msg)
+
+
+def _homes_wiped_by_full_uninstall(hermes_home: Path, named_profiles: list) -> list[Path]:
+    """Homes a full wipe deletes: ``hermes_home`` and every named profile nested under it.
+
+    ``--yes --full`` leaves ``remove_profiles`` false, so ``_uninstall_profile``
+    never runs — but those homes still live under ``<default>/profiles/`` and
+    vanish with the parent ``rmtree``. A path outside ``hermes_home`` is not
+    deleted here (interactive removal of a non-nested profile goes through
+    ``_uninstall_profile``).
+    """
+    homes = [Path(hermes_home)]
+    try:
+        root = Path(hermes_home).resolve()
+    except OSError:
+        root = Path(hermes_home)
+    for prof in named_profiles or ():
+        path = getattr(prof, "path", None)
+        if path is None:
+            continue
+        path = Path(path)
+        try:
+            resolved = path.resolve()
+        except OSError:
+            continue
+        if resolved == root or resolved.is_relative_to(root):
+            homes.append(path)
+    return homes
+
+
+def _stop_bot_desktops_before_wipe(hermes_home: Path, named_profiles: list) -> None:
+    """Tear down Bot Desktops whose homes this full wipe will delete.
+
+    The launcher (Xvnc + Xfce + the dock Chromium) is not a gateway, so
+    ``uninstall_gateway_service`` leaves it running against a directory
+    ``_rmtree_step`` is about to remove. Call the same ``_stop_bot_desktop``
+    as profile delete/rename: release a human lease, then ``runtime.stop()``.
+    Failure is logged there and never fatal.
+    """
+    from hermes_cli.profiles import _stop_bot_desktop
+
+    seen: set[str] = set()
+    for home in _homes_wiped_by_full_uninstall(hermes_home, named_profiles):
+        key = str(home)
+        if key in seen:
+            continue
+        seen.add(key)
+        _stop_bot_desktop(home)
 
 
 def _rmtree_step(path: Path, *, indent: str = "", fully: bool = True) -> None:
@@ -614,9 +669,10 @@ def _perform_uninstall(
     full_uninstall: bool,
     remove_profiles: bool,
     named_profiles: list) -> None:
-    """The uninstall steps shared by the interactive and ``--yes`` paths: stop gateway -> strip PATH
-    (rc files + Windows registry) -> wrapper/launchers/node symlinks -> Chat GUI artifacts -> delete
-    the checkout -> (Windows) PortableGit/Node -> optionally ``$HERMES_HOME`` and named profiles."""
+    """The uninstall steps shared by the interactive and ``--yes`` paths: stop gateway ->
+    (full wipe) Bot Desktop screens whose homes vanish -> strip PATH (rc files + Windows
+    registry) -> wrapper/launchers/node symlinks -> Chat GUI artifacts -> delete the
+    checkout -> (Windows) PortableGit/Node -> optionally ``$HERMES_HOME`` and named profiles."""
     print()
     print(color("Uninstalling...", Colors.CYAN, Colors.BOLD))
     print()
@@ -624,6 +680,13 @@ def _perform_uninstall(
     log_info("Checking for running gateway...")
     if not uninstall_gateway_service():
         log_info("No gateway service or processes found")
+
+    # 1b. Bot Desktop is not a gateway. Stop every screen whose home the full
+    #     wipe will delete *before* the checkout ``rmtree``: ``runtime.stop``
+    #     imports from this tree. Keep-data leaves the screen (and the home).
+    if full_uninstall:
+        log_info("Stopping Bot Desktop screens...")
+        _stop_bot_desktops_before_wipe(hermes_home, named_profiles)
 
     # 2-3b. PATH entries, wrapper, Windows launchers, node symlinks. Windows: hermes_home is
     #    %VAR%-expanded because install.ps1 writes literal C:\Users\<u>\...; hermes\bin (launchers +

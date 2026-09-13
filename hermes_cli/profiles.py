@@ -1081,7 +1081,7 @@ def _stop_profile_backends(canon: str, profile_dir: Path) -> None:
 
 
 def _stop_bot_desktop(profile_dir: Path) -> None:
-    """Tear down this profile's Bot Desktop before delete/rename.
+    """Tear down this profile's Bot Desktop before delete/rename/uninstall.
 
     The launcher (Xvnc + Xfce + the dock Chromium) is not a gateway or a
     ``serve``/``dashboard`` backend, so ``_stop_gateway_process`` and
