@@ -1640,6 +1640,27 @@ _RELATIVE_BOT_DESKTOP_WRITE_RE = re.compile(
 _CHDIR_BOT_DESKTOP_WRITE_DESCRIPTION = "write into bot-desktop after chdir"
 
 
+def join_cwd_for_detection(cwd: Optional[str], *, base: Optional[str] = None) -> Optional[str]:
+    """Resolve a relative command cwd against the backend cwd for detection.
+
+    ``env.execute`` ``cd``s a relative ``workdir`` from the environment cwd
+    (Popen ``self.cwd`` / ``TERMINAL_CWD`` — often ``~/.hermes`` on
+    messaging). ``workdir=bot-desktop`` therefore writes ``lease.json``
+    under the screen tree while the detector would only see the token
+    ``bot-desktop``. Absolute / ``~`` dests are returned unchanged. A
+    relative cwd with no *base* is left as-is so a project folder named
+    ``bot-desktop`` stays unflagged.
+    """
+    if not cwd or not isinstance(cwd, str):
+        return cwd
+    expanded = os.path.expanduser(cwd)
+    if os.path.isabs(expanded):
+        return expanded
+    if not base or not isinstance(base, str):
+        return cwd
+    return os.path.normpath(os.path.join(os.path.expanduser(base.rstrip("/\\")), expanded))
+
+
 def _cwd_is_hermes_bot_desktop(cwd: Optional[str]) -> bool:
     """True when *cwd* is this (or a sibling named) profile's screen tree."""
     if not cwd or not isinstance(cwd, str):

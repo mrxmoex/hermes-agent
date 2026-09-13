@@ -731,6 +731,31 @@ class TestHermesBotDesktopWriteProtection:
         assert seen.get("cwd") == "~/.hermes/bot-desktop"
         assert result is not None and result["approved"] is False
 
+    def test_relative_workdir_joined_against_hermes_home(self):
+        """``workdir=bot-desktop`` is ``cd``'d from TERMINAL_CWD (often
+        ``~/.hermes`` on messaging). The token alone is a project folder
+        and must stay unflagged; joined against the Hermes home it is
+        the screen tree.
+        """
+        from tools.approval_detection import join_cwd_for_detection
+
+        assert detect_dangerous_command("echo x > lease.json", cwd="bot-desktop")[0] is False
+        assert detect_dangerous_command("echo x > lease.json", cwd="./bot-desktop")[0] is False
+
+        for base in ("~/.hermes", os.path.expanduser("~/.hermes"), str(get_hermes_home())):
+            joined = join_cwd_for_detection("bot-desktop", base=base)
+            dangerous, key, _ = detect_dangerous_command("echo x > lease.json", cwd=joined)
+            assert dangerous is True, base
+            assert key is not None, base
+            joined_dot = join_cwd_for_detection("./bot-desktop", base=base)
+            assert detect_dangerous_command("cp /tmp/e lease.json", cwd=joined_dot)[0] is True
+
+        scratch = join_cwd_for_detection("bot-desktop", base="/tmp")
+        assert detect_dangerous_command("echo x > lease.json", cwd=scratch)[0] is False
+        assert join_cwd_for_detection("~/.hermes/bot-desktop", base="/tmp") == os.path.expanduser(
+            "~/.hermes/bot-desktop"
+        )
+
     def test_delete_or_move_away_of_lease_requires_approval(self):
         """Missing lease.json fail-opens to agent hold; auto-approve must not
         drop a human's hold the way ``echo > lease.json`` forges one."""

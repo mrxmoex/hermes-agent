@@ -1227,13 +1227,18 @@ def terminal_tool(
         command_cwd = _resolve_command_cwd(
             workdir=workdir, default_cwd=cwd, session_key=session_key, env_type=env_type,
         )
+        from tools.approval_detection import join_cwd_for_detection
+        # Relative workdir is ``cd``'d from the environment cwd at execute
+        # time; join it so ``workdir=bot-desktop`` against ``~/.hermes``
+        # is visible to the detector. Execute still sees *command_cwd*.
+        detection_cwd = join_cwd_for_detection(command_cwd, base=cwd)
         _pre_exec_block(command, env=env, env_type=env_type, cwd=cwd, workdir=workdir, session_key=session_key)
         # Pre-exec security checks (tirith + dangerous command detection);
         # force=True means the user already confirmed. Session ``cd`` /
         # per-call ``workdir`` must reach the detector — relative writes
         # after ``cd ~/.hermes/bot-desktop`` forge lease.json the same
         # way an absolute dest does.
-        verdict = _run_approval_guards(command, env_type, plan.config, force=force, cwd=command_cwd)
+        verdict = _run_approval_guards(command, env_type, plan.config, force=force, cwd=detection_cwd)
 
         pty_disabled = pty and _command_requires_pipe_stdin(command)
         if plan.promoted_from_foreground_timeout is not None:
