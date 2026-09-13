@@ -228,7 +228,18 @@ def request_handoff(reason: str, *, profile_key: Optional[str] = None) -> Lease:
     def _m(lease: Lease) -> bool:
         lease.pending_handoff = reason
         return True
-    return _transition(profile_key, _m)
+    lease = _transition(profile_key, _m)
+    # Stamp now, while the agent still holds and DevTools is readable.
+    # computer_use used to return from request_handoff before finding 68's
+    # persist; Take over can then unlink DevToolsActivePort and leftover
+    # attach treats the jar as another Chrome. Persist failure must not
+    # fail the ask.
+    try:
+        from tools.bot_desktop.browser import persist_live_dock_cdp_port
+        persist_live_dock_cdp_port()
+    except Exception:
+        pass
+    return lease
 
 
 def wait_for_release(*, timeout: float, profile_key: Optional[str] = None) -> bool:

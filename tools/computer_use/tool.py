@@ -390,26 +390,30 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
         return json.dumps({"error": "missing `action`"})
     session_id = str(kwargs.get("session_id") or "")  # approval-state / daemon-mode isolation key
     from tools.computer_use.handoff import HANDOFF_ACTIONS, handle_handoff
+    # Finding 68 stamped dock-cdp-port on list_apps/click/… and started the
+    # leftover watch. request_handoff / wait_for_human returned first, so a
+    # messaging-only "please take over" never persisted. Take over can then
+    # unlink DevToolsActivePort; leftover attach is another Chrome.
+    # Persist + watch before the handoff return. Persist failure must not
+    # fail the ask. Do not assert_agent_may_act here — wait_for_human runs
+    # while a human holds.
+    install_computer_use_lease_hook()
+    try:
+        from tools.bot_desktop.browser import persist_live_dock_cdp_port
+        persist_live_dock_cdp_port()
+    except Exception:
+        pass
     if action in HANDOFF_ACTIONS:
         return handle_handoff(action, args)
     # Bot Desktop lease: while a human drives the screen every action, capture included, is refused.
     from tools.bot_desktop import lease as _bd_lease
     from tools.bot_desktop.runtime import ensure_started_for_tool as _bd_ensure_started
-    install_computer_use_lease_hook()
     def _refused(e: Exception) -> str:
         return json.dumps({"ok": False, "action": action, "code": "human_has_control", "error": str(e)})
     try:
         admitted = _bd_lease.assert_agent_may_act()
     except _bd_lease.HumanHasControl as e:
         return _refused(e)
-    # Stamp the live dock port on every agent-held call so a later
-    # DevTools miss still fences leftover CDP. Persist failure must
-    # not fail the action.
-    try:
-        from tools.bot_desktop.browser import persist_live_dock_cdp_port
-        persist_live_dock_cdp_port()
-    except Exception:
-        pass
     _bd_ensure_started()  # headless gateway: bring the profile's screen up before the backend probes DISPLAY
     if (err := _reject_unsafe(action, args)) is not None:
         return err

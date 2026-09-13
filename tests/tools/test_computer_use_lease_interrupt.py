@@ -216,6 +216,91 @@ def test_computer_use_dispatch_persists_dock_port_before_devtools_miss(monkeypat
     _reset_dock_port_memory_for_tests()
 
 
+def test_computer_use_request_handoff_persists_dock_port_before_devtools_miss(monkeypatch):
+    """Finding 68 persisted on list_apps/click, then returned from
+    request_handoff / wait_for_human first. Messaging-only handoff never
+    stamped dock-cdp-port or started the leftover watch. A later DevTools
+    miss leftover-attached as another Chrome (admit None)."""
+    import tools.bot_desktop.browser as bdb
+    from tools.bot_desktop.lease import HumanHasControl
+    from tools.computer_use import tool
+    from tools.browser_tool_session import (
+        _admit_resolved_cdp_for_attach,
+        _admit_shared_browser,
+        _cdp_url_is_bot_desktop_browser,
+        _last_dock_cdp_port,
+        _reset_dock_port_memory_for_tests,
+    )
+
+    _reset_dock_port_memory_for_tests()
+    dock = "ws://127.0.0.1:9333/devtools/browser/x"
+    other = "ws://127.0.0.1:9222/devtools/browser/x"
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: 9333)
+    assert bdb.last_known_dock_cdp_port() is None
+    asked = json.loads(tool.handle_computer_use(
+        {"action": "request_handoff", "reason": "Finish 2FA"},
+    ))
+    assert asked["ok"] is True
+    assert asked["state"]["pending_handoff"] == "Finish 2FA"
+    assert bdb.last_known_dock_cdp_port() == 9333
+    assert tool._watch_started is True
+
+    _last_dock_cdp_port.clear()
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: None)
+    lease.acquire("human-viewer")
+    assert bdb.last_known_dock_cdp_port() == 9333
+    assert _cdp_url_is_bot_desktop_browser(dock) is True
+    assert _cdp_url_is_bot_desktop_browser(other) is False
+    with pytest.raises(HumanHasControl):
+        _admit_shared_browser(cdp_url=dock)
+    assert _admit_resolved_cdp_for_attach(dock) is False
+    assert _admit_shared_browser(cdp_url=other) is None
+    assert _admit_resolved_cdp_for_attach(other) is True
+    _reset_dock_port_memory_for_tests()
+
+
+def test_computer_use_wait_for_human_persists_dock_port_before_devtools_miss(monkeypatch):
+    """wait_for_human shared request_handoff's early return and skipped
+    persist. A messaging turn that only waits still has to stamp the live
+    dock before DevTools can disappear."""
+    import tools.bot_desktop.browser as bdb
+    from tools.bot_desktop.lease import HumanHasControl
+    from tools.computer_use import tool
+    from tools.browser_tool_session import (
+        _admit_resolved_cdp_for_attach,
+        _admit_shared_browser,
+        _cdp_url_is_bot_desktop_browser,
+        _last_dock_cdp_port,
+        _reset_dock_port_memory_for_tests,
+    )
+
+    _reset_dock_port_memory_for_tests()
+    dock = "ws://127.0.0.1:9333/devtools/browser/x"
+    other = "ws://127.0.0.1:9222/devtools/browser/x"
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: 9333)
+    assert bdb.last_known_dock_cdp_port() is None
+    waited = json.loads(tool.handle_computer_use(
+        {"action": "wait_for_human", "seconds": 1, "grace": 0.05},
+    ))
+    assert waited["ok"] is False
+    assert waited["code"] == "no_takeover"
+    assert bdb.last_known_dock_cdp_port() == 9333
+    assert tool._watch_started is True
+
+    _last_dock_cdp_port.clear()
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: None)
+    lease.acquire("human-viewer")
+    assert bdb.last_known_dock_cdp_port() == 9333
+    assert _cdp_url_is_bot_desktop_browser(dock) is True
+    assert _cdp_url_is_bot_desktop_browser(other) is False
+    with pytest.raises(HumanHasControl):
+        _admit_shared_browser(cdp_url=dock)
+    assert _admit_resolved_cdp_for_attach(dock) is False
+    assert _admit_shared_browser(cdp_url=other) is None
+    assert _admit_resolved_cdp_for_attach(other) is True
+    _reset_dock_port_memory_for_tests()
+
+
 def test_computer_use_watch_persists_sibling_dock_under_backend_home(monkeypatch, tmp_path: Path):
     """A cua backend minted under a bot home must stamp that home's
     ``dock-cdp-port``, not invent a port on the launch profile."""

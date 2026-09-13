@@ -222,6 +222,55 @@ def test_unreadable_lease_file_fails_closed_and_takeover_keeps_the_agents_reason
     assert hermes_home_key(home)  # sanity: the key derivation used by the bridge is available
 
 
+def test_request_handoff_persists_dock_port_before_devtools_miss(monkeypatch):
+    """lease.request_handoff is the ask — stamp while DevTools is still
+    readable. computer_use used to return from the action before persist,
+    so a later miss leftover-attached as another Chrome."""
+    import tools.bot_desktop.browser as bdb
+    from tools.bot_desktop.lease import HumanHasControl
+    from tools.browser_tool_session import (
+        _admit_resolved_cdp_for_attach,
+        _admit_shared_browser,
+        _cdp_url_is_bot_desktop_browser,
+        _last_dock_cdp_port,
+        _reset_dock_port_memory_for_tests,
+    )
+
+    _reset_dock_port_memory_for_tests()
+    dock = "ws://127.0.0.1:9333/devtools/browser/x"
+    other = "ws://127.0.0.1:9222/devtools/browser/x"
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: 9333)
+    assert bdb.last_known_dock_cdp_port() is None
+    asked = lease.request_handoff("Finish 2FA")
+    assert asked.pending_handoff == "Finish 2FA"
+    assert asked.holder == lease.AGENT
+    assert bdb.last_known_dock_cdp_port() == 9333
+
+    _last_dock_cdp_port.clear()
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: None)
+    lease.acquire("human-viewer")
+    assert bdb.last_known_dock_cdp_port() == 9333
+    assert _cdp_url_is_bot_desktop_browser(dock) is True
+    assert _cdp_url_is_bot_desktop_browser(other) is False
+    with pytest.raises(HumanHasControl):
+        _admit_shared_browser(cdp_url=dock)
+    assert _admit_resolved_cdp_for_attach(dock) is False
+    assert _admit_shared_browser(cdp_url=other) is None
+    assert _admit_resolved_cdp_for_attach(other) is True
+    _reset_dock_port_memory_for_tests()
+
+
+def test_request_handoff_survives_persist_failure(monkeypatch):
+    """A disk error stamping dock-cdp-port must not drop the handoff ask."""
+    monkeypatch.setattr(
+        "tools.bot_desktop.browser.persist_live_dock_cdp_port",
+        lambda: (_ for _ in ()).throw(RuntimeError("disk full")),
+    )
+    asked = lease.request_handoff("Finish 2FA")
+    assert asked.pending_handoff == "Finish 2FA"
+    assert asked.holder == lease.AGENT
+
+
 def test_lease_works_without_fcntl(tmp_path):
     """Windows and fcntl-less hosts: ``computer_use`` imports the lease (via handoff) on EVERY call, so a
     module-level fcntl dependency turns every desktop action into ModuleNotFoundError there. The file
