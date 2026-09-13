@@ -8,12 +8,15 @@ itself) and the Desktop UI (Watch / Take over / Hand back).
 Authority lives ON DISK, ``<HERMES_HOME>/bot-desktop/lease.json`` under an fcntl lock, because the
 processes that must agree do not share memory: ``hermes serve`` (viewer bridge), the messaging
 gateway, a CLI turn and isolated workers all drive the same display. Every read goes to the file;
-the in-process Condition only wakes local waiters early. ``epoch`` increments on every transition so
-an action admitted under one lease can tell that control changed underneath it.
+the in-process Condition only wakes local waiters early. ``epoch`` increments only when the
+holder or viewer identity changes, so an action admitted under the agent is not discarded merely
+because the agent asked for help (``request_handoff`` still writes and notifies). A full
+take-over / hand-back cycle still moves ``epoch`` twice.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -21,7 +24,7 @@ import threading
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
 from hermes_constants import get_hermes_home, hermes_home_key
 
@@ -52,6 +55,24 @@ class Lease:
 
     def as_dict(self) -> Dict[str, object]:
         return asdict(self)
+
+    def public_view(self) -> Dict[str, object]:
+        """Client- and model-facing snapshot: ``viewer_id`` is a capability (whoever presents it
+        co-drives or releases), so it is replaced by a short hash the holder can match against
+        its own id. One function so Desktop events and ``computer_use`` tool results cannot drift."""
+        data = self.as_dict()
+        viewer_id = data.pop("viewer_id")
+        data["viewer_id"] = None
+        data["viewer_hash"] = (
+            hashlib.sha256(viewer_id.encode()).hexdigest()[:12] if viewer_id else None
+        )
+        return data
+
+
+def content_sig(lease: Lease) -> Tuple[object, ...]:
+    """Identity of a lease for cross-process watchers: control epoch plus the fields a UI
+    must repaint (pending handoff does not bump ``epoch``)."""
+    return (lease.epoch, lease.holder, lease.viewer_id, lease.pending_handoff)
 
 
 _lock = threading.Condition()
@@ -145,9 +166,13 @@ def _transition(profile_key: Optional[str], mutate: Callable[[Lease], bool]) -> 
     key, path = hermes_home_key(profile_key) if profile_key else hermes_home_key(), _path(profile_key)
     with _locked(path):
         lease = _read(path)
+        before = (lease.holder, lease.viewer_id)
         if not mutate(lease):
             return lease
-        lease.epoch += 1
+        # Control identity, not every write: request_handoff must notify Desktop without voiding
+        # an in-flight agent capture that was admitted while the agent still held the screen.
+        if (lease.holder, lease.viewer_id) != before:
+            lease.epoch += 1
         _write(path, lease)
     with _lock:
         _lock.notify_all()
@@ -187,6 +212,8 @@ def request_handoff(reason: str, *, profile_key: Optional[str] = None) -> Lease:
     """Agent asks a human to take over (login, 2FA, CAPTCHA, payment). Recorded so the UI can show
     why and the bridge can page the user; control itself still flips only on ``acquire``."""
     def _m(lease: Lease) -> bool:
+        if lease.pending_handoff == reason:
+            return False
         lease.pending_handoff = reason
         return True
     return _transition(profile_key, _m)

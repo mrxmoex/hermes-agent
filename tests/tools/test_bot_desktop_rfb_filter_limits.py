@@ -3,7 +3,7 @@
 
 import pytest
 
-from tools.bot_desktop.rfb_filter import _MAX_CUT_TEXT, RfbClientFilter
+from tools.bot_desktop.rfb_filter import _MAX_BUF, _MAX_CUT_TEXT, RfbClientFilter
 
 _HANDSHAKE = b"RFB 003.008\n\x01\x01"
 
@@ -22,3 +22,13 @@ def test_oversized_clipboard_is_rejected_at_header_without_waiting_for_payload(l
         assert parser.feed(bytes([byte])) == b""
     with pytest.raises(ValueError, match="clipboard"):
         parser.feed(header[-1:])
+
+
+def test_unframed_client_buffer_is_capped_before_a_message_length_is_known():
+    """A watcher can stall on an incomplete SetEncodings header; without an overall cap
+    every subsequent WebSocket frame would grow the bridge process unbounded."""
+    parser = RfbClientFilter(lambda: False)
+    parser.feed(_HANDSHAKE)
+    assert parser.feed(b"\x02\x00") == b""  # 2 of 4 header bytes — length still unknown
+    with pytest.raises(ValueError, match="buffer"):
+        parser.feed(b"A" * _MAX_BUF)

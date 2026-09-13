@@ -46,6 +46,48 @@ def test_rfb_filter_forwards_input_only_from_the_lease_holder_across_arbitrary_c
     assert lease.release("v2").holder == lease.AGENT
 
 
+def test_request_handoff_does_not_bump_control_epoch():
+    """Asking for help is not a control change. Bumping epoch here discarded in-flight agent
+    captures that were admitted while the agent still held the screen."""
+    before = lease.get().epoch
+    lease.request_handoff("log in")
+    assert lease.get().epoch == before and lease.get().pending_handoff == "log in"
+    lease.acquire("v1")
+    assert lease.get().epoch == before + 1
+    lease.release("v1")
+    assert lease.get().epoch == before + 2
+
+
+def test_request_handoff_during_an_admitted_capture_keeps_the_agent_frame(monkeypatch):
+    from tools.computer_use import tool
+
+    monkeypatch.setattr(tool, "_get_backend", lambda session_id="": object())
+
+    def _dispatch_then_ask(backend, action, args, **_):
+        lease.request_handoff("please log in")
+        return json.dumps({"ok": True, "action": action, "png_b64": "AGENT_FRAME"})
+
+    monkeypatch.setattr(tool, "_dispatch", _dispatch_then_ask)
+    res = json.loads(tool.handle_computer_use({"action": "capture"}))
+    assert "AGENT_FRAME" in json.dumps(res), res
+    assert lease.get().pending_handoff == "please log in"
+
+
+def test_handoff_tool_result_never_discloses_viewer_id():
+    """viewer_id is a capability; display.status already redacts it. computer_use results
+    reach the model (the party the lease excludes) and must use the same public view."""
+    from tools.computer_use.handoff import handle_handoff
+
+    handle_handoff("request_handoff", {"reason": "log in"})
+    lease.acquire("secret-viewer-id")
+    res = json.loads(handle_handoff("wait_for_human", {"seconds": 0.25, "grace": 0.05}))
+    dumped = json.dumps(res)
+    assert "secret-viewer-id" not in dumped
+    assert res["state"]["viewer_id"] is None
+    assert res["state"]["holder"] == lease.HUMAN
+    assert res["state"]["viewer_hash"]
+
+
 def test_computer_use_refuses_every_action_while_a_human_holds_the_screen(monkeypatch):
     from tools.computer_use import tool
 

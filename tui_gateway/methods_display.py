@@ -29,15 +29,8 @@ _lease_listener_installed = threading.Event()
 
 
 def _lease_view(lease) -> dict:
-    """The lease as clients may see it: the holder's viewer id is a capability (whoever presents it
-    co-drives or releases the lease), so it is replaced by a short hash the holder can match against
-    its own id to know it is the one in control."""
-    import hashlib
-    d = lease.as_dict()
-    vid = d.pop("viewer_id")
-    d["viewer_id"] = None
-    d["viewer_hash"] = hashlib.sha256(vid.encode()).hexdigest()[:12] if vid else None
-    return d
+    """The lease as clients may see it: raw viewer id is a capability, so only a hash is sent."""
+    return lease.public_view()
 
 
 def _display_snapshot() -> dict:
@@ -75,11 +68,8 @@ def _(rid, params: dict) -> dict:
     """One JPEG grab of the bot's screen (``data_url``: null while stopped). Read-only: no lease change.
     Suppressed while a human holds the lease — the frame may show what they are typing."""
     try:
-        from tools.bot_desktop import lease as _bd_lease
-        if _bd_lease.human_holds():
-            return _ok(rid, {"data_url": None, "suppressed": "human_has_control"})
-        from tools.bot_desktop.thumbnail import thumbnail_data_url
-        return _ok(rid, {"data_url": thumbnail_data_url()})
+        from tools.bot_desktop.thumbnail import thumbnail_for_clients
+        return _ok(rid, thumbnail_for_clients())
     except Exception as e:
         return _err(rid, _DISPLAY_ERR, str(e))
 
@@ -192,6 +182,20 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"started": True, "command": _bd_runtime.install_command(), "profile_key": profile_key})
 
 
+def _viewer_id_is_minted(viewer_id: str) -> bool:
+    """True when this connection observed the screen and received ``viewer_id``. Untrackable
+    transports (stdio / non-weakrefable) cannot enforce and stay fail-open — Desktop sockets
+    always can. Completes the server-minted-id work: acquire used to accept any string."""
+    transport = current_transport()
+    if transport is None:
+        return True
+    try:
+        mine = _minted_viewer_ids.get(transport)
+    except TypeError:
+        return True
+    return bool(mine) and viewer_id in mine
+
+
 @method("display.lease.acquire")
 @_profile_scoped
 def _(rid, params: dict) -> dict:
@@ -199,6 +203,9 @@ def _(rid, params: dict) -> dict:
     viewer_id = str(params.get("viewer_id") or "").strip()
     if not viewer_id:
         return _err(rid, _DISPLAY_ERR, "viewer_id required")
+    if not _viewer_id_is_minted(viewer_id):
+        return _err(rid, _DISPLAY_ERR, "viewer_id is not minted on this connection; call display.observe first",
+                    data={"code": "viewer_unminted"})
     lease = _bd_lease.acquire(viewer_id, reason=str(params.get("reason") or ""))
     return _ok(rid, {"lease": _lease_view(lease)})
 

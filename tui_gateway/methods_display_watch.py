@@ -6,7 +6,8 @@ release. ``lease.on_change`` only fires in the writing process, so ``methods_dis
 listener never sees those; the Desktop's "Bot needs you" badge and hero tone stayed stale until the
 pane was reopened. One daemon thread stats every served home's ``bot-desktop/lease.json`` (launch
 home + ``_served_profile_homes``) every 0.5s and broadcasts the SAME ``display.lease`` payload when
-the epoch moves. Bodies are rebound onto server.py's globals (method_ctx.bind_module).
+the lease content changes (control epoch or pending_handoff). Bodies are rebound onto
+server.py's globals (method_ctx.bind_module).
 """
 
 from __future__ import annotations
@@ -19,9 +20,10 @@ from .method_ctx import bind_module
 
 _LEASE_POLL_S = 0.5
 _lease_watcher_started = threading.Event()
-# profile key → last epoch broadcast or seen (in-process transitions record theirs too, so a change
-# made by THIS process is not re-broadcast when its file write is noticed a tick later).
-_lease_epochs: dict[str, int] = {}
+# profile key → last content signature broadcast or seen (in-process transitions record theirs
+# too, so a change made by THIS process is not re-broadcast when its file write is noticed a
+# tick later). Signature includes pending_handoff: that write does not bump epoch.
+_lease_epochs: dict[str, tuple] = {}
 _lease_mtimes: dict[str, int | None] = {}
 # profile key → (env mtime, launcher.pid mtime): the screen's running/display identity. A start,
 # stop or crash made by another process (CLI, gateway auto-start) moves one of these.
@@ -80,12 +82,13 @@ def _poll_lease_files() -> None:
             continue
         _lease_mtimes[key] = mtime
         lease = _bd_lease.get(str(home))
+        sig = _bd_lease.content_sig(lease)
         if key not in _lease_epochs:  # first sighting seeds silently: display.status carries it
-            _lease_epochs[key] = lease.epoch
+            _lease_epochs[key] = sig
             continue
-        if lease.epoch == _lease_epochs[key]:
+        if sig == _lease_epochs[key]:
             continue
-        _lease_epochs[key] = lease.epoch
+        _lease_epochs[key] = sig
         _broadcast_global_event("display.lease", _lease_event_payload(key, lease))
 
 
@@ -101,7 +104,7 @@ def _ensure_lease_watcher() -> None:
         # methods_display's listener broadcasts in-process transitions; only then is the file
         # move ours to skip. Before display.status installed it, the poll below carries them.
         if _lease_listener_installed.is_set():
-            _lease_epochs[profile_key] = lease.epoch
+            _lease_epochs[profile_key] = _bd_lease.content_sig(lease)
     _bd_lease.on_change(_seen_locally)
 
     def _loop() -> None:
