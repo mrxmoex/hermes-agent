@@ -110,6 +110,11 @@ async def _bridge(ws: WebSocket, info: dict) -> None:
             lease = _lease.get(profile_key=profile_home)
         allowed["input"] = lease.holder == _lease.HUMAN and lease.viewer_id == viewer_id
         allowed["at"] = loop.time()
+        # Eviction used to run only on in-process on_change. A takeover written by
+        # another process (CLI, gateway, second serve) never fired that callback, so
+        # the previous holder kept the RFB stream and watched the new human type.
+        if _should_evict(held, lease, viewer_id):
+            evicted.set()
 
     def _may_send_input() -> bool:
         if loop.time() - allowed["at"] > _LEASE_REFRESH_S:
@@ -120,8 +125,6 @@ async def _bridge(ws: WebSocket, info: dict) -> None:
         if key != profile_key:
             return
         loop.call_soon_threadsafe(_refresh_allowed, lease)
-        if _should_evict(held, lease, viewer_id):
-            loop.call_soon_threadsafe(evicted.set)
     unsubscribe = _lease.on_change(_on_lease)
 
     rfb_filter = RfbClientFilter(_may_send_input)

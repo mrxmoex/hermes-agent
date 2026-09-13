@@ -19,6 +19,8 @@ class _Ws:
     def __init__(self, close_code: int):
         self._code = close_code
         self.closed = False
+        self.close_code = None
+        self.close_reason = ""
 
     async def accept(self):
         pass
@@ -31,6 +33,9 @@ class _Ws:
         pass
 
     async def close(self, code=1000, reason=""):
+        if not self.closed:
+            self.close_code = code
+            self.close_reason = reason
         self.closed = True
 
 
@@ -91,7 +96,9 @@ class _OpenWs(_Ws):
 
 def test_a_takeover_made_by_another_process_stops_input_within_the_refresh_interval(monkeypatch):
     """The bridge caches the input decision instead of reading lease.json per message; a takeover
-    written by ANOTHER process (no in-process listener fires) must still be seen quickly."""
+    written by ANOTHER process (no in-process listener fires) must still drop input AND close
+    the evicted stream (4000 control-taken). Input-only was not enough: the old viewer kept
+    watching whatever the new holder typed."""
     from tools.bot_desktop import rfb_filter
     captured = {}
 
@@ -116,7 +123,9 @@ def test_a_takeover_made_by_another_process_stops_input_within_the_refresh_inter
             t0 = asyncio.get_running_loop().time()
             while captured["allow"]() and asyncio.get_running_loop().time() - t0 < 2.0:
                 await asyncio.sleep(0.02)
-            return asyncio.get_running_loop().time() - t0
+            while ws.close_code is None and asyncio.get_running_loop().time() - t0 < 2.0:
+                await asyncio.sleep(0.02)
+            return asyncio.get_running_loop().time() - t0, ws.close_code, ws.close_reason
         finally:
             ws.finish.set()
             await task
@@ -125,6 +134,8 @@ def test_a_takeover_made_by_another_process_stops_input_within_the_refresh_inter
     lease._reset_for_tests()
     with tempfile.TemporaryDirectory() as home:
         lease.acquire("desk-1", profile_key=home)
-        elapsed = asyncio.run(_run(home))
+        elapsed, close_code, close_reason = asyncio.run(_run(home))
     lease._reset_for_tests()
     assert elapsed < 0.5, elapsed
+    assert close_code == display._CLOSE_CONTROL_TAKEN, (close_code, close_reason)
+    assert "control-taken" in close_reason
