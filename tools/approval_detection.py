@@ -311,6 +311,11 @@ DANGEROUS_PATTERNS = [
      "pipe openssl-decoded content to shell (possible command obfuscation)"),
     (rf'\btee\b.*["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via tee"),
     (rf'>>?\s*["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via redirection"),
+    # `dd of=` with no `if=` writes stdin (or zeros) and misses the "disk copy" rule
+    # (`dd … if=`). Same pairing as tee/redirect: forges lease.json holder=agent or
+    # fail-opens leftover dock-cdp-port under auto-approve. `gdd` / `busybox dd`
+    # are not folded by basename projection (`busybox`/`gdd` stay the argv0).
+    (rf'\b(?:gdd|dd)\b[^\n]*\bof=["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via dd"),
     (rf'\btee\b.*["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_WRITE_TARGET_BOUNDARY}', "overwrite project env/config via tee"),
     (rf'>>?\s*["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_WRITE_TARGET_BOUNDARY}', "overwrite project env/config via redirection"),
     (r'\bxargs\s+.*\brm\b', "xargs with rm"),
