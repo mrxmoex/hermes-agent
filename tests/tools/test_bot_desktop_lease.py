@@ -184,6 +184,14 @@ def test_unreadable_lease_file_fails_closed_and_takeover_keeps_the_agents_reason
     lease.release(profile_key=home)
     assert lease.get(profile_key=home).holder == lease.AGENT
 
+    # Unlinking a live human lease is the same fail-open as a missing file:
+    # holder=agent without release(). Terminal auto-approve and Electron
+    # rename/trash must not be able to do this silently.
+    held = lease.acquire("desk-unlink", profile_key=home)
+    assert held.holder == lease.HUMAN
+    path.unlink()
+    assert lease.get(profile_key=home).holder == lease.AGENT
+
     lease.request_handoff("log in to the bank, 2FA on your phone", profile_key=home)
     held = lease.acquire("desk-1", profile_key=home)
     assert held.pending_handoff is None and held.reason == "log in to the bank, 2FA on your phone"

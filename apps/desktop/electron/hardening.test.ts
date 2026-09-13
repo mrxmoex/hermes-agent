@@ -23,6 +23,7 @@ import {
   SAFE_STORAGE_ENCODING,
   SECRET_FILE_MODE,
   sensitiveFileBlockReason,
+  sensitiveFsMutationReason,
   tightenSecretFileMode,
   writeSecretFileAtomic
 } from './hardening'
@@ -680,6 +681,29 @@ test('sensitiveFileBlockReason blocks the Bot Screen cookie jar and lease', () =
   )
   assert.equal(sensitiveFileBlockReason('/home/u/.hermes/notes.md'), null)
   assert.equal(sensitiveFileBlockReason('/home/u/.hermes/cache/images/shot.png'), null)
+})
+
+test('sensitiveFsMutationReason blocks rename/trash of the lease and symlink aliases', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-fs-mutation-'))
+  const jar = path.join(dir, 'bot-desktop')
+  const lease = path.join(jar, 'lease.json')
+  const alias = path.join(dir, 'alias.json')
+  const notes = path.join(dir, 'notes.md')
+
+  fs.mkdirSync(jar)
+  fs.writeFileSync(lease, '{"holder":"human"}\n')
+  fs.writeFileSync(notes, 'ok\n')
+  fs.symlinkSync(lease, alias)
+
+  try {
+    assert.match(String(sensitiveFsMutationReason(lease)), /Bot Screen/)
+    assert.match(String(sensitiveFsMutationReason(path.join(jar, 'lease.bak'))), /Bot Screen/)
+    assert.match(String(sensitiveFsMutationReason(alias)), /Bot Screen/)
+    assert.equal(sensitiveFsMutationReason(notes), null)
+    assert.equal(sensitiveFsMutationReason(undefined, ''), null)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 test('path helpers reject blank non-string NUL and Windows device syntax', async () => {

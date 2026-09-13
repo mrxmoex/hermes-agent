@@ -316,8 +316,39 @@ function sensitiveFileBlockReason(filePath) {
 
   // Bot Screen state: cookie jar, X cookie, lease.json, dock-cdp-port.
   // Writing lease.json from the spot editor returns control without acquire.
+  // Renaming or trashing it is the inverse: missing lease.json fail-opens
+  // to holder=agent without release().
   if (normalized.includes('/bot-desktop/') || normalized.endsWith('/bot-desktop')) {
     return 'Bot Screen cookie jar, lease, and X cookie are blocked.'
+  }
+
+  return null
+}
+
+function sensitiveFsMutationReason(...filePaths: Array<null | string | undefined>) {
+  // Rename/trash must refuse the same trees writeText already refuses.
+  // Resolve aliases so a symlink outside the tree cannot drop the lease.
+  for (const raw of filePaths) {
+    if (!raw) {
+      continue
+    }
+
+    const direct = sensitiveFileBlockReason(raw)
+
+    if (direct) {
+      return direct
+    }
+
+    try {
+      const resolved = fs.realpathSync(raw)
+      const viaLink = sensitiveFileBlockReason(resolved)
+
+      if (viaLink) {
+        return viaLink
+      }
+    } catch {
+      // Missing or dangling — the path-part check already ran.
+    }
   }
 
   return null
@@ -554,6 +585,7 @@ export {
   SAFE_STORAGE_ENCODING,
   SECRET_FILE_MODE,
   sensitiveFileBlockReason,
+  sensitiveFsMutationReason,
   TEXT_PREVIEW_SOURCE_MAX_BYTES,
   tightenSecretFileMode,
   writeSecretFileAtomic

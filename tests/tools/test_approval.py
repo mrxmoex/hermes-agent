@@ -397,9 +397,27 @@ class TestHermesBotDesktopWriteProtection:
             "cat ~/.hermes/bot-desktop/lease.json",
             "echo data > /tmp/scratch.txt",
             "echo x > ~/projects/notes.md",
+            "rm ~/.hermes/notes.md",
+            "rm ~/.hermes/bot-desktop-backup/notes.md",
+            "mv /tmp/a /tmp/b",
         ):
             dangerous, key, desc = detect_dangerous_command(cmd)
             assert dangerous is False, cmd
+
+    def test_delete_or_move_away_of_lease_requires_approval(self):
+        """Missing lease.json fail-opens to agent hold; auto-approve must not
+        drop a human's hold the way ``echo > lease.json`` forges one."""
+        for command in (
+            "rm ~/.hermes/bot-desktop/lease.json",
+            "rm -f $HERMES_HOME/bot-desktop/dock-cdp-port",
+            "unlink ~/.hermes/bot-desktop/lease.json",
+            "shred $HERMES_HOME/bot-desktop/lease.json",
+            "mv ~/.hermes/bot-desktop/lease.json /tmp/lease.bak",
+            "mv $HERMES_HOME/bot-desktop /tmp/stolen-screen",
+        ):
+            dangerous, key, desc = detect_dangerous_command(command)
+            assert dangerous is True, command
+            assert key is not None, command
 
 
 class TestFindExecFullPathRm:

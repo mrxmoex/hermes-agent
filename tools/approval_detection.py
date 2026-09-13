@@ -32,7 +32,10 @@ _HERMES_CONFIG_PATH = (
 # credential-style pairing as #14639 — not a lease-gated terminal fence.
 _HERMES_BOT_DESKTOP_PATH = (
     r'(?:~\/\.hermes/|(?:\$home|\$\{home\})/\.hermes/|(?:\$hermes_home|\$\{hermes_home\})/)'
-    r'bot-desktop(?:/|$)'
+    # `/` for a file inside the tree; whitespace/quote/EOS so `mv ~/.hermes/bot-desktop /tmp`
+    # (directory as SOURCE) still matches. Do not use `\b` — that would fire on
+    # a project folder named bot-desktop-backup.
+    r'bot-desktop(?:/|(?=[\s;"\']|$))'
 )
 _HERMES_SECURITY_PATH = (
     rf'(?:{_HERMES_CONFIG_PATH}|{_HERMES_ENV_PATH}|{_HERMES_BOT_DESKTOP_PATH})'
@@ -380,6 +383,13 @@ DANGEROUS_PATTERNS = [
     # script-execution pattern above (which targets code evaluation, not file mutation). Pairs the sed -i
     # coverage from #14639.
     (rf'\b(?:perl|ruby)\b.*(?:^|\s)-[^\s]*i\b.*(?:{_HERMES_SECURITY_PATH})', "in-place edit of Hermes config/env/bot-desktop (perl/ruby)"),
+    # rm/unlink/shred of bot-desktop/ is the inverse of the write forge: missing
+    # lease.json fail-opens to holder=agent (``Lease()`` on FileNotFoundError),
+    # and missing dock-cdp-port fail-opens leftover CDP classification. mv of
+    # the tree as SOURCE is the same drop. ``cat`` stays unflagged (same-UID
+    # read). Recursive ``rm -rf`` is already a generic dangerous command.
+    (rf'\b(?:rm|unlink|shred)\b.*["\']?{_HERMES_BOT_DESKTOP_PATH}', "delete Bot Screen lease/cookie jar"),
+    (rf'\bmv\b.*["\']?{_HERMES_BOT_DESKTOP_PATH}', "move Bot Screen lease/cookie jar"),
     # Interpreter heredocs are handled by _execution_flag_findings(); only shell heredocs stay
     # regex-based. `bash <<'EOF'` runs arbitrary commands without triggering the `bash -c` path.
     (r'\b(bash|sh|zsh|ksh)\s+<<', "shell execution via heredoc"),
