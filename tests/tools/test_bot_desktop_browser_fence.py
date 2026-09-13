@@ -545,6 +545,104 @@ def test_browser_exec_does_not_overlay_dock_supervisor_on_cloud_route(monkeypatc
     assert result.get("success") is True
 
 
+def test_browser_exec_readmits_real_profile_cache_hit_after_cloud_skip(monkeypatch):
+    """``local=true`` real-profile cache hit never writes ``_active_sessions``.
+    Predicted-cloud skip + that CDP left admitted=None; takeover during CLI leaked."""
+    from tools import browser_tool as browser
+
+    ran: list = []
+    rp_cdp = "http://127.0.0.1:9334"
+    _predict_cloud(monkeypatch)
+    browser._real_profile_cdp_cache["cdp"] = rp_cdp
+    monkeypatch.setattr(bu_cli, "_find_cli", lambda: ["/usr/bin/browser-use"])
+    monkeypatch.setattr(bu_cli, "_attach_vault_supervisor", lambda *a, **k: None)
+
+    def route(env, *_a, **_k):
+        env["BU_CDP_URL"] = rp_cdp
+        return None
+
+    monkeypatch.setattr(bu_cli, "_route_backend", route)
+    monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", _is_dock_cdp)
+
+    def run_then_takeover(*_a, **_k):
+        ran.append("cli")
+        lease.acquire("human-viewer")
+        lease.release("human-viewer")
+        return subprocess.CompletedProcess(["browser-use"], 0, "WHAT-THE-HUMAN-TYPED\n", "")
+
+    monkeypatch.setattr(bu_cli, "_run_cli_killing_process_group", run_then_takeover)
+    try:
+        result = json.loads(bu_cli.browser_exec("print(1)", task_id="review", local=True))
+    finally:
+        browser._real_profile_cdp_cache.pop("cdp", None)
+    assert "WHAT-THE-HUMAN-TYPED" not in json.dumps(result)
+    assert result.get("code") == "human_has_control"
+    assert result.get("success") is not True
+
+
+def test_browser_exec_stale_real_profile_cache_does_not_fence_cloud_route(monkeypatch):
+    """A leftover real-profile CDP cache must not fence a harness that routed to cloud."""
+    from tools import browser_tool as browser
+
+    ran: list = []
+    cloud_cdp = "wss://cloud.example/devtools/browser/x"
+    _predict_cloud(monkeypatch)
+    browser._real_profile_cdp_cache["cdp"] = "http://127.0.0.1:9334"
+    monkeypatch.setattr(bu_cli, "_find_cli", lambda: ["/usr/bin/browser-use"])
+    monkeypatch.setattr(bu_cli, "_attach_vault_supervisor", lambda *a, **k: None)
+
+    def route(env, *_a, **_k):
+        env["BU_CDP_WS"] = cloud_cdp
+        return None
+
+    monkeypatch.setattr(bu_cli, "_route_backend", route)
+    monkeypatch.setattr(
+        bu_cli, "_run_cli_killing_process_group",
+        lambda *a, **k: ran.append("cli") or subprocess.CompletedProcess(["browser-use"], 0, "ok\n", ""),
+    )
+    lease.acquire("human-viewer")
+    try:
+        result = json.loads(bu_cli.browser_exec("print(1)", task_id="review"))
+    finally:
+        browser._real_profile_cdp_cache.pop("cdp", None)
+    assert ran, "cloud-routed exec was fenced by a stale real-profile CDP cache"
+    assert result.get("success") is True
+
+
+def test_browser_exec_leftover_real_profile_session_does_not_fence_cloud_route(monkeypatch):
+    """``hermes-real-profile`` is process-global; a prior attach must not fence cloud."""
+    from tools import browser_tool as browser
+
+    ran: list = []
+    cloud_cdp = "wss://cloud.example/devtools/browser/x"
+    key = browser._REAL_PROFILE_SESSION
+    _predict_cloud(monkeypatch)
+    browser._active_sessions[key] = {
+        "session_name": key,
+        "cdp_url": "http://127.0.0.1:9334",
+        "features": {"local": True, "real_profile": True},
+    }
+    monkeypatch.setattr(bu_cli, "_find_cli", lambda: ["/usr/bin/browser-use"])
+    monkeypatch.setattr(bu_cli, "_attach_vault_supervisor", lambda *a, **k: None)
+
+    def route(env, *_a, **_k):
+        env["BU_CDP_WS"] = cloud_cdp
+        return None
+
+    monkeypatch.setattr(bu_cli, "_route_backend", route)
+    monkeypatch.setattr(
+        bu_cli, "_run_cli_killing_process_group",
+        lambda *a, **k: ran.append("cli") or subprocess.CompletedProcess(["browser-use"], 0, "ok\n", ""),
+    )
+    lease.acquire("human-viewer")
+    try:
+        result = json.loads(bu_cli.browser_exec("print(1)", task_id="review"))
+    finally:
+        browser._active_sessions.pop(key, None)
+    assert ran, "cloud-routed exec was fenced by a leftover real-profile session"
+    assert result.get("success") is True
+
+
 def test_browser_exec_keeps_human_has_control_when_unadmitted_cdp_resolve_remints(monkeypatch):
     """Predicted-other-browser skip leaves admitted=None, so ``_lease_moved_error``
     cannot recover a reminted get. The resolve must raise, not stringify."""

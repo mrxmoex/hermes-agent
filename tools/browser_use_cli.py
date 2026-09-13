@@ -533,6 +533,36 @@ def _route_backend(env: dict, session: str, task_id: Optional[str], local: bool)
     return _resolve_backend_cdp(env, task_id, session_name=session)
 
 
+def _routed_shared_browser_info(env: dict, task_id: Optional[str], session: str) -> dict:
+    """Identity ``_route_backend`` actually landed on, for post-skip re-admit.
+
+    Prefer the backend-cache session when it is shared. Real-profile Chrome is
+    launched on this screen but is keyed ``hermes-real-profile`` (and a cache
+    hit never writes ``_active_sessions``) — match that CDP next. Do not overlay
+    a leftover dock supervisor onto a cloud route.
+    """
+    from tools.browser_tool import _REAL_PROFILE_SESSION, _active_sessions, _real_profile_cdp_cache
+    from tools.browser_tool_session import _shares_bot_desktop_browser
+
+    routed_cdp = env.get("BU_CDP_WS") or env.get("BU_CDP_URL") or ""
+    cached = _active_sessions.get(_backend_cache_key(task_id, session)) or {}
+    if cached and _shares_bot_desktop_browser(cached):
+        info = dict(cached)
+        if routed_cdp:
+            info["cdp_url"] = routed_cdp
+        return info
+    # Process-global singleton — only admit when this route actually landed on it.
+    rp = _active_sessions.get(_REAL_PROFILE_SESSION) or {}
+    rp_cdp = str(_real_profile_cdp_cache.get("cdp") or rp.get("cdp_url") or "")
+    if routed_cdp and rp_cdp and routed_cdp == rp_cdp:
+        if rp and _shares_bot_desktop_browser(rp):
+            info = dict(rp)
+            info["cdp_url"] = routed_cdp
+            return info
+        return {"cdp_url": routed_cdp, "features": {"local": True, "real_profile": True}}
+    return {"cdp_url": routed_cdp}
+
+
 def _group_popen_kwargs() -> dict:
     """Popen kwargs starting the CLI in its own process group (a new session on POSIX) so a
     timeout can take down every process that inherited the capture pipes, not just the CLI
@@ -618,13 +648,11 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
                               "dashes, or underscores (e.g. 'r7k2').")
         env["BU_NAME"] = session
     # Late import: browser_tool_session → lightpanda fallback → this module.
-    from tools.browser_tool import _active_sessions
     from tools.browser_tool_session import (
         _admit_bot_desktop_browser,
         _discard_if_lease_moved,
         _discard_shared_browser_captures,
         _shared_browser_fence,
-        _shares_bot_desktop_browser,
     )
     # ``get cdp-url`` is already fenced; the harness then talks CDP directly
     # (clicks, capture_screenshot) and must be bracketed the same way.
@@ -660,14 +688,9 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     # Admit the *routed* identity only — do not overlay a leftover dock
     # supervisor onto a cloud cache entry (that would fence the wrong browser).
     if admitted is None:
-        routed_cdp = env.get("BU_CDP_WS") or env.get("BU_CDP_URL") or ""
-        routed_info: dict = {"cdp_url": routed_cdp}
-        cached = _active_sessions.get(_backend_cache_key(task_id, session)) or {}
-        if cached and _shares_bot_desktop_browser(cached):
-            routed_info = dict(cached)
-            if routed_cdp:
-                routed_info["cdp_url"] = routed_cdp
-        admitted, refuse = _admit_bot_desktop_browser(routed_info)
+        admitted, refuse = _admit_bot_desktop_browser(
+            _routed_shared_browser_info(env, task_id, session)
+        )
         if refuse:
             return tool_error(
                 refuse.get("error") or "Human has control of this bot's screen.",
