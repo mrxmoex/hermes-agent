@@ -833,6 +833,23 @@ class TestRenameProfile:
         delete_profile("screenbot", yes=True)
         assert not profile_dir.is_dir()
 
+    def test_rename_releases_a_human_held_lease(self, profile_env, monkeypatch):
+        """Rename keeps lease.json. A leftover human hold on a dead screen
+        would fence computer_use until someone force-releases. Teardown must
+        return control to the agent, same as CLI screen stop.
+        """
+        from tools.bot_desktop import lease
+
+        monkeypatch.setattr(profiles, "_cleanup_gateway_service", lambda *_a, **_k: None)
+        monkeypatch.setattr(profiles, "check_alias_collision", lambda *_a, **_k: "skip")
+        source = create_profile("heldbot", no_alias=True)
+        lease.acquire("viewer-test", profile_key=str(source), reason="login")
+        assert lease.human_holds(profile_key=str(source))
+        dest = rename_profile("heldbot", "heldbot2")
+        assert dest.is_dir()
+        assert not lease.human_holds(profile_key=str(dest))
+        assert lease.get(profile_key=str(dest)).holder == "agent"
+
 
 # ===================================================================
 # TestExportImport

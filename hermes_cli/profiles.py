@@ -1088,16 +1088,26 @@ def _stop_bot_desktop(profile_dir: Path) -> None:
     ``_stop_profile_backends`` leave it running against a directory that is
     about to vanish or change name. Call ``runtime.stop()`` directly —
     ``display.stop`` refuses while a human holds the screen, and delete/rename
-    must still take the screen down. Failure is logged and never fatal: the
-    profile operation proceeds.
+    must still take the screen down.
+
+    Also release a human lease. Rename keeps ``lease.json``; leaving
+    ``holder=human`` on a dead screen fences ``computer_use`` forever. Delete
+    removes the file anyway; release first so a failed rmtree cannot leave a
+    stuck hold. Same bare ``lease.release()`` as CLI ``screen stop``.
+
+    Failure is logged and never fatal: the profile operation proceeds.
     """
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-    from tools.bot_desktop import runtime
+    from tools.bot_desktop import lease, runtime
 
-    if not runtime.is_supported_host():
-        return
     token = set_hermes_home_override(profile_dir)
     try:
+        try:
+            lease.release(profile_key=str(profile_dir))
+        except Exception as e:
+            logger.warning("Could not release the Bot Desktop lease of %s: %s", profile_dir, e)
+        if not runtime.is_supported_host():
+            return
         if runtime.stop():
             print("✓ Bot Desktop stopped")
     except Exception as e:
