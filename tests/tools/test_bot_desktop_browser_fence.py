@@ -1548,6 +1548,56 @@ def test_resolve_cdp_override_does_not_http_probe_when_admit_explodes(monkeypatc
     assert probed == []
 
 
+def test_missing_devtools_recover_still_skips_http_while_human_holds(monkeypatch, tmp_path):
+    """Finding 76: persist never ran and DevToolsActivePort is gone. Live
+    SingletonLock recovery still identifies this jar, so discovery does not
+    HTTP-probe the page a human holds. A second loopback listen stays unknown.
+    """
+    import os
+    import socket
+
+    import tools.bot_desktop.browser as bdb
+    from tools.browser_tool_cdp import _resolve_cdp_override
+    from tools.browser_tool_session import _cdp_url_is_bot_desktop_browser, _last_dock_cdp_port
+
+    profile = tmp_path / "browser-profile"
+    profile.mkdir()
+    os.symlink(f"host-{os.getpid()}", profile / "SingletonLock")
+    monkeypatch.setattr(bdb, "profile_dir", lambda: profile)
+    monkeypatch.setattr(
+        bdb,
+        "_chromium_cmdline_tokens",
+        lambda pid: ["chrome", f"--user-data-dir={profile}", "--remote-debugging-port=0"],
+    )
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+    probed = []
+    try:
+        monkeypatch.setattr(bdb, "_loopback_listen_ports_for_pid", lambda pid: {port})
+        _last_dock_cdp_port.clear()
+        assert bdb.last_known_dock_cdp_port() is None
+        assert bdb.running_instance_cdp_port(str(profile)) == port
+        _last_dock_cdp_port.clear()
+        lease.acquire("human-viewer")
+        monkeypatch.setattr(
+            "requests.get",
+            lambda *a, **k: probed.append(a[0]) or (_ for _ in ()).throw(AssertionError("probed dock")),
+        )
+        assert _cdp_url_is_bot_desktop_browser(f"http://127.0.0.1:{port}") is True
+        assert _resolve_cdp_override(f"http://127.0.0.1:{port}") == f"http://127.0.0.1:{port}"
+        assert probed == []
+        monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: None)
+        _last_dock_cdp_port.clear()
+        # Recover stamped persist; a later live miss must still fence this port
+        # and must not treat another loopback Chrome as the dock.
+        assert _cdp_url_is_bot_desktop_browser(f"http://127.0.0.1:{port}") is True
+        assert _cdp_url_is_bot_desktop_browser("http://127.0.0.1:9222") is False
+    finally:
+        listener.close()
+
+
 def test_vault_ensure_does_not_probe_raw_dock_url_while_human_holds(monkeypatch):
     """Session admit can be a no-op while ``get cdp-url`` names the dock."""
     import tools.bot_desktop.browser as bdb

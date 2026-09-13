@@ -12,12 +12,13 @@ DevTools endpoint, so the dock exposes a debugging port and the agent ATTACHES t
 from __future__ import annotations
 
 import glob
+import ipaddress
 import os
 import shlex
 import shutil
 import socket
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Set, Tuple
 
 from tools.bot_desktop import runtime
 
@@ -92,27 +93,159 @@ def dock_command(exe: str, user_data_dir: str) -> str:
     return shlex.join(dock_argv(exe, user_data_dir))
 
 
+def _chromium_cmdline_tokens(pid: int) -> list[str]:
+    """Argv of ``pid`` from ``/proc`` (Linux). Empty on other hosts or a dead pid."""
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return []
+    return [part.decode("utf-8", "replace") for part in raw.split(b"\0") if part]
+
+
+def _user_data_dir_from_cmdline(tokens: list[str]) -> Optional[str]:
+    for token in tokens:
+        if token.startswith("--user-data-dir="):
+            return token.split("=", 1)[1] or None
+    return None
+
+
+def _remote_debugging_port_from_cmdline(tokens: list[str]) -> Optional[int]:
+    """Explicit ``--remote-debugging-port=N`` when N is a real port.
+
+    Dock argv uses ``--remote-debugging-port=0`` (ephemeral); that is not a port.
+    """
+    for token in tokens:
+        if token.startswith("--remote-debugging-port="):
+            try:
+                port = int(token.split("=", 1)[1])
+            except ValueError:
+                return None
+            return port if 1 <= port <= 65535 else None
+    return None
+
+
+def _proc_hex_ip(ip_hex: str, *, ipv6: bool = False):
+    """Decode a ``/proc/net/tcp{,6}`` local-address hex field (native dword order)."""
+    text = (ip_hex or "").replace(":", "")
+    if not ipv6:
+        if len(text) != 8:
+            raise ValueError(ip_hex)
+        return ipaddress.IPv4Address(int.from_bytes(bytes.fromhex(text), "little"))
+    if len(text) != 32:
+        raise ValueError(ip_hex)
+    packed = b"".join(
+        int.from_bytes(bytes.fromhex(text[i:i + 8]), "little").to_bytes(4, "big")
+        for i in range(0, 32, 8)
+    )
+    return ipaddress.IPv6Address(packed)
+
+
+def _parse_proc_tcp_listen_ports(text: str, *, ipv6: bool = False) -> Set[int]:
+    """Loopback / unspecified LISTEN ports from one ``/proc/net/tcp{,6}`` table.
+
+    LAN / remote listeners stay out. No connect, no HTTP.
+    """
+    ports: Set[int] = set()
+    for line in (text or "").splitlines()[1:]:
+        parts = line.split()
+        if len(parts) < 4 or parts[3] != "0A":
+            continue
+        local = parts[1]
+        if ":" not in local:
+            continue
+        ip_hex, port_hex = local.rsplit(":", 1)
+        try:
+            port = int(port_hex, 16)
+            addr = _proc_hex_ip(ip_hex, ipv6=ipv6)
+        except (ValueError, ipaddress.AddressValueError):
+            continue
+        if not (1 <= port <= 65535):
+            continue
+        if addr.is_loopback or addr.is_unspecified:
+            ports.add(port)
+            continue
+        mapped = getattr(addr, "ipv4_mapped", None)
+        if mapped is not None and (mapped.is_loopback or mapped.is_unspecified):
+            ports.add(port)
+    return ports
+
+
+def _loopback_listen_ports_for_pid(pid: int) -> Set[int]:
+    """This pid's loopback / unspecified TCP listen ports, or empty."""
+    ports: Set[int] = set()
+    for name, ipv6 in (("tcp", False), ("tcp6", True)):
+        try:
+            text = Path(f"/proc/{pid}/net/{name}").read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        ports |= _parse_proc_tcp_listen_ports(text, ipv6=ipv6)
+    return ports
+
+
+def _paths_same_user_data_dir(left: str, right: str) -> bool:
+    try:
+        return Path(left).resolve() == Path(right).resolve()
+    except OSError:
+        return os.path.normpath(left) == os.path.normpath(right)
+
+
+def _recover_cdp_port_from_singleton(user_data_dir: str, pid: int) -> Optional[int]:
+    """Port of the still-alive jar when ``DevToolsActivePort`` is gone.
+
+    Persist sites can miss a human-first dock. ``SingletonLock`` still names
+    this profile's Chromium. Recover only that pid's explicit DevTools port,
+    or a *unique* loopback listen. Multiple listens stay unknown — do not
+    stamp an arbitrary port. Cmdline must name this ``user_data_dir`` so a
+    recycled pid is not trusted. No HTTP (tab list is leftover observation).
+    """
+    tokens = _chromium_cmdline_tokens(pid)
+    listed = _user_data_dir_from_cmdline(tokens)
+    if not listed or not _paths_same_user_data_dir(listed, user_data_dir):
+        return None
+    explicit = _remote_debugging_port_from_cmdline(tokens)
+    if explicit is not None:
+        return explicit
+    listens = _loopback_listen_ports_for_pid(pid)
+    if len(listens) == 1:
+        return next(iter(listens))
+    return None
+
+
 def running_instance_cdp_port(user_data_dir: str, *, exclude_session: Optional[str] = None) -> Optional[int]:
     """DevTools port of a Chromium currently running on ``user_data_dir``, or ``None``.
 
     Both files outlive a crashed or closed Chromium: ``SingletonLock`` is a symlink to ``host-pid`` and
     ``DevToolsActivePort`` keeps the last port, so the pid must be alive AND the port must accept a
-    connection before it is trusted. An instance agent-browser launched for ``exclude_session`` itself is
-    reported as ``None``: its daemon already owns that browser, and handing it ``--cdp`` would make it
+    connection before it is trusted. When the port file is gone but the lock pid is still this
+    profile's Chromium, recover the port from that pid (explicit
+    ``--remote-debugging-port=N``, or a unique loopback listen). An instance
+    agent-browser launched for ``exclude_session`` itself is reported as ``None``:
+    its daemon already owns that browser, and handing it ``--cdp`` would make it
     close the browser as a config change and then attach to the port that just died with it.
     """
     try:
-        with open(os.path.join(user_data_dir, "DevToolsActivePort"), encoding="utf-8") as fh:
-            port_line = fh.readline().strip()
         target = os.readlink(os.path.join(user_data_dir, "SingletonLock"))
     except OSError:
         return None
     _host, _, pid_text = target.rpartition("-")
-    if not (port_line.isdigit() and pid_text.isdigit()) or not _pid_alive(int(pid_text)):
+    if not pid_text.isdigit() or not _pid_alive(int(pid_text)):
         return None
-    if exclude_session and _launched_by_session(int(pid_text)) == exclude_session:
+    pid = int(pid_text)
+    if exclude_session and _launched_by_session(pid) == exclude_session:
         return None
-    port = int(port_line)
+    port_line = ""
+    try:
+        with open(os.path.join(user_data_dir, "DevToolsActivePort"), encoding="utf-8") as fh:
+            port_line = fh.readline().strip()
+    except OSError:
+        port_line = ""
+    if port_line.isdigit():
+        port = int(port_line)
+    else:
+        recovered = _recover_cdp_port_from_singleton(user_data_dir, pid)
+        if recovered is None:
+            return None
+        port = recovered
     try:
         with socket.create_connection(("127.0.0.1", port), timeout=0.5):
             pass

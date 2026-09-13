@@ -114,6 +114,91 @@ def test_running_instance_port_requires_live_pid_and_open_port(tmp_path):
     assert browser.running_instance_cdp_port(str(tmp_path / "missing")) is None
 
 
+def test_parse_proc_tcp_listen_ports_keeps_loopback_only():
+    """IPv4 ``/proc/net/tcp``: 127.0.0.1 and 0.0.0.0 LISTEN; LAN / established stay out."""
+    # 0100007F:2475 = 127.0.0.1:9333 LISTEN; 00000000:1F90 = 0.0.0.0:8080 LISTEN;
+    # 0101A8C0:0050 = 192.168.1.1:80 LISTEN; 0100007F:0050 established (01).
+    text = (
+        "  sl  local_address rem_address   st\n"
+        "   0: 0100007F:2475 00000000:0000 0A 00000000:00000000 00:00000000 00000000\n"
+        "   1: 00000000:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000\n"
+        "   2: 0101A8C0:0050 00000000:0000 0A 00000000:00000000 00:00000000 00000000\n"
+        "   3: 0100007F:0050 0100007F:1234 01 00000000:00000000 00:00000000 00000000\n"
+    )
+    assert browser._parse_proc_tcp_listen_ports(text) == {9333, 8080}
+
+
+def test_parse_proc_tcp6_listen_ports_keeps_loopback_only():
+    # ::1:9333 and ::ffff:127.0.0.1:9222 LISTEN; a global LISTEN stays out.
+    text = (
+        "  sl  local_address                         remote_address                        st\n"
+        "   0: 00000000000000000000000001000000:2475 00000000000000000000000000000000:0000 0A\n"
+        "   1: 0000000000000000FFFF00000100007F:2406 00000000000000000000000000000000:0000 0A\n"
+        "   2: 00000000000000000000000000000000:0050 00000000000000000000000000000000:0000 0A\n"
+        "   3: 2A00DEAD000000000000000000000001:01BB 00000000000000000000000000000000:0000 0A\n"
+    )
+    assert browser._parse_proc_tcp_listen_ports(text, ipv6=True) == {9333, 9222, 80}
+
+
+def test_remote_debugging_port_from_cmdline_ignores_ephemeral_zero():
+    tokens = ["chrome", "--user-data-dir=/p", "--remote-debugging-port=0"]
+    assert browser._remote_debugging_port_from_cmdline(tokens) is None
+    assert browser._remote_debugging_port_from_cmdline(
+        ["chrome", "--remote-debugging-port=9333"]
+    ) == 9333
+
+
+def test_running_instance_recovers_port_when_devtools_file_is_gone(tmp_path, monkeypatch):
+    """Persist-never-ran + missing DevToolsActivePort still identifies this jar.
+
+    Dock argv uses ``--remote-debugging-port=0``, so recovery is the unique
+    loopback listen on the SingletonLock pid. A second listen stays unknown.
+    """
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+    os.symlink(f"host-{os.getpid()}", tmp_path / "SingletonLock")
+    monkeypatch.setattr(
+        browser,
+        "_chromium_cmdline_tokens",
+        lambda pid: ["chrome", f"--user-data-dir={tmp_path}", "--remote-debugging-port=0"],
+    )
+    monkeypatch.setattr(browser, "_loopback_listen_ports_for_pid", lambda pid: {port})
+    try:
+        assert browser.running_instance_cdp_port(str(tmp_path)) == port
+        monkeypatch.setattr(browser, "_loopback_listen_ports_for_pid", lambda pid: {port, port + 1})
+        assert browser.running_instance_cdp_port(str(tmp_path)) is None
+        monkeypatch.setattr(
+            browser,
+            "_chromium_cmdline_tokens",
+            lambda pid: ["chrome", "--user-data-dir=/other/profile", "--remote-debugging-port=0"],
+        )
+        monkeypatch.setattr(browser, "_loopback_listen_ports_for_pid", lambda pid: {port})
+        assert browser.running_instance_cdp_port(str(tmp_path)) is None
+    finally:
+        listener.close()
+
+
+def test_running_instance_recovers_explicit_cmdline_port(tmp_path, monkeypatch):
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+    os.symlink(f"host-{os.getpid()}", tmp_path / "SingletonLock")
+    monkeypatch.setattr(
+        browser,
+        "_chromium_cmdline_tokens",
+        lambda pid: ["chrome", f"--user-data-dir={tmp_path}", f"--remote-debugging-port={port}"],
+    )
+    monkeypatch.setattr(browser, "_loopback_listen_ports_for_pid", lambda pid: {port, 22})
+    try:
+        # Explicit cmdline port wins even when several listens exist.
+        assert browser.running_instance_cdp_port(str(tmp_path)) == port
+    finally:
+        listener.close()
+
+
 def test_agent_attaches_to_human_started_browser(monkeypatch):
     """With a live dock instance on the shared profile the local argv carries ``--cdp <port>``; without one
     it stays a plain ``--session`` launch."""
