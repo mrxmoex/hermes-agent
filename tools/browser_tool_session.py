@@ -980,6 +980,9 @@ _AGENT_BROWSER_NODE_ENTRYPOINTS = frozenset({
 _PLAYWRIGHT_NODE_ENTRYPOINTS = frozenset({
     "playwright", "cli.js", "cli.mjs", "cli.cjs",
 })
+_PLAYWRIGHT_MCP_NODE_ENTRYPOINTS = frozenset({
+    "mcp", "cli.js", "cli.mjs", "cli.cjs", "index.js",
+})
 _PLAYWRIGHT_CDP_ENV = (
     "PW_TEST_CONNECT_WS_ENDPOINT",
     "PLAYWRIGHT_WS_ENDPOINT",
@@ -1186,11 +1189,60 @@ def _is_playwright_invocation(tokens: List[str]) -> bool:
     return False
 
 
+def _token_is_playwright_mcp(token: str) -> bool:
+    """True when this token is the ``@playwright/mcp`` package or its Node entry.
+
+    Path parts are ``@playwright`` + ``mcp``, not ``playwright`` — finding 84
+    correctly refused to treat that as the Playwright CLI. Token-match the
+    scoped package only. ``…/playwright/cli.js`` and ``cat mcp.log`` are not.
+    """
+    raw = (token or "").strip().strip("\"'")
+    if not raw:
+        return False
+    lower = raw.lower()
+    if lower.startswith("@playwright/mcp"):
+        rest = lower[len("@playwright/mcp"):]
+        return rest == "" or rest.startswith("@")
+    path = Path(raw)
+    parts = [p.lower() for p in path.parts]
+    if "@playwright" not in parts:
+        return False
+    idx = parts.index("@playwright")
+    if idx + 1 >= len(parts):
+        return False
+    if parts[idx + 1].split("@", 1)[0] != "mcp":
+        return False
+    return path.name.lower() in _PLAYWRIGHT_MCP_NODE_ENTRYPOINTS
+
+
+def _is_playwright_mcp_invocation(tokens: List[str]) -> bool:
+    """True when argv launches ``@playwright/mcp`` (npx, shebang node).
+
+    Token-match only. ``npx @playwright/mcp`` without ``--cdp-endpoint``
+    launches its own Chrome and stays unknown. Do not match a bare ``mcp``
+    binary or ``@playwright/test``.
+    """
+    if not tokens:
+        return False
+    if _token_is_playwright_mcp(tokens[0]):
+        return True
+    name0 = _launcher_basename(tokens[0])
+    if name0 in _ENV_LAUNCHERS:
+        return _is_playwright_mcp_invocation(_env_command_tokens(tokens))
+    if name0 in _NPX_LAUNCHERS:
+        rest = _first_non_flag_tokens(tokens)
+        return bool(rest) and _token_is_playwright_mcp(rest[0])
+    if name0 in _NODE_LAUNCHERS:
+        return any(_token_is_playwright_mcp(t) for t in _first_non_flag_tokens(tokens))
+    return False
+
+
 def _is_unregistered_dock_cli_invocation(tokens: List[str]) -> bool:
     return (
         _is_agent_browser_invocation(tokens)
         or _is_browser_use_invocation(tokens)
         or _is_playwright_invocation(tokens)
+        or _is_playwright_mcp_invocation(tokens)
     )
 
 
@@ -1233,7 +1285,10 @@ def _unregistered_cli_aims_at_dock(
             port = _loopback_cdp_port(val)
             return dock_port is not None and port == dock_port
         return False
-    if _is_playwright_invocation(tokens) and not _is_agent_browser_invocation(tokens):
+    if (
+        (_is_playwright_invocation(tokens) or _is_playwright_mcp_invocation(tokens))
+        and not _is_agent_browser_invocation(tokens)
+    ):
         cdp = _cdp_arg_from_argv(tokens)
         if not cdp:
             for key in _PLAYWRIGHT_CDP_ENV:

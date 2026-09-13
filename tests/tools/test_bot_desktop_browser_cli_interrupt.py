@@ -286,6 +286,18 @@ def test_agent_browser_invocation_is_token_match_not_substring():
     assert not _is_playwright_invocation(["/usr/bin/cat", "playwright.log"])
     assert not _is_playwright_invocation(
         ["/bin/bash", "-c", "npx playwright codegen --cdp-endpoint http://127.0.0.1:9333"])
+    from tools.browser_tool_session import _is_playwright_mcp_invocation
+    assert _is_playwright_mcp_invocation(["npx", "-y", "@playwright/mcp@latest"])
+    assert _is_playwright_mcp_invocation(
+        ["node", "/home/x/node_modules/@playwright/mcp/cli.js"])
+    assert _is_playwright_mcp_invocation(
+        ["/usr/bin/env", "node", "/home/x/node_modules/@playwright/mcp/cli.js"])
+    assert not _is_playwright_mcp_invocation(
+        ["node", "/home/x/node_modules/playwright/cli.js"])
+    assert not _is_playwright_mcp_invocation(["npx", "playwright", "codegen"])
+    assert not _is_playwright_mcp_invocation(["/usr/bin/mcp"])
+    assert not _is_playwright_mcp_invocation(
+        ["/bin/bash", "-c", "npx @playwright/mcp --cdp-endpoint http://127.0.0.1:9333"])
 
 
 def test_unregistered_cdp_dock_cli_killed_on_takeover():
@@ -600,18 +612,13 @@ def test_unregistered_playwright_dock_cdp_killed_on_takeover():
         8904,
         ["npx", "playwright", "codegen", "--cdp-endpoint", "http://127.0.0.1:9222"],
     )
-    mcp = _FakeProc(
-        8905,
-        ["node", "/home/x/node_modules/@playwright/mcp/cli.js",
-         "--cdp-endpoint", "http://127.0.0.1:9333"],
-    )
     bash_parent = _FakeProc(
         8906,
         ["/bin/bash", "-c", "npx playwright codegen --cdp-endpoint http://127.0.0.1:9333"],
     )
     lease.acquire("human")
     n = interrupt_unregistered_dock_cli(
-        processes=[leftover, via_env, shebang, install, other, mcp, bash_parent],
+        processes=[leftover, via_env, shebang, install, other, bash_parent],
         chromium_pid=9999,
         owner_daemon_pid=9998,
     )
@@ -621,7 +628,62 @@ def test_unregistered_playwright_dock_cdp_killed_on_takeover():
     assert shebang.killed == 1
     assert install.killed == 0
     assert other.killed == 0
-    assert mcp.killed == 0
+    assert bash_parent.killed == 0
+
+
+def test_unregistered_playwright_mcp_dock_cdp_killed_on_takeover():
+    """terminal() @playwright/mcp --cdp-endpoint on the dock is leftover action.
+
+    Finding 84 correctly refused to treat ``@playwright/mcp`` as the Playwright
+    CLI (path parts are ``@playwright`` + ``mcp``). The MCP server still
+    ``connectOverCDP``s and keeps writing after Take over.
+    """
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    bdb.remember_dock_cdp_port(9333)
+    leftover = _FakeProc(
+        9000,
+        ["npx", "-y", "@playwright/mcp@latest",
+         "--cdp-endpoint", "http://127.0.0.1:9333"],
+    )
+    shebang = _FakeProc(
+        9001,
+        ["node", "/home/x/node_modules/@playwright/mcp/cli.js",
+         "--cdp-endpoint=ws://127.0.0.1:9333/devtools/browser/x"],
+    )
+    via_env = _FakeProc(
+        9002,
+        ["npx", "@playwright/mcp"],
+        {"PLAYWRIGHT_WS_ENDPOINT": "ws://127.0.0.1:9333/devtools/browser/x"},
+    )
+    no_cdp = _FakeProc(9003, ["npx", "@playwright/mcp"])
+    other = _FakeProc(
+        9004,
+        ["npx", "@playwright/mcp", "--cdp-endpoint", "http://127.0.0.1:9222"],
+    )
+    playwright_cli = _FakeProc(
+        9005,
+        ["node", "/home/x/node_modules/playwright/cli.js",
+         "--cdp-endpoint", "http://127.0.0.1:9333"],
+    )
+    bash_parent = _FakeProc(
+        9006,
+        ["/bin/bash", "-c", "npx @playwright/mcp --cdp-endpoint http://127.0.0.1:9333"],
+    )
+    lease.acquire("human")
+    n = interrupt_unregistered_dock_cli(
+        processes=[leftover, shebang, via_env, no_cdp, other, playwright_cli, bash_parent],
+        chromium_pid=9999,
+        owner_daemon_pid=9998,
+    )
+    assert n == 4
+    assert leftover.killed == 1
+    assert shebang.killed == 1
+    assert via_env.killed == 1
+    assert no_cdp.killed == 0
+    assert other.killed == 0
+    assert playwright_cli.killed == 1
     assert bash_parent.killed == 0
 
 
