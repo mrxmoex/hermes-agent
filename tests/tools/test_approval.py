@@ -792,6 +792,17 @@ class TestHermesBotDesktopWriteProtection:
             "cd ~/.hermes/bot-desktop && echo x > $(realpath .)/lease.json",
             "cd ~/.hermes/bot-desktop && echo x > $(readlink -f .)/lease.json",
             "cd ~/.hermes/bot-desktop && cd /tmp && echo x > ~-/lease.json",
+            "cd ~/.hermes/bot-desktop && echo x > ${PWD:0}/lease.json",
+            "cd ~/.hermes/bot-desktop && echo x > ${PWD#}/lease.json",
+            "cd ~/.hermes/bot-desktop && echo x > ${PWD%}/lease.json",
+            "cd ~/.hermes/bot-desktop && echo x > ${PWD:-x}/lease.json",
+            "cd ~/.hermes/bot-desktop && echo x > $(dirs)/lease.json",
+            "cd ~/.hermes/bot-desktop && echo x > $(dirs -l)/lease.json",
+            "cd ~/.hermes/bot-desktop && echo x > $(dirs +0)/lease.json",
+            "cd ~/.hermes/bot-desktop && echo x > $(dirs -0)/lease.json",
+            "cd ~/.hermes/bot-desktop && echo x > ~-0/lease.json",
+            "cd ~/.hermes/bot-desktop && cd /tmp && echo x > ${OLDPWD:0}/lease.json",
+            "cd ~/.hermes/bot-desktop && cd /tmp && echo x > ${OLDPWD#}/lease.json",
         ):
             dangerous, key, desc = detect_dangerous_command(command)
             assert dangerous is True, command
@@ -817,6 +828,13 @@ class TestHermesBotDesktopWriteProtection:
                 "echo x > $(realpath .)/lease.json",
                 "dd of=~+/lease.json",
                 "cp /tmp/e ~+/lease.json",
+                "echo x > ${PWD:0}/lease.json",
+                "echo x > ${PWD#}/lease.json",
+                "echo x > $(dirs)/lease.json",
+                "echo x > $(dirs -l +0)/lease.json",
+                "echo x > $(dirs -0)/lease.json",
+                "echo x > ~-0/lease.json",
+                "dd of=${PWD:0}/lease.json",
             ):
                 dangerous, key, desc = detect_dangerous_command(command, cwd=cwd)
                 assert dangerous is True, (command, cwd)
@@ -830,6 +848,7 @@ class TestHermesBotDesktopWriteProtection:
             ("~/.hermes/bot-desktop", "cat $PWD/lease.json"),
             ("~/.hermes/bot-desktop", "echo x > $PWD"),
             ("~/.hermes/bot-desktop", "echo x > $OLDPWD/lease.json"),
+            ("~/.hermes/bot-desktop", "echo x > ${OLDPWD:0}/lease.json"),
             ("~/.hermes/bot-desktop", "echo x > /tmp/out"),
             (None, "cd ~/.hermes/bot-desktop && cat $PWD/lease.json"),
             (None, "cd ~/.hermes/bot-desktop && echo x > /tmp/out"),
@@ -844,6 +863,10 @@ class TestHermesBotDesktopWriteProtection:
             ("~/.hermes/bot-desktop", "cd /tmp && echo x > ~1/lease.json"),
             ("~/.hermes/bot-desktop", "echo x > '~1/lease.json'"),
             ("~/.hermes/bot-desktop", 'echo x > "~1/lease.json"'),
+            ("~/.hermes/bot-desktop", "cat ${PWD:0}/lease.json"),
+            ("~/.hermes/bot-desktop", "echo x > $(dirs +1)/lease.json"),
+            ("/tmp", "echo x > ${PWD:0}/lease.json"),
+            ("/tmp", "echo x > $(dirs)/lease.json"),
         ):
             dangerous, key, desc = detect_dangerous_command(command, cwd=cwd)
             assert dangerous is False, (command, cwd)
@@ -877,6 +900,10 @@ class TestHermesBotDesktopWriteProtection:
                 "cd /tmp && echo x > ~-/lease.json",
                 "cd /tmp && dd of=~-/lease.json",
                 "cd /tmp && cp /tmp/e ~-/lease.json",
+                "cd /tmp && echo x > ${OLDPWD:0}/lease.json",
+                "cd /tmp && echo x > ${OLDPWD#}/lease.json",
+                "cd /tmp && echo x > ${OLDPWD%}/lease.json",
+                'cd /tmp && echo x > "${OLDPWD:0}/lease.json"',
             ):
                 dangerous, key, desc = detect_dangerous_command(command, cwd=cwd)
                 assert dangerous is True, (command, cwd)
@@ -919,11 +946,14 @@ class TestHermesBotDesktopWriteProtection:
             assert dangerous is False, (command, cwd)
 
     def test_dirstack_tilde_dests_after_pushd(self):
-        """Bash ``~N`` / ``~+N`` / ``~-N`` are DIRSTACK (unquoted). After
+        """Bash ``~N`` / ``~+N`` / ``$(dirs +N)`` are DIRSTACK (unquoted
+        tilde; command subst still expands inside double quotes). After
         ``cd ~/.hermes/bot-desktop && pushd /tmp``, ``~1`` / ``~+1`` /
-        ``~-0`` expand to the tree and write ``lease.json``. ``cd`` does
-        not update DIRSTACK — ``cd /tmp && > ~1/lease.json`` stays
-        unflagged. Quotes suppress tilde expansion.
+        ``$(dirs +1)`` expand to the tree and write ``lease.json``.
+        ``cd`` does not push DIRSTACK — ``cd /tmp && > ~1/lease.json``
+        stays unflagged. ``~-0`` / ``$(dirs -0)`` are ``$PWD`` on a
+        one-entry stack and flag as PWD dests even without ``pushd``.
+        Single quotes suppress both tilde and ``$(dirs)``.
         """
         for command in (
             "cd ~/.hermes/bot-desktop && pushd /tmp && echo '{\"holder\":\"agent\"}' > ~1/lease.json",
@@ -932,6 +962,13 @@ class TestHermesBotDesktopWriteProtection:
             "cd ~/.hermes/bot-desktop && pushd /tmp && echo x > ~01/lease.json",
             "cd ~/.hermes/bot-desktop && pushd /tmp && echo x > ~+01/lease.json",
             "cd ~/.hermes/bot-desktop && pushd /tmp && echo x > ~-00/lease.json",
+            "cd ~/.hermes/bot-desktop && pushd /tmp && echo x > $(dirs +1)/lease.json",
+            "cd ~/.hermes/bot-desktop && pushd /tmp && echo x > $(dirs -l +1)/lease.json",
+            "cd ~/.hermes/bot-desktop && pushd /tmp && echo x > $(builtin dirs -l +1)/lease.json",
+            "cd ~/.hermes/bot-desktop && pushd /tmp && echo x > `dirs -l +1`/lease.json",
+            'cd ~/.hermes/bot-desktop && pushd /tmp && echo x > "$(dirs -l +1)/lease.json"',
+            "cd ~/.hermes/bot-desktop && pushd /tmp && cp /tmp/e $(dirs +1)/lease.json",
+            "cd ~/.hermes/bot-desktop && pushd /tmp && dd of=$(dirs -l +1)/lease.json",
             "cd ~/.hermes/bot-desktop && pushd /tmp && cp /tmp/e ~1/lease.json",
             "cd ~/.hermes/bot-desktop && pushd /tmp && dd of=~1/lease.json",
             "cd ~/.hermes/bot-desktop && pushd /tmp && tee ~1/dock-cdp-port",
@@ -957,12 +994,20 @@ class TestHermesBotDesktopWriteProtection:
                 "pushd /tmp && echo x > ~01/lease.json",
                 "pushd /tmp && echo x > ~+01/lease.json",
                 "pushd /tmp && echo x > ~-00/lease.json",
+                "pushd /tmp && echo x > $(dirs +1)/lease.json",
+                "pushd /tmp && echo x > $(dirs -l +1)/lease.json",
+                "pushd /tmp && echo x > `dirs -l +1`/lease.json",
+                "pushd /tmp && cp /tmp/e $(dirs +1)/lease.json",
+                "pushd /tmp && dd of=$(dirs -l +1)/lease.json",
                 "pushd /tmp && cp /tmp/e ~1/lease.json",
                 "pushd /tmp && dd of=~1/lease.json",
                 "pushd /tmp && rm -f ~1/dock-cdp-port",
                 "echo x > ~0/lease.json",
                 "echo x > ~+0/lease.json",
                 "echo x > ~00/lease.json",
+                "echo x > ~-0/lease.json",
+                "echo x > $(dirs -0)/lease.json",
+                "cd /tmp && echo x > ~-0/lease.json",
             ):
                 dangerous, key, desc = detect_dangerous_command(command, cwd=cwd)
                 assert dangerous is True, (command, cwd)
@@ -971,13 +1016,18 @@ class TestHermesBotDesktopWriteProtection:
         for cwd, command in (
             ("~/.hermes/bot-desktop", "echo x > ~1/lease.json"),
             ("~/.hermes/bot-desktop", "cd /tmp && echo x > ~1/lease.json"),
-            ("~/.hermes/bot-desktop", "cd /tmp && echo x > ~-0/lease.json"),
+            ("~/.hermes/bot-desktop", "echo x > $(dirs +1)/lease.json"),
+            ("~/.hermes/bot-desktop", "cd /tmp && echo x > $(dirs +1)/lease.json"),
             ("~/.hermes/bot-desktop", "echo x > '~1/lease.json'"),
             ("~/.hermes/bot-desktop", 'echo x > "~1/lease.json"'),
             ("~/.hermes/bot-desktop", "cat ~1/lease.json"),
+            ("~/.hermes/bot-desktop", "cat $(dirs +1)/lease.json"),
             ("~/.hermes/bot-desktop", "env -C /tmp echo x > ~1/lease.json"),
+            ("~/.hermes/bot-desktop", "env -C /tmp echo x > $(dirs +1)/lease.json"),
             ("/tmp", "pushd /var && echo x > ~1/lease.json"),
+            ("/tmp", "pushd /var && echo x > $(dirs +1)/lease.json"),
             (None, "pushd /tmp && echo x > ~1/lease.json"),
+            (None, "pushd /tmp && echo x > $(dirs +1)/lease.json"),
         ):
             dangerous, key, desc = detect_dangerous_command(command, cwd=cwd)
             assert dangerous is False, (command, cwd)

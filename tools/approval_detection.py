@@ -1617,7 +1617,10 @@ _RELATIVE_WRITE_DEST = r'(?:["\']?)(?!(?:/|~|\$))(?:\./)?[A-Za-z0-9._][^\s;&|<>"
 # exclusion above lets `cd ~/.hermes/bot-desktop && echo … > $PWD/lease.json`
 # auto-approve. Bash ``~+`` is ``$PWD`` (unquoted only — quotes suppress
 # tilde expansion). ``$(pwd -P)`` / ``$(realpath .)`` / ``$(readlink -f .)``
-# are the same cwd. Require a path component — `> $PWD` writes a directory.
+# are the same cwd. ``${PWD:0}`` / ``${PWD#}`` / ``${PWD-}`` are still
+# ``$PWD``. ``$(dirs)`` / ``$(dirs +0)`` / ``$(dirs -0)`` are ``$PWD`` on
+# a one-entry stack (``cd`` updates ``DIRSTACK[0]``; it does not push).
+# Require a path component — `> $PWD` writes a directory.
 _PWD_CMD = r'(?:(?:builtin|command)\s+)?pwd(?:\s+-[PL]+)*'
 _CWD_RESOLVE_CMD = (
     r'(?:'
@@ -1625,22 +1628,53 @@ _CWD_RESOLVE_CMD = (
     r'|readlink\s+(?:-[fe]+|--canonicalize(?:-existing|-missing)?)\s+\.'
     r')'
 )
+# ``dirs -v`` prefixes an index; ``dirs -c`` clears. Separate ``-l``/``-p``
+# only — clustered ``-lp +N`` is ``invalid number`` in bash.
+_DIRS_BIN = r'(?:(?:builtin|command)\s+)?dirs'
+_DIRS_FLAGS = r'(?:\s+-[lp])*'
+_DIRS_PWD_CMD = _DIRS_BIN + _DIRS_FLAGS + r'(?:\s+[+-]0+)?'
+_DIRS_STACK_CMD = (
+    _DIRS_BIN + _DIRS_FLAGS + r'\s+(?:\+0*[1-9][0-9]*|-0*[1-9][0-9]*)'
+)
+# ``${PWD}`` / ``${PWD:0}`` / ``${PWD:0:N}`` / empty ``#``/``%`` strip /
+# ``${PWD-}`` / ``${PWD:-word}``. Do not take ``${PWD:1}`` (drops a prefix)
+# or ``${PWD:+word}`` (expands to word, not the path).
+_PWD_PARAM = (
+    r'\$\{PWD(?:'
+    r':0(?::\d+)?'
+    r'|\#\#?'
+    r'|%%?'
+    r'|(?:-|:-)[^}]*'
+    r')?\}'
+)
+_OLDPWD_PARAM = (
+    r'\$\{OLDPWD(?:'
+    r':0(?::\d+)?'
+    r'|\#\#?'
+    r'|%%?'
+    r'|(?:-|:-)[^}]*'
+    r')?\}'
+)
 _PWD_TOKEN = (
     r'(?:'
-    r'\$\{PWD\}|\$PWD\b'
-    r'|\$\(\s*' + _PWD_CMD + r'\s*\)'
-    r'|`' + _PWD_CMD + r'`'
+    + _PWD_PARAM +
+    r'|\$PWD\b'
+    r'|\$\(\s*(?:' + _PWD_CMD + r'|' + _DIRS_PWD_CMD + r')\s*\)'
+    r'|`(?:' + _PWD_CMD + r'|' + _DIRS_PWD_CMD + r')`'
     r'|\$\(\s*' + _CWD_RESOLVE_CMD + r'\s*\)'
     r'|`' + _CWD_RESOLVE_CMD + r'`'
     r')'
 )
-# Unquoted ``~+`` / ``~+0`` / ``~00`` / ``~0`` are ``$PWD`` (``~+1`` is
-# DIRSTACK). Bash strips leading zeros (``~00`` == ``~0``). Put
-# ``~+0+`` before ``~+`` so ``~+0/`` is not consumed as ``~+`` + ``0/``.
+# Unquoted ``~+`` / ``~+0`` / ``~00`` / ``~0`` / ``~-0`` are ``$PWD``
+# (``~+1`` / ``~-1`` are DIRSTACK). A one-entry stack's ``dirs -0`` is
+# PWD — ``echo > ~-0/lease.json`` with cwd in the tree forges the lease
+# without ``pushd``. Bash strips leading zeros (``~00`` == ``~0``).
+# Put ``~+0+`` / ``~-0+`` before ``~+`` / ``~-`` so ``~+0/`` is not
+# consumed as ``~+`` + ``0/``.
 _PWD_WRITE_DEST = (
     r'(?:'
     r'(?:["\']?)' + _PWD_TOKEN + r'(?:["\']?)'
-    r'|~(?:\+0+|0+|\+)'
+    r'|~(?:\+0+|0+|-0+|\+)'
     r')'
     r'/'
     r'(?:["\']?)'
@@ -1652,12 +1686,13 @@ _PWD_WRITE_DEST = (
 # after ``cd``/``pushd``/``popd`` away from a session cwd that already
 # is the tree. Bash ``~-`` is ``$OLDPWD`` (unquoted only). A bare
 # ``$OLDPWD`` dest with no shell chdir is the *previous* directory —
-# not the screen — and stays unflagged. ``~-0`` is ``dirs -0`` (stack
-# bottom after ``pushd``), not OLDPWD — see ``_DIRSTACK_WRITE_DEST``.
+# not the screen — and stays unflagged. ``~-0`` is ``dirs -0`` (PWD on
+# a one-entry stack; stack bottom after ``pushd``), not OLDPWD — it
+# lives on ``_PWD_WRITE_DEST``.
 _OLDPWD_WRITE_DEST = (
     r'(?:'
     r'(?:["\']?)'
-    r'(?:\$\{OLDPWD\}|\$OLDPWD\b)'
+    r'(?:' + _OLDPWD_PARAM + r'|\$OLDPWD\b)'
     r'(?:["\']?)'
     r'|~-'
     r')'
@@ -1666,14 +1701,21 @@ _OLDPWD_WRITE_DEST = (
     r'[^\s;&|<>"\']+'
     r'(?:["\']?)'
 )
-# Bash ``~N`` / ``~+N`` / ``~-N`` are DIRSTACK (unquoted only). After
-# ``cd ~/.hermes/bot-desktop && pushd /tmp``, ``~1`` / ``~+1`` / ``~-0``
-# expand to the tree. ``cd`` does not update DIRSTACK — only
-# ``pushd``/``popd``. Quotes suppress tilde expansion.
-# Leading zeros: ``~01`` == ``~1``, ``~-00`` == ``~-0``.
+# Bash ``~N`` / ``~+N`` / ``~-N`` (N ≥ 1) are DIRSTACK (unquoted only).
+# After ``cd ~/.hermes/bot-desktop && pushd /tmp``, ``~1`` / ``~+1`` /
+# ``$(dirs +1)`` / ``$(dirs -l +1)`` expand to the tree. ``cd`` does
+# not push DIRSTACK — only ``pushd``/``popd``. Quotes suppress tilde
+# expansion; single quotes also suppress ``$(dirs)``. Leading zeros:
+# ``~01`` == ``~1``. ``~-0`` is PWD, not this class.
 _DIRSTACK_WRITE_DEST = (
     r'(?:'
-    r'~(?:\+0*[1-9][0-9]*|0*[1-9][0-9]*|-0*[0-9]+)'
+    r'~(?:\+0*[1-9][0-9]*|0*[1-9][0-9]*|-0*[1-9][0-9]*)'
+    r'|(?:["\']?)'
+    r'(?:'
+    r'\$\(\s*' + _DIRS_STACK_CMD + r'\s*\)'
+    r'|`' + _DIRS_STACK_CMD + r'`'
+    r')'
+    r'(?:["\']?)'
     r')'
     r'/'
     r'(?:["\']?)'
@@ -1689,8 +1731,9 @@ _CHDIR_BOT_DESKTOP_RE = re.compile(
 # > $OLDPWD/lease.json`` is the finding-54 miss: OLDPWD becomes the tree
 # without a same-command chdir *into* it.
 _SHELL_CHDIR_RE = re.compile(r'\b(?:cd|pushd|popd)\b', _RE_FLAGS)
-# ``cd`` does not push DIRSTACK. ``~1`` / ``~-0`` only become the screen
-# after ``pushd``/``popd``.
+# ``cd`` does not push DIRSTACK. ``~1`` / ``$(dirs +1)`` only become
+# the screen after ``pushd``/``popd``. ``~-0`` / ``$(dirs -0)`` are
+# PWD on a one-entry stack and live on the PWD dest.
 _DIRSTACK_MUTATE_RE = re.compile(r'\b(?:pushd|popd)\b', _RE_FLAGS)
 _BOT_DESKTOP_CWD_RE = re.compile(_HERMES_BOT_DESKTOP_PATH, _RE_FLAGS)
 
@@ -1803,8 +1846,9 @@ def detect_dangerous_command(command: str, *, cwd: Optional[str] = None) -> tupl
     include_oldpwd = chdir_bot_desktop or (
         cwd_is_bot_desktop and _command_shell_chdirs(normalized_for_cwd)
     )
-    # ``~1`` / ``~+1`` / ``~-0`` are the screen only after ``pushd``/``popd``.
-    # ``cd`` updates ``$OLDPWD`` but leaves DIRSTACK alone.
+    # ``~1`` / ``~+1`` / ``$(dirs +1)`` are the screen only after
+    # ``pushd``/``popd``. ``cd`` updates ``$OLDPWD`` but leaves extra
+    # DIRSTACK entries alone.
     include_dirstack = (chdir_bot_desktop or cwd_is_bot_desktop) and (
         _command_mutates_dirstack(normalized_for_cwd)
     )
