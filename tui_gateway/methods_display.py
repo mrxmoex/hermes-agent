@@ -73,13 +73,20 @@ def _(rid, params: dict) -> dict:
 @_profile_scoped
 def _(rid, params: dict) -> dict:
     """One JPEG grab of the bot's screen (``data_url``: null while stopped). Read-only: no lease change.
-    Suppressed while a human holds the lease — the frame may show what they are typing."""
+    Suppressed while a human holds the lease — the frame may show what they are typing.
+    A grab admitted under the agent must also discard if the epoch moved mid-grab
+    (takeover, or a full acquire→release cycle): same fence as computer_use / browser."""
     try:
         from tools.bot_desktop import lease as _bd_lease
-        if _bd_lease.human_holds():
+        try:
+            admitted = _bd_lease.assert_agent_may_act()
+        except _bd_lease.HumanHasControl:
             return _ok(rid, {"data_url": None, "suppressed": "human_has_control"})
         from tools.bot_desktop.thumbnail import thumbnail_data_url
-        return _ok(rid, {"data_url": thumbnail_data_url()})
+        data_url = thumbnail_data_url()
+        if _bd_lease.get().epoch != admitted.epoch:
+            return _ok(rid, {"data_url": None, "suppressed": "human_has_control"})
+        return _ok(rid, {"data_url": data_url})
     except Exception as e:
         return _err(rid, _DISPLAY_ERR, str(e))
 

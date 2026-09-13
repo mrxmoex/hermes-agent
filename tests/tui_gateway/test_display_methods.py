@@ -97,6 +97,23 @@ def test_thumbnail_is_suppressed_while_a_human_holds_the_lease(monkeypatch, _fre
     assert _call(server, "display.thumbnail", {})["result"]["data_url"].endswith("SECRET")
 
 
+def test_thumbnail_crossing_a_takeover_is_discarded(monkeypatch, _fresh_lease):
+    """A frame grabbed while the agent held can still finish after the human took over
+    (and even after they handed back). Epoch, not the final holder, is the fence."""
+    import tui_gateway.server as server
+    from tools.bot_desktop import thumbnail
+
+    def grab_during_handoff():
+        _fresh_lease.acquire("viewer-1")
+        _fresh_lease.release("viewer-1")
+        return "data:image/jpeg;base64,HUMAN_PRIVATE_FRAME"
+
+    monkeypatch.setattr(thumbnail, "thumbnail_data_url", grab_during_handoff)
+    result = _call(server, "display.thumbnail", {})["result"]
+    assert result["data_url"] is None
+    assert result["suppressed"] == "human_has_control"
+
+
 def test_acquire_requires_a_live_screen_and_a_minted_viewer_id(monkeypatch, tmp_path, _fresh_lease):
     """A client-chosen id (or any id while the screen is down) must not take the
     lease: computer_use would sit on human_has_control with nobody at a desktop."""
