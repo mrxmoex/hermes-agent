@@ -161,6 +161,19 @@ def _ensure_cdp_supervisor(task_id: str) -> None:
     if not cdp_url:
         return
     try:
+        from tools import browser_tool_lifecycle as _life
+        _life._install_supervisor_lease_hook()
+    except Exception:
+        pass
+    try:
+        from tools.bot_desktop.lease import HumanHasControl
+        from tools.browser_tool_session import _admit_shared_browser
+        _admit_shared_browser(cdp_url=cdp_url)
+    except HumanHasControl:
+        return
+    except Exception:
+        pass
+    try:
         from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
         policy, timeout_s = _get_dialog_policy_config()
         SUPERVISOR_REGISTRY.get_or_start(task_id=task_id, cdp_url=cdp_url, dialog_policy=policy, dialog_timeout_s=timeout_s)
