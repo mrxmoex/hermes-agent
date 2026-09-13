@@ -14,7 +14,8 @@ LAUNCHER = Path(__file__).resolve().parents[2] / "tools" / "bot_desktop" / "laun
 pytestmark = pytest.mark.linux_only
 
 
-def _seed(tmp_path: Path, fake_bins: list[str], browser_exec: str = "") -> Path:
+def _seed(tmp_path: Path, fake_bins: list[str], browser_exec: str = "",
+          browser_bin: str = "", browser_profile: str = "") -> Path:
     bindir = tmp_path / "bin"
     bindir.mkdir()
     for name in fake_bins:
@@ -36,6 +37,8 @@ def _seed(tmp_path: Path, fake_bins: list[str], browser_exec: str = "") -> Path:
         "HERMES_BD_ENV_FILE": str(tmp_path / "env"), "HERMES_BD_CONFIG_HOME": str(cfg),
         "HERMES_BD_SEED_ONLY": "1",
         **({"HERMES_BD_BROWSER_EXEC": browser_exec} if browser_exec else {}),
+        **({"HERMES_BD_BROWSER_BIN": browser_bin} if browser_bin else {}),
+        **({"HERMES_BD_BROWSER_PROFILE": browser_profile} if browser_profile else {}),
     }
     subprocess.run(["bash", str(LAUNCHER)], env=env, check=True, stdin=subprocess.DEVNULL, capture_output=True, timeout=30)
     return cfg
@@ -53,6 +56,29 @@ def test_dock_lists_only_programs_present_on_path(tmp_path):
         if line.startswith("Exec=")
     )
     assert execs == [f"{chrome} --user-data-dir={tmp_path}/bp", "xfce4-terminal"]
+
+
+def test_dock_browser_exec_keeps_a_profile_dir_that_contains_spaces(tmp_path):
+    """BIN+PROFILE must become one Exec= argv even when the profile path has spaces;
+    otherwise takeover opens a truncated user-data-dir and a different cookie jar."""
+    import shlex
+    chrome = tmp_path / "bin" / "chrome"
+    profile = tmp_path / "My Home" / "bp"
+    profile.mkdir(parents=True)
+    cfg = _seed(tmp_path, ["xfce4-terminal", "chrome"],
+                browser_bin=str(chrome), browser_profile=str(profile))
+    panel = ET.parse(cfg / "xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml")
+    launcher_ids = [str(p.get("name")) for p in panel.iter("property") if p.get("value") == "launcher"]
+    execs = [
+        line.split("=", 1)[1]
+        for pid in launcher_ids
+        for line in (cfg / "xfce4/panel" / pid.replace("plugin-", "launcher-") / "hermes.desktop").read_text(encoding="utf-8").splitlines()
+        if line.startswith("Exec=")
+    ]
+    browser_exec = next(e for e in execs if "chrome" in e)
+    parts = shlex.split(browser_exec)
+    assert parts[0] == str(chrome)
+    assert parts[1] == f"--user-data-dir={profile}"
 
 
 def test_look_is_seeded_with_wallpaper_and_theme(tmp_path):

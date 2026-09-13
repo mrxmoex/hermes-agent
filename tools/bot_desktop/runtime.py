@@ -329,7 +329,13 @@ def _spawn_and_wait(sd: Path, num: int, wait_seconds: float) -> DesktopStatus:
     })
     from tools.bot_desktop.browser import dock_command, dock_launch
     if (browser := dock_launch()) is not None:
-        child_env["HERMES_BD_BROWSER_EXEC"] = dock_command(*browser)
+        exe, user_data_dir = browser
+        # Structured pins so launcher.sh can write a quoted Exec= even when
+        # HERMES_HOME (or the chrome path) contains spaces. EXEC remains the
+        # fallback for seed/tests that only set the shell line.
+        child_env["HERMES_BD_BROWSER_BIN"] = exe
+        child_env["HERMES_BD_BROWSER_PROFILE"] = user_data_dir
+        child_env["HERMES_BD_BROWSER_EXEC"] = dock_command(exe, user_data_dir)
     # Truncated per start: the log is a diagnostic for THIS launch, and nothing rotates it otherwise.
     log = open(sd / "launcher.log", "wb")  # noqa: SIM115 — handed to the child, closed by it
     proc = subprocess.Popen(  # windows-footgun: ok — Linux-only runtime (is_supported_host)

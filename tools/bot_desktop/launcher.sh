@@ -131,9 +131,16 @@ sed -i "s|HERMES_BD_WALLPAPER_PLACEHOLDER|$HERMES_BD_WALLPAPER|" "$X/xfce4-deskt
 if [[ ! -e "$X/xfce4-panel.xml" ]]; then
   L="$XDG_CONFIG_HOME/xfce4/panel"; mkdir -p "$L"
   dock_ids=(); n=20
-  add_launcher() {  # name icon exec — skipped when the executable is missing
-    local exe; exe=${3%% *}
-    command -v "$exe" >/dev/null 2>&1 || return 0
+  add_launcher() {  # name icon exec [probe] — skipped when the executable is missing
+    local probe="${4:-}"
+    if [[ -z "$probe" ]]; then
+      probe=${3%% *}
+      # A quoted Exec= (paths with spaces) still has to find the real binary.
+      if [[ "$probe" == \'*\' || "$probe" == \"*\" ]]; then
+        probe="${probe:1:${#probe}-2}"
+      fi
+    fi
+    command -v "$probe" >/dev/null 2>&1 || [[ -x "$probe" ]] || return 0
     n=$((n+1)); mkdir -p "$L/launcher-$n"
     printf '[Desktop Entry]\nVersion=1.0\nType=Application\nName=%s\nIcon=%s\nExec=%s\nTerminal=false\nStartupNotify=false\n' \
       "$1" "$2" "$3" > "$L/launcher-$n/hermes.desktop"
@@ -142,7 +149,15 @@ if [[ ! -e "$X/xfce4-panel.xml" ]]; then
   add_launcher "Terminal" utilities-terminal "xfce4-terminal"
   # The bot's browser: runtime.py resolves the executable agent-browser drives plus the profile's
   # persistent user-data-dir, so a human taking over lands in the bot's own cookie jar.
-  [[ -n "${HERMES_BD_BROWSER_EXEC:-}" ]] && add_launcher "Browser" internet-web-browser "$HERMES_BD_BROWSER_EXEC"
+  # BIN+PROFILE are the pins (quoted here); EXEC is the legacy single-line fallback.
+  _quote() { printf "'%s'" "${1//\'/\'\\\'\'}"; }
+  if [[ -n "${HERMES_BD_BROWSER_BIN:-}" ]]; then
+    add_launcher "Browser" internet-web-browser \
+      "$(_quote "$HERMES_BD_BROWSER_BIN") --user-data-dir=$(_quote "${HERMES_BD_BROWSER_PROFILE:-}") --remote-debugging-port=0 --no-first-run --no-default-browser-check --test-type" \
+      "$HERMES_BD_BROWSER_BIN"
+  elif [[ -n "${HERMES_BD_BROWSER_EXEC:-}" ]]; then
+    add_launcher "Browser" internet-web-browser "$HERMES_BD_BROWSER_EXEC"
+  fi
   add_launcher "Files" system-file-manager "thunar"
   add_launcher "Text Editor" accessories-text-editor "mousepad"
   dock_plugins=""; dock_items=""

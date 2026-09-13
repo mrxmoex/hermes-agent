@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import glob
 import os
+import shlex
 import shutil
 import socket
 from pathlib import Path
@@ -71,14 +72,24 @@ def dock_launch() -> Optional[Tuple[str, str]]:
     return (exe, str(profile_dir())) if exe else None
 
 
-def dock_command(exe: str, user_data_dir: str) -> str:
-    """Shell line the dock's Browser icon runs. ``--remote-debugging-port=0`` makes a human-started
-    instance attachable (Chromium writes the chosen port to ``<user-data-dir>/DevToolsActivePort``);
-    first-run / default-browser dialogs would sit between the human and the bot's tabs."""
+def dock_argv(exe: str, user_data_dir: str) -> list[str]:
+    """Argv the dock's Browser icon must run: this binary, this profile's user-data-dir.
+
+    ``--remote-debugging-port=0`` makes a human-started instance attachable (Chromium
+    writes the chosen port to ``<user-data-dir>/DevToolsActivePort``); first-run /
+    default-browser dialogs would sit between the human and the bot's tabs.
+    """
     # --test-type hides the "Chrome for Testing is only for automated testing" and unsupported-flag
     # (--no-sandbox as root) infobars, which otherwise sit at the top of the human's takeover view.
-    return (f"{exe} --user-data-dir={user_data_dir} --remote-debugging-port=0 --no-first-run "
-            f"--no-default-browser-check --test-type")
+    return [exe, f"--user-data-dir={user_data_dir}", "--remote-debugging-port=0",
+            "--no-first-run", "--no-default-browser-check", "--test-type"]
+
+
+def dock_command(exe: str, user_data_dir: str) -> str:
+    """Shell-safe ``Exec=`` line for the dock icon. Paths with spaces (a ``HERMES_HOME``
+    under ``My Home``, a Chrome-for-Testing install) must stay one argv or the human
+    lands in a different cookie jar than the bot."""
+    return shlex.join(dock_argv(exe, user_data_dir))
 
 
 def running_instance_cdp_port(user_data_dir: str, *, exclude_session: Optional[str] = None) -> Optional[int]:

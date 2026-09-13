@@ -70,7 +70,21 @@ def test_multiplex_override_does_not_inherit_the_launch_browser_pin(tmp_path, mo
 
 def test_dock_browser_advertises_a_devtools_port():
     """A human-started instance must be attachable, or the agent can never drive it afterwards."""
-    assert "--remote-debugging-port=" in browser.dock_command("/opt/chrome", "/p/dir").split()[2]
+    import shlex
+    parts = shlex.split(browser.dock_command("/opt/chrome", "/p/dir"))
+    assert parts[0] == "/opt/chrome"
+    assert parts[1] == "--user-data-dir=/p/dir"
+    assert any(p.startswith("--remote-debugging-port=") for p in parts)
+
+
+def test_dock_command_keeps_a_profile_dir_that_contains_spaces():
+    """HERMES_HOME under a folder with spaces used to split Exec= into extra argv;
+    the human then logged into a different jar than the bot."""
+    import shlex
+    profile = "/tmp/My Home/.hermes/bot-desktop/browser-profile"
+    parts = shlex.split(browser.dock_command("/opt/Google Chrome/chrome", profile))
+    assert parts[0] == "/opt/Google Chrome/chrome"
+    assert parts[1] == f"--user-data-dir={profile}"
 
 
 def _fake_running_instance(user_data_dir, pid: int, port: int) -> None:
