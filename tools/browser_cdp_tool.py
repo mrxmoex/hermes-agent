@@ -220,6 +220,13 @@ def _browser_cdp_via_supervisor(task_id: str, frame_id: str, method: str, params
                           "/browser connect first so the supervisor can attach. Once attached, browser_snapshot "
                           "will populate frame_tree with frame_ids you can pass here.")
 
+    from tools.bot_desktop.lease import HumanHasControl
+    from tools.browser_tool_session import _admit_leftover_io, _lease_moved_result
+    try:
+        leftover_lease = _admit_leftover_io(supervisor, task_id)
+    except HumanHasControl as exc:
+        return json.dumps({"success": False, "error": str(exc), "code": "human_has_control"})
+
     tree = supervisor.snapshot().frame_tree
     frame_info: Optional[Dict[str, Any]] = next(
         (f for f in [tree.get("top"), *(tree.get("children") or [])] if f and f.get("frame_id") == frame_id), None)
@@ -251,6 +258,9 @@ def _browser_cdp_via_supervisor(task_id: str, frame_id: str, method: str, params
     except Exception as exc:
         return tool_error(f"CDP call via supervisor failed: {type(exc).__name__}: {exc}", cdp_docs=CDP_DOCS_URL)
 
+    moved = _lease_moved_result(leftover_lease)
+    if moved:
+        return json.dumps(moved)
     return json.dumps({"success": True, "method": method, "frame_id": frame_id, "session_id": child_sid,
                        "result": result_msg.get("result", {})}, ensure_ascii=False)
 

@@ -813,7 +813,7 @@ def browser_snapshot(
         _supervisor = SUPERVISOR_REGISTRY.get(effective_task_id)
         if _supervisor is not None:
             try:
-                admitted = _session._admit_task_shared_browser(effective_task_id)
+                admitted = _session._admit_leftover_io(_supervisor, effective_task_id)
             except HumanHasControl:
                 _supervisor = None
                 admitted = None
@@ -1031,7 +1031,7 @@ def _eval_supervisor_fast_path(effective_task_id: str, expression: str) -> Optio
         if supervisor is None:
             return None
         try:
-            admitted = _session._admit_task_shared_browser(effective_task_id)
+            admitted = _session._admit_leftover_io(supervisor, effective_task_id)
         except HumanHasControl as e:
             return json.dumps({"success": False, "error": str(e), "code": "human_has_control"})
         sup_result = supervisor.evaluate_runtime(expression)

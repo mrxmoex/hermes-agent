@@ -1127,3 +1127,212 @@ def test_browser_dialog_discards_result_after_takeover(monkeypatch):
     finally:
         bt._active_sessions.clear()
         bt._active_sessions.update(saved)
+
+
+def _cloud_session(bt, task_id="review"):
+    """A Browserbase / other-jar row. Leftover dock I/O must not inherit this admit."""
+    saved = bt._active_sessions.copy()
+    bt._active_sessions[task_id] = {
+        "session_name": "cloud",
+        "cdp_url": "wss://browserbase.example/session",
+        "features": {"local": False, "cdp_override": True},
+    }
+    return saved
+
+
+def _dock_leftover():
+    from unittest.mock import MagicMock
+
+    sup = MagicMock()
+    sup.targets_bot_desktop = True
+    sup.cdp_url = "ws://127.0.0.1:9333/devtools/browser/x"
+    sup.hermes_home = None
+    return sup
+
+
+def _wire_cloud_override(monkeypatch, bt):
+    """Session + /browser connect both name another jar so leftover identity is skipped."""
+    from tools import browser_tool_session as session
+
+    cloud = {
+        "session_name": "cloud",
+        "cdp_url": "wss://browserbase.example/session",
+        "features": {"local": False, "cdp_override": True},
+    }
+    monkeypatch.setattr(session, "_get_session_info", lambda *a: cloud)
+    monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override_raw", lambda: "wss://browserbase.example/session")
+    monkeypatch.setattr(bt, "_last_session_key", lambda task_id: "review")
+
+
+def test_admit_supervisor_fences_dock_leftover_while_human_holds(monkeypatch):
+    """The leftover jar is the dock even when no session row names it."""
+    from tools.bot_desktop.lease import HumanHasControl
+    from tools.browser_tool_session import _admit_supervisor
+
+    _wire(monkeypatch, [])
+    lease.acquire("human-viewer")
+    with pytest.raises(HumanHasControl):
+        _admit_supervisor(_dock_leftover())
+
+
+def test_admit_supervisor_does_not_invent_a_dock_from_unstamped_loopback(monkeypatch):
+    """An unstamped leftover on some other loopback port is not this profile's dock."""
+    import tools.bot_desktop.browser as bdb
+    from tools.browser_tool_session import _admit_supervisor
+
+    _wire(monkeypatch, [])
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: 9333)
+    from unittest.mock import MagicMock
+
+    sup = MagicMock()
+    sup.targets_bot_desktop = False
+    sup.cdp_url = "ws://127.0.0.1:9222/devtools/browser/x"
+    lease.acquire("human-viewer")
+    assert _admit_supervisor(sup) is None
+
+
+def test_snapshot_leftover_dock_merge_skips_when_session_is_another_browser(monkeypatch):
+    """pending_dialogs on a leftover dock WS must not ride along after Take over."""
+    from tools import browser_tool as bt
+
+    _wire(monkeypatch, [])
+    _wire_cloud_override(monkeypatch, bt)
+    monkeypatch.setattr(bt, "_is_camofox_mode", lambda: False)
+    monkeypatch.setattr(bt, "_blocked_private_page_content", lambda *_a, **_k: None)
+    monkeypatch.setattr(bt, "_snapshot_fields", lambda *_a, **_k: {"snapshot": "tree"})
+    monkeypatch.setattr(bt._session, "_run_browser_command", lambda *_a, **_k: {"success": True, "data": {}})
+    saved = _cloud_session(bt)
+    try:
+        snap = type("Snap", (), {})()
+        snap.active = True
+        snap.to_dict = lambda: {"pending_dialogs": [{"message": "SECRET-PROMPT"}]}
+        sup = _dock_leftover()
+        sup.snapshot.return_value = snap
+        import tools.browser_supervisor as bs
+        monkeypatch.setattr(bs, "SUPERVISOR_REGISTRY", type("R", (), {"get": staticmethod(lambda *_a, **_k: sup)})())
+        lease.acquire("human-viewer")
+        out = json.loads(bt.browser_snapshot(task_id="review"))
+        assert out.get("success") is True
+        assert "SECRET-PROMPT" not in json.dumps(out)
+        sup.snapshot.assert_not_called()
+    finally:
+        bt._active_sessions.clear()
+        bt._active_sessions.update(saved)
+
+
+def test_eval_leftover_dock_is_fenced_when_session_is_another_browser(monkeypatch):
+    from tools import browser_tool as bt
+
+    _wire(monkeypatch, [])
+    _wire_cloud_override(monkeypatch, bt)
+    monkeypatch.setattr(bt, "_is_camofox_mode", lambda: False)
+    saved = _cloud_session(bt)
+    try:
+        sup = _dock_leftover()
+        sup.evaluate_runtime.return_value = {"ok": True, "result": "SECRET-FROM-PAGE"}
+        import tools.browser_supervisor as bs
+        monkeypatch.setattr(bs, "SUPERVISOR_REGISTRY", type("R", (), {"get": staticmethod(lambda *_a, **_k: sup)})())
+        lease.acquire("human-viewer")
+        out = json.loads(bt._browser_eval("document.body.innerText", task_id="review"))
+        assert out.get("code") == "human_has_control"
+        assert "SECRET-FROM-PAGE" not in json.dumps(out)
+        sup.evaluate_runtime.assert_not_called()
+    finally:
+        bt._active_sessions.clear()
+        bt._active_sessions.update(saved)
+
+
+def test_dialog_leftover_dock_is_fenced_when_session_is_another_browser(monkeypatch):
+    from tools import browser_dialog_tool as dialog
+    from tools import browser_tool as bt
+
+    _wire(monkeypatch, [])
+    _wire_cloud_override(monkeypatch, bt)
+    saved = _cloud_session(bt)
+    try:
+        sup = _dock_leftover()
+        sup.respond_to_dialog.return_value = {"ok": True, "dialog": {"message": "SECRET-PROMPT"}}
+        import tools.browser_dialog_tool as dt
+        monkeypatch.setattr(dt, "SUPERVISOR_REGISTRY", type("R", (), {"get": staticmethod(lambda *_a, **_k: sup)})())
+        lease.acquire("human-viewer")
+        out = json.loads(dialog.browser_dialog(action="accept", prompt_text="yes", task_id="review"))
+        assert out.get("code") == "human_has_control"
+        assert "SECRET-PROMPT" not in json.dumps(out)
+        sup.respond_to_dialog.assert_not_called()
+    finally:
+        bt._active_sessions.clear()
+        bt._active_sessions.update(saved)
+
+
+def test_vault_leftover_dock_eval_is_fenced_when_session_is_another_browser(monkeypatch):
+    from tools import browser_tool as bt
+    from tools import browser_vault_tool as vault
+
+    _wire(monkeypatch, [])
+    _wire_cloud_override(monkeypatch, bt)
+    saved = _cloud_session(bt)
+    try:
+        sup = _dock_leftover()
+        sup.evaluate_runtime.return_value = {"ok": True, "result": "https://bank.test/secret"}
+        import tools.browser_supervisor as bs
+        monkeypatch.setattr(bs, "SUPERVISOR_REGISTRY", type("R", (), {"get": staticmethod(lambda *_a, **_k: sup)})())
+        lease.acquire("human-viewer")
+        out = vault._eval_js("review", "window.location.href")
+        assert out.get("code") == "human_has_control"
+        assert "bank.test" not in json.dumps(out)
+        sup.evaluate_runtime.assert_not_called()
+        secret = vault._eval_js_secret("review", "document.querySelector('input').value = 's3cret-pw'")
+        assert secret.get("code") == "human_has_control"
+        assert "s3cret-pw" not in json.dumps(secret)
+        assert secret.get("error_type") == "human_has_control"
+    finally:
+        bt._active_sessions.clear()
+        bt._active_sessions.update(saved)
+
+
+def test_cdp_via_leftover_dock_is_fenced_when_session_is_another_browser(monkeypatch):
+    from tools import browser_cdp_tool as cdp
+    from tools import browser_tool as bt
+
+    _wire(monkeypatch, [])
+    _wire_cloud_override(monkeypatch, bt)
+    saved = _cloud_session(bt)
+    try:
+        sup = _dock_leftover()
+        import tools.browser_supervisor as bs
+        monkeypatch.setattr(bs, "SUPERVISOR_REGISTRY", type("R", (), {"get": staticmethod(lambda *_a, **_k: sup)})())
+        lease.acquire("human-viewer")
+        out = json.loads(cdp._browser_cdp_via_supervisor(
+            "review", "frame-1", "Runtime.evaluate", {"expression": "1"}, 1.0,
+        ))
+        assert out.get("code") == "human_has_control"
+        assert "SECRET" not in json.dumps(out)
+        sup.snapshot.assert_not_called()
+    finally:
+        bt._active_sessions.clear()
+        bt._active_sessions.update(saved)
+
+
+def test_unstamped_cloud_leftover_eval_is_not_the_dock_jar(monkeypatch):
+    """A leftover attached to another browser stays usable while a human holds this screen."""
+    from unittest.mock import MagicMock
+    from tools import browser_tool as bt
+
+    _wire(monkeypatch, [])
+    _wire_cloud_override(monkeypatch, bt)
+    monkeypatch.setattr(bt, "_is_camofox_mode", lambda: False)
+    saved = _cloud_session(bt)
+    try:
+        sup = MagicMock()
+        sup.targets_bot_desktop = False
+        sup.cdp_url = "wss://browserbase.example/session"
+        sup.evaluate_runtime.return_value = {"ok": True, "result": "cloud-page"}
+        import tools.browser_supervisor as bs
+        monkeypatch.setattr(bs, "SUPERVISOR_REGISTRY", type("R", (), {"get": staticmethod(lambda *_a, **_k: sup)})())
+        lease.acquire("human-viewer")
+        out = json.loads(bt._browser_eval("document.title", task_id="review"))
+        assert out.get("code") != "human_has_control"
+        sup.evaluate_runtime.assert_called_once()
+    finally:
+        bt._active_sessions.clear()
+        bt._active_sessions.update(saved)

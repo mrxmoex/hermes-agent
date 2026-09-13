@@ -65,7 +65,7 @@ def _eval_js(task_id: str, expression: str) -> Dict[str, Any]:
     argv. Use :func:`_eval_js_secret` for secret-bearing expressions.
     """
     from tools.bot_desktop.lease import HumanHasControl
-    from tools.browser_tool_session import _admit_task_shared_browser, _lease_moved_result
+    from tools.browser_tool_session import _admit_leftover_io, _admit_task_shared_browser, _lease_moved_result
 
     try:
         admitted = _admit_task_shared_browser(task_id)
@@ -77,6 +77,12 @@ def _eval_js(task_id: str, expression: str) -> Dict[str, Any]:
 
         supervisor = SUPERVISOR_REGISTRY.get(task_id)
         if supervisor is not None:
+            try:
+                leftover_lease = _admit_leftover_io(supervisor, task_id)
+            except HumanHasControl as exc:
+                return {"success": False, "error": str(exc), "code": "human_has_control"}
+            if leftover_lease is not None:
+                admitted = leftover_lease
             sup = supervisor.evaluate_runtime(expression)
             moved = _lease_moved_result(admitted)
             if moved:
@@ -111,7 +117,7 @@ def _ensure_supervisor(task_id: str):
     Returns None when no endpoint is reachable; the fill then refuses rather than touching argv."""
     from tools.bot_desktop.lease import HumanHasControl
     from tools.browser_supervisor import SUPERVISOR_REGISTRY
-    from tools.browser_tool_session import _admit_task_shared_browser
+    from tools.browser_tool_session import _admit_leftover_io, _admit_task_shared_browser
 
     try:
         _admit_task_shared_browser(task_id)
@@ -120,6 +126,7 @@ def _ensure_supervisor(task_id: str):
 
     supervisor = SUPERVISOR_REGISTRY.get(task_id)
     if supervisor is not None:
+        _admit_leftover_io(supervisor, task_id)
         return supervisor
     from tools.browser_tool import _last_session_key
     from tools.browser_tool_cdp import _get_dialog_policy_config, _resolve_cdp_override
@@ -148,7 +155,7 @@ def _eval_js_secret(task_id: str, expression: str) -> Dict[str, Any]:
     (``error_type='supervisor_required'``) and nothing is written.
     """
     from tools.bot_desktop.lease import HumanHasControl
-    from tools.browser_tool_session import _admit_task_shared_browser, _lease_moved_result
+    from tools.browser_tool_session import _admit_leftover_io, _admit_task_shared_browser, _lease_moved_result
 
     try:
         admitted = _admit_task_shared_browser(task_id)
@@ -162,6 +169,13 @@ def _eval_js_secret(task_id: str, expression: str) -> Dict[str, Any]:
 
     try:
         supervisor = _ensure_supervisor(task_id)
+    except HumanHasControl as exc:
+        return {
+            "success": False,
+            "error_type": "human_has_control",
+            "code": "human_has_control",
+            "error": str(exc),
+        }
     except Exception as exc:
         logger.debug("vault fill: supervisor unavailable (%s)", exc)
         supervisor = None
@@ -178,6 +192,18 @@ def _eval_js_secret(task_id: str, expression: str) -> Dict[str, Any]:
                 "session and retry."
             ),
         }
+
+    try:
+        leftover_lease = _admit_leftover_io(supervisor, task_id)
+    except HumanHasControl as exc:
+        return {
+            "success": False,
+            "error_type": "human_has_control",
+            "code": "human_has_control",
+            "error": str(exc),
+        }
+    if leftover_lease is not None:
+        admitted = leftover_lease
 
     sup = supervisor.evaluate_runtime(expression)
     moved = _lease_moved_result(admitted)
@@ -231,7 +257,7 @@ def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[str]:
     (browser_exec sessions open their own tabs, so the tab the supervisor attached to first is rarely the
     login page). Returns the origin when a tab was focused, else None (caller falls back to the current page)."""
     from tools.bot_desktop.lease import HumanHasControl
-    from tools.browser_tool_session import _admit_task_shared_browser, _lease_moved_result
+    from tools.browser_tool_session import _admit_leftover_io, _admit_task_shared_browser, _lease_moved_result
 
     try:
         admitted = _admit_task_shared_browser(task_id)
@@ -239,10 +265,18 @@ def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[str]:
         return None
     try:
         supervisor = _ensure_supervisor(task_id)
+    except HumanHasControl:
+        return None
     except Exception:
         supervisor = None
     if supervisor is None:
         return None
+    try:
+        leftover_lease = _admit_leftover_io(supervisor, task_id)
+    except HumanHasControl:
+        return None
+    if leftover_lease is not None:
+        admitted = leftover_lease
     focused = supervisor.focus_page(origin, accept=_TAB_PROBES.get(kind))
     if _lease_moved_result(admitted):
         return None

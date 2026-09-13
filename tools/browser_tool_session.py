@@ -813,6 +813,43 @@ def _admit_task_shared_browser(task_id: Optional[str] = None, *, cdp_url: str = 
     )
 
 
+def _admit_supervisor(supervisor, *, home: Optional[str] = None):
+    """Admit the jar this leftover CDP supervisor is actually attached to.
+
+    Leftover I/O talks to ``supervisor.cdp_url``, not the current session's
+    shared-browser row. After Take over, a same-profile leftover dock
+    supervisor can still be ``SUPERVISOR_REGISTRY.get(task_id)`` while the
+    current session is a cloud / other-profile / already-overridden row
+    whose admit is a no-op. Re-run the dock fence on the leftover's own
+    URL and ``targets_bot_desktop`` stamp so HumanHasControl / epoch
+    discard apply to the jar we are about to snapshot / eval / CDP.
+    """
+    if supervisor is None:
+        return None
+    leftover_home = getattr(supervisor, "hermes_home", None)
+    if not (isinstance(home, str) and home):
+        home = leftover_home if isinstance(leftover_home, str) and leftover_home else None
+    return _admit_shared_browser(
+        cdp_url=str(getattr(supervisor, "cdp_url", "") or ""),
+        home=home,
+        treat_as_dock=getattr(supervisor, "targets_bot_desktop", None) is True,
+    )
+
+
+def _admit_leftover_io(supervisor, task_id: Optional[str] = None):
+    """Admit leftover snapshot / eval / dialog / CDP against the leftover jar.
+
+    The leftover jar first (it is what I/O talks to). If that leftover is
+    not the dock, fall through to the task's current session so a local
+    session row still fences unstamped leftovers that share this profile's
+    Chromium.
+    """
+    admitted = _admit_supervisor(supervisor)
+    if admitted is not None:
+        return admitted
+    return _admit_task_shared_browser(task_id)
+
+
 def _stamp_admitted(lease):
     """Remember which HERMES_HOME this snapshot was read from.
 
