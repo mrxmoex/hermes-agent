@@ -651,8 +651,16 @@ def test_browser_navigate_does_not_return_snapshot_from_a_later_epoch(monkeypatc
     assert "snapshot" not in calls, f"auto-snapshot ran after a completed takeover: {calls}"
 
 
-def test_human_hold_does_not_create_or_recycle_shared_session(monkeypatch):
-    """Admit before session create: a human lease must not launch or tear down Chromium."""
+@pytest.mark.parametrize("invoke", [
+    lambda browser: browser.browser_click("e1", task_id="review"),
+    lambda browser: browser.browser_navigate("https://example.com", task_id="review"),
+])
+def test_human_hold_does_not_create_or_recycle_shared_session(monkeypatch, invoke):
+    """Admit before session create: a human lease must not launch or tear down Chromium.
+
+    ``browser_navigate`` used to call ``_get_session_info`` for ``_first_nav`` *before*
+    the fence, so a human-held screen still spawned the shared browser.
+    """
     looked: list = []
     created: list = []
     browser, session = _wire(monkeypatch, [])
@@ -664,7 +672,7 @@ def test_human_hold_does_not_create_or_recycle_shared_session(monkeypatch):
         session, "_create_local_session",
         lambda *a, **k: created.append(a) or {"session_name": "spawned", "features": {"local": True}})
     lease.acquire("human-viewer")
-    result = json.loads(browser.browser_click("e1", task_id="review"))
+    result = json.loads(invoke(browser))
     assert looked == [], f"session lookup ran while human holds: {looked}"
     assert created == [], f"local session was created while human holds: {created}"
     assert result.get("code") == "human_has_control"
