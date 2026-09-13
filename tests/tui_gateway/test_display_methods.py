@@ -315,3 +315,20 @@ def test_thumbnail_discards_a_frame_grabbed_across_a_lease_epoch_change(monkeypa
     result = _call(server, "display.thumbnail", {})["result"]
     assert result["data_url"] is None and result["suppressed"] == "human_has_control"
     assert "SECRET" not in json.dumps(result)
+
+
+def test_stop_cannot_kill_the_screen_under_a_human_without_force(monkeypatch, _fresh_lease):
+    """display.stop released the lease unconditionally before stopping Xvnc: any authenticated caller
+    could yank a human mid-login and kill the screen under them. Same rule as display.lease.release."""
+    import tui_gateway.server as server
+    from tools.bot_desktop import runtime
+
+    stops = []
+    monkeypatch.setattr(runtime, "stop", lambda: stops.append(1) or True)
+    _fresh_lease.acquire("viewer-1")
+    refused = _call(server, "display.stop", {})
+    assert refused["error"]["data"]["code"] == "viewer_mismatch"
+    assert _fresh_lease.get().holder == _fresh_lease.HUMAN and stops == []
+    forced = _call(server, "display.stop", {"force": True})["result"]
+    assert forced["stopped"] is True and stops == [1]
+    assert _fresh_lease.get().holder == _fresh_lease.AGENT
