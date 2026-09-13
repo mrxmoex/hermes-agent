@@ -10,6 +10,8 @@ machine.
 
 The launcher is ``launcher.sh`` next to this module; :func:`desktop_env` is what cua-driver and headed
 Chromium spawns merge in so the agent acts on this profile's screen and nowhere else.
+:func:`detach_from_desktop` is the inverse: cloud / user-CDP / Browser Use native harnesses must
+drop that seat or they discover the dock Chromium the human is typing into.
 """
 
 from __future__ import annotations
@@ -21,12 +23,14 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional
 
 from hermes_constants import get_hermes_home
+from tools.bot_desktop import lease as _bd_lease
 
 logger = logging.getLogger(__name__)
 
@@ -167,7 +171,25 @@ def _display_in_use(num: int) -> bool:
     return _pid_alive(pid)
 
 
-_ALLOC_LOCK = Path("/tmp/.hermes-bot-desktop-alloc.lock")  # host-wide: profiles allocate from one band
+# Tests assign a Path here; production resolves a user-owned location at use time so a
+# predictable name in world-writable /tmp cannot chmod-000 and wedge every profile.
+_ALLOC_LOCK: Optional[Path] = None
+
+
+def _alloc_lock_path() -> Path:
+    """Host-wide display-band lock. Prefer ``XDG_RUNTIME_DIR`` (0700, per-user); fall back
+    to a uid-suffixed file under the process temp dir. Never a fixed name in ``/tmp``.
+
+    ``os.getuid`` is looked up at call time so importing this module on Windows (where
+    Bot Screen is unsupported but ``computer_use`` still imports runtime) does not crash.
+    """
+    if _ALLOC_LOCK is not None:
+        return _ALLOC_LOCK
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
+    if runtime_dir:
+        return Path(runtime_dir) / "hermes-bot-desktop-alloc.lock"
+    uid = getattr(os, "getuid", lambda: 0)()
+    return Path(tempfile.gettempdir()) / f"hermes-bot-desktop-alloc-{uid}.lock"
 
 
 @contextlib.contextmanager
@@ -194,7 +216,7 @@ def _pick_display() -> int:
 
 
 def _allocate_display() -> int:
-    with _flocked(_ALLOC_LOCK):
+    with _flocked(_alloc_lock_path()):
         return _pick_display()
 
 
@@ -209,6 +231,32 @@ def desktop_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
         env.pop("WAYLAND_DISPLAY", None)  # X11 desktop; a leaked Wayland socket flips GTK/Chromium backends
         from tools.bot_desktop.browser import env_for_agent
         env_for_agent(env)  # same binary + user-data-dir as the dock's Browser icon
+    return env
+
+
+def detach_from_desktop(base_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    """Drop this profile's published seat and dock-browser pins from ``base_env``.
+
+    ``desktop_env`` (and a gateway that inherited the launcher's env) merge DISPLAY /
+    XAUTHORITY and pin ``AGENT_BROWSER_*`` so headed *local* tools share the dock
+    Chromium. A cloud, user-CDP, or Browser Use native harness that still has those
+    values discovers that same Chromium — including while a human holds the lease,
+    because those backends skip the shared-browser fence on purpose (another browser).
+
+    Inverse of ``desktop_env``. Leaves a different seat (host ``:0``, a user pin that
+    is not the dock profile) alone. Idempotent when the desktop is down.
+    """
+    env = dict(os.environ if base_env is None else base_env)
+    published = published_env()
+    for key, value in published.items():
+        if env.get(key) == value:
+            env.pop(key, None)
+    from tools.bot_desktop.browser import executable, profile_dir
+    if env.get("AGENT_BROWSER_PROFILE") == str(profile_dir()):
+        env.pop("AGENT_BROWSER_PROFILE", None)
+    exe = executable()
+    if exe and env.get("AGENT_BROWSER_EXECUTABLE_PATH") == exe:
+        env.pop("AGENT_BROWSER_EXECUTABLE_PATH", None)
     return env
 
 
@@ -307,7 +355,7 @@ def start(*, wait_seconds: float = 15.0) -> DesktopStatus:
     with _flocked(sd / "start.lock"):
         if _launcher_pid() is not None and published_env().get("DISPLAY"):
             return status()
-        with _flocked(_ALLOC_LOCK):
+        with _flocked(_alloc_lock_path()):
             return _spawn_and_wait(sd, _pick_display(), wait_seconds)
 
 
@@ -361,10 +409,21 @@ def stop() -> bool:
         return _stop_locked(sd)
 
 
+def _release_lease_for_stopped_screen() -> None:
+    """A leftover human lease after the launcher is gone wedges ``computer_use``
+    on ``human_has_control`` with no screen to hand back. Same force-release as
+    ``display.stop`` / ``hermes computer-use screen stop``."""
+    try:
+        _bd_lease.release()
+    except Exception:
+        logger.debug("bot-desktop: lease release after stop failed", exc_info=True)
+
+
 def _stop_locked(sd: Path) -> bool:
     pid = _launcher_pid()
     if pid is None:
         (sd / "env").unlink(missing_ok=True)
+        _release_lease_for_stopped_screen()
         return False
     # The launcher runs in its own session; killing the group takes Xvnc, dbus and Xfce with it.
     try:
@@ -382,4 +441,5 @@ def _stop_locked(sd: Path) -> bool:
             pass
     (sd / "launcher.pid").unlink(missing_ok=True)
     (sd / "env").unlink(missing_ok=True)
+    _release_lease_for_stopped_screen()
     return True

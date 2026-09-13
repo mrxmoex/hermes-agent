@@ -3,6 +3,12 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import type { RosterRow } from './types'
 
+const $testGateway = vi.hoisted(() => {
+  const { atom } = require('nanostores') as typeof import('nanostores')
+
+  return atom('open')
+})
+
 vi.mock('@hermes/plugin-sdk', async () => {
   const { useStore } = await import('@nanostores/react')
   const { onGatewayEvent } = await import('../../contrib/events')
@@ -11,7 +17,7 @@ vi.mock('@hermes/plugin-sdk', async () => {
     Codicon: () => null,
     useValue: useStore,
     resolveSiblingWsUrl: vi.fn(),
-    host: { onEvent: vi.fn(onGatewayEvent), requestProfile: vi.fn() }
+    host: { onEvent: vi.fn(onGatewayEvent), requestProfile: vi.fn(), state: { gateway: $testGateway } }
   }
 })
 vi.mock('./data', async () => {
@@ -28,6 +34,7 @@ vi.mock('./i18n', () => ({
     screen: {
       portalTitle: 'Screen',
       portalWatching: 'Live',
+      handoffRequested: 'Bot needs you',
       portalYouControl: 'You control',
       portalOtherControls: 'Other viewer',
       heroOpenLive: 'Open live',
@@ -48,6 +55,7 @@ import { emitGatewayEvent } from '../../contrib/events'
 
 import { $lastRoster } from './data'
 import type { DisplayStatus } from './screen-connection'
+import { resetScreenEventBufferForTests, SCREEN_STATUS_RETRY_MS } from './screen-events'
 import { ScreenHero } from './screen-hero'
 import { openBotScreen } from './screen-open'
 import { ProfileGroupScreenPortal, useScreenPortalState } from './screen-portal'
@@ -73,7 +81,9 @@ const status: DisplayStatus = {
 
 beforeEach(() => {
   $screenState.set({})
+  resetScreenEventBufferForTests()
   $lastRoster.set([])
+  $testGateway.set('open')
   vi.mocked(host.requestProfile).mockReset()
   vi.mocked(openBotScreen).mockClear()
   vi.spyOn(globalThis.document, 'hidden', 'get').mockReturnValue(false)
@@ -211,4 +221,59 @@ it('a sidebar group portal keeps its lease subscription across parent re-renders
   await act(async () => {})
   expect(vi.mocked(host.onEvent).mock.calls.length).toBe(subscriptions)
   view.unmount()
+})
+
+it('retries display.status after a transient failure until the cache settles', async () => {
+  vi.useFakeTimers()
+  vi.mocked(host.requestProfile)
+    .mockRejectedValueOnce(new Error('502 Bad Gateway'))
+    .mockResolvedValueOnce(status)
+
+  const hook = renderHook(() => useScreenPortalState(botA))
+  await act(async () => {})
+  expect(hook.result.current.status).toBeNull()
+  expect(hook.result.current.tone).toBe('unknown')
+  expect(vi.mocked(host.requestProfile)).toHaveBeenCalledTimes(1)
+
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(SCREEN_STATUS_RETRY_MS)
+  })
+  expect(hook.result.current.status?.running).toBe(true)
+  expect(hook.result.current.tone).toBe('live')
+  hook.unmount()
+})
+
+it('does not retry display.status after method-not-found', async () => {
+  vi.useFakeTimers()
+  vi.mocked(host.requestProfile).mockRejectedValue(
+    Object.assign(new Error('Method not found: display.status'), { code: -32601 })
+  )
+
+  const hook = renderHook(() => useScreenPortalState(botA))
+  await act(async () => {})
+  expect(hook.result.current.tone).toBe('unavailable')
+
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(SCREEN_STATUS_RETRY_MS * 2)
+  })
+  expect(vi.mocked(host.requestProfile)).toHaveBeenCalledTimes(1)
+  hook.unmount()
+})
+
+it('refetches display.status on gateway reconnect even when the cache is already warm', async () => {
+  setScreenStatus(botA, { ...status, running: false, pid: null, display: null, socket: null })
+  vi.mocked(host.requestProfile).mockResolvedValue(status)
+  const hook = renderHook(() => useScreenPortalState(botA))
+  await act(async () => {})
+  expect(vi.mocked(host.requestProfile)).not.toHaveBeenCalled()
+
+  await act(async () => {
+    $testGateway.set('idle')
+  })
+  await act(async () => {
+    $testGateway.set('open')
+  })
+  expect(vi.mocked(host.requestProfile)).toHaveBeenCalledWith(expect.anything(), 'display.status', {})
+  expect(hook.result.current.status?.running).toBe(true)
+  hook.unmount()
 })

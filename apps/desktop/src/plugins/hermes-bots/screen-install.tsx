@@ -9,7 +9,7 @@
  * a fresh status the caller uses to flip the pane to "Start screen".
  */
 
-import { Button, Codicon, GlyphSpinner, host } from '@hermes/plugin-sdk'
+import { Button, Codicon, GlyphSpinner, host, useValue } from '@hermes/plugin-sdk'
 import type { RpcEvent } from '@hermes/plugin-sdk'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
@@ -31,6 +31,7 @@ export function ScreenInstallCard({ bot, status, onInstalled }: ScreenInstallCar
   const [log, setLog] = useState<string[]>([])
   const [error, setError] = useState<null | string>(null)
   const logEnd = useRef<HTMLDivElement>(null)
+  const gatewayUp = useValue(host.state.gateway) === 'open'
   // Keeps the bot's socket open from display.install until done/failed: the log
   // and done events ride that socket, and the SDK closes an idle one otherwise.
   const retention = useRef<(() => void) | null>(null)
@@ -45,6 +46,16 @@ export function ScreenInstallCard({ bot, status, onInstalled }: ScreenInstallCar
   useEffect(() => {
     logEnd.current?.scrollIntoView({ block: 'end' })
   }, [log])
+
+  useEffect(() => {
+    if (phase !== 'running' || gatewayUp) {
+      return
+    }
+
+    releaseRetention()
+    setPhase('failed')
+    setError(t.screen.installFailed)
+  }, [gatewayUp, phase, releaseRetention, t.screen.installFailed])
 
   useEffect(() => {
     const offLog = host.onEvent('display.install.log', (event: RpcEvent) => {

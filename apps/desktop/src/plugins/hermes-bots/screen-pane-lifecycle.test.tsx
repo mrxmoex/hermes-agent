@@ -5,6 +5,12 @@ import type { DisplayStatus } from './screen-connection'
 import type * as ScreenConnection from './screen-connection'
 import type { RosterRow } from './types'
 
+const $testGateway = vi.hoisted(() => {
+  const { atom } = require('nanostores') as typeof import('nanostores')
+
+  return atom('open')
+})
+
 const sockets = vi.hoisted(
   () => [] as Array<{ closeCodes: number[]; closed: boolean; close: (code?: number) => void; serverClose: (code: number) => void }>
 )
@@ -32,7 +38,8 @@ vi.mock('@hermes/plugin-sdk', async () => {
         return () => {
           retention.held -= 1
         }
-      }
+      },
+      state: { gateway: $testGateway }
     }
   }
 })
@@ -46,10 +53,17 @@ vi.mock('./i18n', () => ({
       title: 'Screen',
       controlTaken: 'Another viewer took control',
       youControl: 'You control',
+      otherControls: 'Other controls',
       handBack: 'Hand back',
+      handBackForce: 'Hand back (force)',
+      handBackForceHint: 'Force',
       takeOver: 'Take over',
       reconnect: 'Reconnect',
-      streamLost: 'Stream lost'
+      streamLost: 'Stream lost',
+      heroConnecting: 'Checking the screen…',
+      stoppedTitle: 'Screen is off',
+      stoppedBody: 'Start this bot’s desktop.',
+      start: 'Start screen'
     }
   })
 }))
@@ -89,9 +103,10 @@ vi.mock('@novnc/novnc', () => ({
   }
 }))
 
+import { resetScreenEventBufferForTests, SCREEN_STATUS_RETRY_MS } from './screen-events'
 import { displayRequest } from './screen-connection'
 import { BotScreenPane } from './screen-pane'
-import { $screenState } from './screen-state'
+import { $screenState, setScreenStatus } from './screen-state'
 
 const bot: RosterRow = { name: 'default' }
 
@@ -112,6 +127,8 @@ const status: DisplayStatus = {
 
 beforeEach(() => {
   $screenState.set({})
+  resetScreenEventBufferForTests()
+  $testGateway.set('open')
   sockets.length = 0
   rfbs.length = 0
   retention.held = 0
@@ -154,7 +171,10 @@ beforeEach(() => {
   )
 })
 
-afterEach(() => vi.unstubAllGlobals())
+afterEach(() => {
+  vi.useRealTimers()
+  vi.unstubAllGlobals()
+})
 
 it('sends an intentional close before noVNC can send its statusless close on pane unmount', async () => {
   const view = render(<BotScreenPane bot={bot} />)
@@ -187,6 +207,192 @@ it('does not hand back while replacing a stream to reconnect the same viewer', a
   view.unmount()
 })
 
+it('asks observe to keep the minted viewer id so a same-connection reconnect does not remint', async () => {
+  vi.mocked(displayRequest).mockImplementation(async (_bot, method, params = {}) => {
+    if (method === 'display.observe') {
+      const requested = typeof params.viewer_id === 'string' && params.viewer_id ? params.viewer_id : 'this-viewer'
+
+      return { ...status, ticket: 't', viewer_id: requested }
+    }
+
+    return { ...status }
+  })
+
+  const view = render(<BotScreenPane bot={bot} />)
+  await waitFor(() => expect(sockets).toHaveLength(1))
+  await act(async () => {})
+  fireEvent.click(view.getByTitle('Reconnect'))
+  await waitFor(() => expect(sockets).toHaveLength(2))
+  expect(vi.mocked(displayRequest)).toHaveBeenCalledWith(bot, 'display.observe', { viewer_id: 'this-viewer' })
+  expect(vi.mocked(displayRequest)).not.toHaveBeenCalledWith(bot, 'display.lease.acquire', expect.anything())
+  view.unmount()
+})
+
+it('transfers the lease onto the reminted viewer id when reconnecting while holding', async () => {
+  let observes = 0
+  vi.mocked(displayRequest).mockImplementation(async (_bot, method, params = {}) => {
+    if (method === 'display.observe') {
+      observes += 1
+
+      return { ...status, ticket: `t${observes}`, viewer_id: observes === 1 ? 'this-viewer' : 'this-viewer-2' }
+    }
+
+    if (method === 'display.lease.acquire') {
+      return { lease: { ...status.lease, holder: 'human', viewer_id: String(params.viewer_id) } }
+    }
+
+    return { ...status }
+  })
+
+  const view = render(<BotScreenPane bot={bot} />)
+  await waitFor(() => expect(sockets).toHaveLength(1))
+  await act(async () => {})
+  fireEvent.click(view.getByTitle('Reconnect'))
+  await waitFor(() => expect(sockets).toHaveLength(2))
+  expect(vi.mocked(displayRequest)).toHaveBeenCalledWith(bot, 'display.observe', { viewer_id: 'this-viewer' })
+  expect(vi.mocked(displayRequest)).toHaveBeenCalledWith(bot, 'display.lease.acquire', { viewer_id: 'this-viewer-2' })
+  view.unmount()
+})
+
+it('does not steal the lease back if another viewer took over during reconnect', async () => {
+  let observes = 0
+  vi.mocked(displayRequest).mockImplementation(async (_bot, method) => {
+    if (method === 'display.observe') {
+      observes += 1
+
+      return {
+        ...status,
+        ticket: `t${observes}`,
+        viewer_id: observes === 1 ? 'this-viewer' : 'this-viewer-2',
+        lease:
+          observes === 1
+            ? status.lease
+            : { ...status.lease, holder: 'human', viewer_id: 'other-viewer' }
+      }
+    }
+
+    return { ...status }
+  })
+
+  const view = render(<BotScreenPane bot={bot} />)
+  await waitFor(() => expect(sockets).toHaveLength(1))
+  await act(async () => {})
+  fireEvent.click(view.getByTitle('Reconnect'))
+  await waitFor(() => expect(sockets).toHaveLength(2))
+  expect(vi.mocked(displayRequest)).not.toHaveBeenCalledWith(bot, 'display.lease.acquire', expect.anything())
+  view.unmount()
+})
+
+it('offers force hand-back on the stopped pane when a human lease survived the crash', async () => {
+  vi.mocked(displayRequest).mockResolvedValue({
+    ...status,
+    running: false,
+    pid: null,
+    lease: { ...status.lease, holder: 'human', viewer_id: 'ghost-viewer' }
+  })
+  const view = render(<BotScreenPane bot={bot} />)
+  await waitFor(() => expect(view.getByText('Screen is off')).toBeTruthy())
+  fireEvent.click(view.getByText('Hand back (force)'))
+  await waitFor(() =>
+    expect(vi.mocked(displayRequest)).toHaveBeenCalledWith(bot, 'display.lease.release', { force: true })
+  )
+  view.unmount()
+})
+
+it('retries display.status after a transient failure instead of showing empty live chrome', async () => {
+  vi.useFakeTimers()
+  let statusCalls = 0
+  vi.mocked(displayRequest).mockImplementation(async (_bot, method) => {
+    if (method === 'display.status') {
+      statusCalls += 1
+
+      if (statusCalls === 1) {
+        throw new Error('502 Bad Gateway')
+      }
+
+      return { ...status }
+    }
+
+    return { ...status, ticket: 't', viewer_id: 'this-viewer' }
+  })
+
+  const view = render(<BotScreenPane bot={bot} />)
+  await act(async () => {})
+  expect(view.getByText('Checking the screen…')).toBeTruthy()
+  expect(view.queryByTitle('Reconnect')).toBeNull()
+  expect(sockets).toHaveLength(0)
+
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(SCREEN_STATUS_RETRY_MS)
+  })
+  await act(async () => {})
+  expect(sockets).toHaveLength(1)
+  expect(view.queryByText('Checking the screen…')).toBeNull()
+  view.unmount()
+})
+
+it('releases the pinned socket when display.observe fails after retain', async () => {
+  vi.mocked(displayRequest).mockImplementation(async (_bot, method) => {
+    if (method === 'display.observe') {
+      throw new Error('observe failed')
+    }
+
+    return { ...status }
+  })
+
+  const view = render(<BotScreenPane bot={bot} />)
+  await waitFor(() => expect(view.getByText('observe failed')).toBeTruthy())
+  expect(retention.held).toBe(0)
+  expect(sockets).toHaveLength(0)
+  view.unmount()
+})
+
+it('releases the pinned socket when the RFB URL cannot be resolved after retain', async () => {
+  const { resolveScreenWsUrl } = await import('./screen-connection')
+  vi.mocked(resolveScreenWsUrl).mockRejectedValueOnce(new Error('no display ticket'))
+
+  const view = render(<BotScreenPane bot={bot} />)
+  await waitFor(() => expect(view.getByText('no display ticket')).toBeTruthy())
+  expect(retention.held).toBe(0)
+  expect(sockets).toHaveLength(0)
+  view.unmount()
+})
+
+it('re-pulls display.status and re-attaches when the gateway reconnects while the pane is already open', async () => {
+  const view = render(<BotScreenPane bot={bot} />)
+  await waitFor(() => expect(sockets).toHaveLength(1))
+  await act(async () => {})
+  const statusCalls = vi.mocked(displayRequest).mock.calls.filter(([, method]) => method === 'display.status').length
+
+  await act(async () => {
+    $testGateway.set('idle')
+  })
+  await act(async () => {
+    $testGateway.set('open')
+  })
+  await waitFor(() => {
+    const after = vi.mocked(displayRequest).mock.calls.filter(([, method]) => method === 'display.status').length
+    expect(after).toBeGreaterThan(statusCalls)
+  })
+  await waitFor(() => expect(sockets).toHaveLength(2))
+  expect(sockets[1].closed).toBe(false)
+  view.unmount()
+})
+
+it('releases the RFB socket when the screen stops while the pane stays mounted', async () => {
+  const view = render(<BotScreenPane bot={bot} />)
+  await waitFor(() => expect(sockets).toHaveLength(1))
+  await act(async () => {})
+  expect(retention.held).toBe(1)
+
+  act(() => setScreenStatus(bot, { ...status, running: false, pid: null, display: null, socket: null }))
+  await waitFor(() => expect(view.getByText('Screen is off')).toBeTruthy())
+  expect(retention.held).toBe(0)
+  expect(sockets[0].closed).toBe(true)
+  expect(sockets[0].closeCodes).not.toContain(1000)
+  view.unmount()
+})
+
 it('shows the control-taken overlay from the bridge close code, which noVNC does not forward', async () => {
   const view = render(<BotScreenPane bot={bot} />)
   await waitFor(() => expect(sockets).toHaveLength(1))
@@ -197,5 +403,8 @@ it('shows the control-taken overlay from the bridge close code, which noVNC does
     rfbs[0].emit('disconnect', { clean: true })
   })
   expect(view.getByText('Another viewer took control')).toBeTruthy()
+  await waitFor(() => expect(sockets).toHaveLength(2))
+  expect(sockets[1].closed).toBe(false)
+  expect(vi.mocked(displayRequest)).not.toHaveBeenCalledWith(bot, 'display.lease.acquire', expect.anything())
   view.unmount()
 })

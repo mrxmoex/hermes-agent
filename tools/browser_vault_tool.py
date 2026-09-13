@@ -31,6 +31,43 @@ import secrets
 import logging
 from typing import Any, Dict, Optional
 
+from tools import browser_tool_session as _session
+from tools.browser_tool_session import (
+    _bracket_bot_desktop_browser,
+    _discard_if_lease_moved,
+    _live_supervisor_for_session,
+    _non_nav_session_key,
+    _session_info_for_shared_browser_fence,
+    _shared_browser_fence,
+)
+
+
+def _json_if_lease_moved(admitted) -> Optional[str]:
+    """JSON refuse when the shared-browser epoch moved since ``admitted``."""
+    stole = _discard_if_lease_moved(admitted)
+    return json.dumps(stole) if stole else None
+
+
+def _with_handoff_code(payload: Dict[str, Any], source: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Copy ``code: human_has_control`` from a fenced result onto a vault payload.
+
+    Inspect/fill wrappers used to rebuild ``{success: False, error}`` and drop
+    the machine-readable handoff code (same class as browser_type / CLI eval).
+    """
+    if source and source.get("code") and "code" not in payload:
+        payload = dict(payload)
+        payload["code"] = source["code"]
+    return payload
+
+
+def _json_if_handoff(payload: Optional[Dict[str, Any]], **extra: Any) -> Optional[str]:
+    """JSON refuse when a nested fenced call reminted. Do not wrap that as success."""
+    if not payload or payload.get("code") != "human_has_control":
+        return None
+    out = {"success": False, "error": payload.get("error") or "A human has control of this bot's screen."}
+    out.update({key: value for key, value in extra.items() if value is not None})
+    return json.dumps(_with_handoff_code(out, payload), ensure_ascii=False)
+
 logger = logging.getLogger(__name__)
 
 
@@ -64,30 +101,29 @@ def _eval_js(task_id: str, expression: str) -> Dict[str, Any]:
     embed secret values — the fallback places the expression in subprocess
     argv. Use :func:`_eval_js_secret` for secret-bearing expressions.
     """
-    try:
-        from tools.browser_supervisor import SUPERVISOR_REGISTRY
+    effective = _non_nav_session_key(task_id)
+    def _run():
+        try:
+            supervisor = _live_supervisor_for_session(effective)
+            if supervisor is not None:
+                sup = supervisor.evaluate_runtime(expression)
+                if sup.get("ok"):
+                    return {"success": True, "result": sup.get("result")}
+                err = str(sup.get("error") or "")
+                if "supervisor" not in err.lower():
+                    return {"success": False, "error": err}
+        except ImportError:
+            pass
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.debug("vault fill: supervisor eval unavailable (%s)", exc)
 
-        supervisor = SUPERVISOR_REGISTRY.get(task_id)
-        if supervisor is not None:
-            sup = supervisor.evaluate_runtime(expression)
-            if sup.get("ok"):
-                return {"success": True, "result": sup.get("result")}
-            err = str(sup.get("error") or "")
-            if "supervisor" not in err.lower():
-                return {"success": False, "error": err}
-    except ImportError:
-        pass
-    except Exception as exc:  # pragma: no cover — defensive
-        logger.debug("vault fill: supervisor eval unavailable (%s)", exc)
+        result = _session._run_browser_command(effective, "eval", [expression])
+        if not result.get("success"):
+            out = {"success": False, "error": result.get("error", "eval failed")}
+            return _with_handoff_code(out, result)
+        return {"success": True, "result": result.get("data", {}).get("result")}
 
-    from tools.browser_tool import _last_session_key
-    from tools.browser_tool_session import _run_browser_command
-
-    effective = _last_session_key(task_id)
-    result = _run_browser_command(effective, "eval", [expression])
-    if not result.get("success"):
-        return {"success": False, "error": result.get("error", "eval failed")}
-    return {"success": True, "result": result.get("data", {}).get("result")}
+    return _bracket_bot_desktop_browser(_session_info_for_shared_browser_fence(effective), _run)
 
 
 def _ensure_supervisor(task_id: str):
@@ -98,28 +134,30 @@ def _ensure_supervisor(task_id: str):
     for the packaged Chromium's endpoint (``get cdp-url``: same daemon, same reaper) and attach.
     Returns None when no endpoint is reachable; the fill then refuses rather than touching argv."""
     from tools.browser_supervisor import SUPERVISOR_REGISTRY
+    from tools.browser_tool_cdp import _get_dialog_policy_config, _resolve_cdp_override
 
-    supervisor = SUPERVISOR_REGISTRY.get(task_id)
+    effective = _non_nav_session_key(task_id)
+    supervisor = _live_supervisor_for_session(effective)
     if supervisor is not None:
         return supervisor
-    from tools.browser_tool import _last_session_key
-    from tools.browser_tool_cdp import _get_dialog_policy_config, _resolve_cdp_override
-    from tools.browser_tool_session import _run_browser_command
 
-    res = _run_browser_command(_last_session_key(task_id), "get", ["cdp-url"])
+    res = _session._run_browser_command(effective, "get", ["cdp-url"])
+    # Independently-fenced get remints; do not rewrite as "no supervisor".
+    if (res or {}).get("code") == "human_has_control":
+        return res
     cdp_url = str(((res or {}).get("data") or {}).get("cdpUrl") or "") if (res or {}).get("success") else ""
     if not cdp_url:
         return None
     policy, timeout_s = _get_dialog_policy_config()
     try:
-        return SUPERVISOR_REGISTRY.get_or_start(task_id=task_id, cdp_url=_resolve_cdp_override(cdp_url),
-                                                dialog_policy=policy, dialog_timeout_s=timeout_s)
+        return SUPERVISOR_REGISTRY.get_or_start(task_id=effective, cdp_url=_resolve_cdp_override(cdp_url),
+                                         dialog_policy=policy, dialog_timeout_s=timeout_s)
     except Exception as exc:
         logger.debug("vault fill: supervisor attach to local session failed (%s)", exc)
         return None
 
 
-def _eval_js_secret(task_id: str, expression: str) -> Dict[str, Any]:
+def _eval_js_secret(task_id: str, expression: str, *, admitted=None) -> Dict[str, Any]:
     """Evaluate a SECRET-BEARING JS expression. Supervisor CDP-WS only.
 
     Fails closed: there is deliberately NO fallback to the agent-browser CLI
@@ -127,12 +165,30 @@ def _eval_js_secret(task_id: str, expression: str) -> Dict[str, Any]:
     credential bytes — in subprocess argv, visible to any process listing.
     When no supervisor session is available the caller gets a typed refusal
     (``error_type='supervisor_required'``) and nothing is written.
+
+    ``admitted`` is the caller's lease ticket when this write is one hop of a
+    larger inspect→fill. Reminting here would authorize a completed takeover.
     """
+    effective = _non_nav_session_key(task_id)
+    if admitted is None:
+        admitted, refuse = _shared_browser_fence(effective)
+        if refuse:
+            return refuse
+    else:
+        stole = _discard_if_lease_moved(admitted)
+        if stole:
+            return stole
     try:
-        supervisor = _ensure_supervisor(task_id)
+        supervisor = _ensure_supervisor(effective)
     except Exception as exc:
         logger.debug("vault fill: supervisor unavailable (%s)", exc)
         supervisor = None
+
+    stole = _discard_if_lease_moved(admitted)
+    if stole:
+        return stole
+    if isinstance(supervisor, dict) and supervisor.get("code") == "human_has_control":
+        return supervisor
 
     if supervisor is None:
         return {
@@ -149,14 +205,16 @@ def _eval_js_secret(task_id: str, expression: str) -> Dict[str, Any]:
 
     sup = supervisor.evaluate_runtime(expression)
     if sup.get("ok"):
-        return {"success": True, "result": sup.get("result")}
-    return {
-        "success": False,
-        "error_type": "supervisor_required"
-        if "supervisor" in str(sup.get("error") or "").lower()
-        else "eval_failed",
-        "error": str(sup.get("error") or "eval failed"),
-    }
+        result = {"success": True, "result": sup.get("result")}
+    else:
+        result = {
+            "success": False,
+            "error_type": "supervisor_required"
+            if "supervisor" in str(sup.get("error") or "").lower()
+            else "eval_failed",
+            "error": str(sup.get("error") or "eval failed"),
+        }
+    return _discard_if_lease_moved(admitted) or result
 
 
 def _parse_json_result(raw: Any) -> Any:
@@ -168,19 +226,28 @@ def _parse_json_result(raw: Any) -> Any:
     return raw
 
 
-def _current_page_origin(task_id: str) -> Optional[str]:
+def _origin_probe(task_id: str) -> tuple[Optional[str], Optional[Dict[str, Any]]]:
+    """Current page origin, or a handoff refuse. ``_eval_js`` remints; do not
+    rewrite ``human_has_control`` as a missing-origin error."""
     res = _eval_js(task_id, "window.location.href")
+    if res.get("code") == "human_has_control":
+        return None, res
     if not res.get("success"):
-        return None
+        return None, None
     href = str(res.get("result") or "").strip().strip('"').strip("'")
     if not href or href == "about:blank":
-        return None
+        return None, None
     try:
         from agent.vault_store import normalize_origin
 
-        return normalize_origin(href)
+        return normalize_origin(href), None
     except Exception:
-        return None
+        return None, None
+
+
+def _current_page_origin(task_id: str) -> Optional[str]:
+    origin, _refuse = _origin_probe(task_id)
+    return origin
 
 
 # Per kind: a JS probe that is truthy on a tab holding the form this kind fills.
@@ -191,18 +258,32 @@ _TAB_PROBES = {
 }
 
 
-def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[str]:
+def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[Any]:
     """Point the supervisor's page session at the open tab on ``origin`` that holds a ``kind`` form
     (browser_exec sessions open their own tabs, so the tab the supervisor attached to first is rarely the
-    login page). Returns the origin when a tab was focused, else None (caller falls back to the current page)."""
-    try:
-        supervisor = _ensure_supervisor(task_id)
-    except Exception:
-        supervisor = None
-    if supervisor is None:
+    login page). Returns the origin when a tab was focused, a remint dict when the hop
+    handed off, else None (caller falls back to the current page). Independently-fenced
+    get/eval remints must not become a miss — that used to let ``_origin_probe``
+    read the page after a completed take-over / hand-back."""
+    effective = _non_nav_session_key(task_id)
+    def _run():
+        try:
+            supervisor = _ensure_supervisor(effective)
+        except Exception:
+            supervisor = None
+        if supervisor is None:
+            return None
+        if isinstance(supervisor, dict):
+            return supervisor
+        focused = supervisor.focus_page(origin, accept=_TAB_PROBES.get(kind))
+        return (origin or focused.get("url")) if focused.get("ok") else None
+
+    boxed = _bracket_bot_desktop_browser(_session_info_for_shared_browser_fence(effective), _run)
+    if isinstance(boxed, dict) and boxed.get("code") == "human_has_control":
+        return boxed
+    if isinstance(boxed, dict):
         return None
-    focused = supervisor.focus_page(origin, accept=_TAB_PROBES.get(kind))
-    return (origin or focused.get("url")) if focused.get("ok") else None
+    return boxed
 
 
 # ---------------------------------------------------------------------------
@@ -284,11 +365,22 @@ def browser_vault_save_login(label: str = "", task_id: Optional[str] = None) -> 
     from agent.vault_backends.unlock import can_prompt_here, get_save_login_prompt_callback
     from agent.vault_store import get_vault_store
 
-    effective_task_id = task_id or "default"
+    effective_task_id = _non_nav_session_key(task_id)
+    admitted, refuse = _shared_browser_fence(effective_task_id)
+    if refuse:
+        return json.dumps(refuse)
     # The supervisor's default page session is whatever tab it attached to first (on Browser Use that is
     # the daemon's blank tab); the login form lives in the tab with a password field, so focus that one.
-    _focus_bound_origin(effective_task_id, "", "login")
-    origin = _current_page_origin(effective_task_id)
+    focused = _focus_bound_origin(effective_task_id, "", "login")
+    handed = _json_if_handoff(focused if isinstance(focused, dict) else None)
+    if handed:
+        return handed
+    origin, refuse = _origin_probe(effective_task_id)
+    moved = _json_if_lease_moved(admitted)
+    if moved:
+        return moved
+    if refuse:
+        return json.dumps(refuse)
     if not origin:
         return json.dumps({"success": False, "error": "Open the site's login page first; the login is saved for that page's origin."})
     prompt = get_save_login_prompt_callback()
@@ -311,7 +403,18 @@ def browser_vault_save_login(label: str = "", task_id: Optional[str] = None) -> 
         return json.dumps({"success": False, "error_type": "save_failed", "error": str(exc)[:200]})
     finally:
         answer.clear()
+    moved = _json_if_lease_moved(admitted)
+    if moved:
+        return moved
     filled = json.loads(browser_vault_fill(meta.id, task_id=effective_task_id))
+    # Fill is independently fenced and can remint after the save prompt. A
+    # successful save must not hide ``code: human_has_control`` as success.
+    handed = _json_if_handoff(filled, handle=meta.id, origin=origin)
+    if handed:
+        return handed
+    moved = _json_if_lease_moved(admitted)
+    if moved:
+        return moved
     return json.dumps({"success": True, "handle": meta.id, "origin": origin, "identifier": identifier,
                        "identifier_type": id_type, "fill": filled,
                        "next": "Type the identifier into the username field if the form has one, then submit."},
@@ -332,15 +435,31 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
     from agent.vault_backends.unlock import can_prompt_here, get_code_prompt_callback
     from agent.vault_login_classifier import LoginControl, build_fill_js, build_inspection_js, build_otp_fills, classify_otp_controls
 
-    effective_task_id = task_id or "default"
-    _focus_bound_origin(effective_task_id, "", "otp")
-    origin = _current_page_origin(effective_task_id)
+    effective_task_id = _non_nav_session_key(task_id)
+    admitted, refuse = _shared_browser_fence(effective_task_id)
+    if refuse:
+        return json.dumps(refuse)
+    focused = _focus_bound_origin(effective_task_id, "", "otp")
+    handed = _json_if_handoff(focused if isinstance(focused, dict) else None)
+    if handed:
+        return handed
+    origin, refuse = _origin_probe(effective_task_id)
+    moved = _json_if_lease_moved(admitted)
+    if moved:
+        return moved
+    if refuse:
+        return json.dumps(refuse)
     if not origin:
         return json.dumps({"success": False, "error": "No page with a code field is open."})
     site = origin.split("://", 1)[-1]
 
     nonce = secrets.token_hex(8)
     inspect = _eval_js(effective_task_id, build_inspection_js(nonce))
+    moved = _json_if_lease_moved(admitted)
+    if moved:
+        return moved
+    if inspect.get("code") == "human_has_control":
+        return json.dumps(inspect)
     raw_controls = _parse_json_result(inspect.get("result")) if inspect.get("success") else None
     if isinstance(raw_controls, str):
         raw_controls = _parse_json_result(raw_controls)
@@ -373,10 +492,23 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
 
     register_vault_redaction_value(code)
     fills = build_otp_fills(otp_controls, code)
-    result = _eval_js_secret(effective_task_id, build_fill_js(fills, expected_origin=origin, nonce=nonce))
+    moved = _json_if_lease_moved(admitted)
+    if moved:
+        del code
+        return moved
+    result = _eval_js_secret(
+        effective_task_id, build_fill_js(fills, expected_origin=origin, nonce=nonce),
+        admitted=admitted,
+    )
     del code
+    moved = _json_if_lease_moved(admitted)
+    if moved:
+        return moved
     if not result.get("success"):
-        return json.dumps({"success": False, "error": str(result.get("error") or "fill failed")[:200]})
+        return json.dumps(_with_handoff_code(
+            {"success": False, "error": str(result.get("error") or "fill failed")[:200]},
+            result,
+        ))
     parsed = _parse_json_result(result.get("result"))
     if isinstance(parsed, str):
         parsed = _parse_json_result(parsed)
@@ -409,7 +541,7 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
     from agent.vault_backends import UnlockRequired, backend_for_handle
     from agent.vault_store import ADDRESS_FIELDS, PAYMENT_FIELDS, scrub_secret_from_text
 
-    effective_task_id = task_id or "default"
+    effective_task_id = _non_nav_session_key(task_id)
     backend = backend_for_handle(handle)
     if backend is not None and backend.needs_unlock and not backend.is_unlocked():
         unlocked = json.loads(browser_vault_unlock(backend.name))
@@ -439,9 +571,24 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
         return json.dumps({"success": False, "error_type": "payment_declined",
                            "error": "The user did not confirm filling this payment card. Do not retry; ask them instead."})
 
+    admitted, refuse = _shared_browser_fence(effective_task_id)
+    if refuse:
+        return json.dumps(refuse)
+
     # ── Origin binding pre-check (cheap early exit; the authoritative check
     # runs synchronously inside the fill script itself) ──────────────────────
-    page_origin = _focus_bound_origin(effective_task_id, str(meta.origin), meta.kind) or _current_page_origin(effective_task_id)
+    focused = _focus_bound_origin(effective_task_id, str(meta.origin), meta.kind)
+    handed = _json_if_handoff(focused if isinstance(focused, dict) else None)
+    if handed:
+        return handed
+    page_origin = focused if isinstance(focused, str) else None
+    if page_origin is None:
+        page_origin, refuse = _origin_probe(effective_task_id)
+        if refuse:
+            return json.dumps(refuse)
+    moved = _json_if_lease_moved(admitted)
+    if moved:
+        return moved
     if not page_origin:
         return json.dumps(
             {"success": False, "error": "Could not determine the current page origin. Navigate to the login page first."}
@@ -462,10 +609,14 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
     # ── Inspect + classify page controls ────────────────────────────────────
     nonce = secrets.token_hex(8)  # binds this fill to THIS inspection's stamps
     inspect = _eval_js(effective_task_id, build_inspection_js(nonce))
+    moved = _json_if_lease_moved(admitted)
+    if moved:
+        return moved
     if not inspect.get("success"):
-        return json.dumps(
-            {"success": False, "error": f"Could not inspect page inputs: {inspect.get('error', 'eval failed')}"}
-        )
+        return json.dumps(_with_handoff_code(
+            {"success": False, "error": f"Could not inspect page inputs: {inspect.get('error', 'eval failed')}"},
+            inspect,
+        ))
     raw_controls = _parse_json_result(inspect.get("result"))
     if isinstance(raw_controls, str):
         raw_controls = _parse_json_result(raw_controls)
@@ -506,21 +657,28 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
     for value in (secret.values() if meta.kind == "payment" else [secret.get("password", "")]):
         register_vault_redaction_value(value)
 
+    moved = _json_if_lease_moved(admitted)
+    if moved:
+        return moved
     try:
         fill_result = _eval_js_secret(
-            effective_task_id, build_fill_js(fills, expected_origin=str(meta.origin), nonce=nonce)
+            effective_task_id, build_fill_js(fills, expected_origin=str(meta.origin), nonce=nonce),
+            admitted=admitted,
         )
     except Exception as exc:
         # Strip any secret material from exception text before surfacing.
         return json.dumps(
             {"success": False, "error": scrub_secret_from_text(str(exc), secret)}
         )
+    moved = _json_if_lease_moved(admitted)
+    if moved:
+        return moved
     if not fill_result.get("success"):
         err = scrub_secret_from_text(str(fill_result.get("error") or "fill failed"), secret)
         out = {"success": False, "error": err}
         if fill_result.get("error_type"):
             out["error_type"] = fill_result["error_type"]
-        return json.dumps(out)
+        return json.dumps(_with_handoff_code(out, fill_result))
 
     parsed = _parse_json_result(fill_result.get("result"))
     if isinstance(parsed, str):

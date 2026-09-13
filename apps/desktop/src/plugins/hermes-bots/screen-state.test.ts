@@ -11,7 +11,14 @@ import type { RosterRow } from './types'
 
 vi.mock('./data', () => ({ botSelectionKey: (bot: RosterRow) => bot.name }))
 
-import { $screenState, screenStateFor, setScreenLease, setScreenStatus } from './screen-state'
+import {
+  $screenState,
+  applyScreenStatusIfUnchanged,
+  screenStateFor,
+  screenStatusGeneration,
+  setScreenLease,
+  setScreenStatus
+} from './screen-state'
 
 const bot: RosterRow = { name: 'ops' }
 
@@ -57,5 +64,26 @@ describe('lease epoch ordering', () => {
     const legacy = { ...human, epoch: undefined }
     setScreenLease(bot, legacy)
     expect(screenStateFor($screenState.get(), bot)?.lease).toEqual(legacy)
+  })
+
+  it('discards a status pull that raced a live write; a lease write does not fence it', () => {
+    const started = screenStatusGeneration(bot)
+    setScreenStatus(bot, statusWith(human))
+    expect(applyScreenStatusIfUnchanged(bot, statusWith(agent), started)).toBe(false)
+    expect(screenStateFor($screenState.get(), bot)?.status?.lease).toEqual(human)
+
+    const afterLive = screenStatusGeneration(bot)
+    setScreenLease(bot, { ...human, reason: 'typed password', epoch: 5 })
+    expect(screenStatusGeneration(bot)).toBe(afterLive)
+    expect(applyScreenStatusIfUnchanged(bot, statusWith(agent), afterLive)).toBe(true)
+    expect(screenStateFor($screenState.get(), bot)?.status?.lease).toEqual(agent)
+    expect(screenStateFor($screenState.get(), bot)?.lease).toEqual({ ...human, reason: 'typed password', epoch: 5 })
+  })
+
+  it('applies a same-holder refresh when reason or epoch changes', () => {
+    setScreenLease(bot, human)
+    const updated = { ...human, reason: 'Step 2 — approve the device', epoch: 5 }
+    setScreenLease(bot, updated)
+    expect(screenStateFor($screenState.get(), bot)?.lease).toEqual(updated)
   })
 })

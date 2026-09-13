@@ -73,13 +73,20 @@ def _(rid, params: dict) -> dict:
 @_profile_scoped
 def _(rid, params: dict) -> dict:
     """One JPEG grab of the bot's screen (``data_url``: null while stopped). Read-only: no lease change.
-    Suppressed while a human holds the lease — the frame may show what they are typing."""
+    Suppressed while a human holds the lease — the frame may show what they are typing.
+    A grab admitted under the agent must also discard if the epoch moved mid-grab
+    (takeover, or a full acquire→release cycle): same fence as computer_use / browser."""
     try:
         from tools.bot_desktop import lease as _bd_lease
-        if _bd_lease.human_holds():
+        try:
+            admitted = _bd_lease.assert_agent_may_act()
+        except _bd_lease.HumanHasControl:
             return _ok(rid, {"data_url": None, "suppressed": "human_has_control"})
         from tools.bot_desktop.thumbnail import thumbnail_data_url
-        return _ok(rid, {"data_url": thumbnail_data_url()})
+        data_url = thumbnail_data_url()
+        if _bd_lease.get().epoch != admitted.epoch:
+            return _ok(rid, {"data_url": None, "suppressed": "human_has_control"})
+        return _ok(rid, {"data_url": data_url})
     except Exception as e:
         return _err(rid, _DISPLAY_ERR, str(e))
 
@@ -111,21 +118,43 @@ def _(rid, params: dict) -> dict:
 # viewer ids minted per connection (keyed by the transport that asked), so a reconnecting pane can
 # keep its identity — and its lease — while nobody can claim an id minted for another connection.
 _minted_viewer_ids: "weakref.WeakKeyDictionary[object, set[str]]" = weakref.WeakKeyDictionary()
+# StdioTransport / other slotted peers cannot be weakly referenced. Key by
+# id(transport): those objects are process-long singletons (stdio) or live
+# as long as the connection (tests). A fresh empty set here used to remint
+# every observe and drop the lease on every reconnect.
+_minted_viewer_ids_by_id: dict[int, set[str]] = {}
+
+
+def _ids_for_current_transport(*, create: bool):
+    """Per-connection minted-id set. WeakKeyDictionary for normal peers; id() fallback
+    for StdioTransport / other slotted objects that cannot be weakly referenced."""
+    transport = current_transport()
+    try:
+        if create:
+            return _minted_viewer_ids.setdefault(transport, set())
+        return _minted_viewer_ids.get(transport)
+    except TypeError:
+        key = id(transport)
+        if create:
+            return _minted_viewer_ids_by_id.setdefault(key, set())
+        return _minted_viewer_ids_by_id.get(key)
 
 
 def _mint_viewer_id(requested: str) -> str:
     """Server-minted viewer identity. ``requested`` is honoured only when THIS connection minted it
     earlier; anything else (including a holder id read off display.status) gets a fresh id."""
     import secrets
-    try:
-        mine = _minted_viewer_ids.setdefault(current_transport(), set())
-    except TypeError:  # stdio / slotted transports cannot be weakly referenced: always mint
-        mine = set()
+    mine = _ids_for_current_transport(create=True)
     if requested in mine:
         return requested
     viewer_id = secrets.token_urlsafe(16)
     mine.add(viewer_id)
     return viewer_id
+
+
+def _this_connection_minted(viewer_id: str) -> bool:
+    mine = _ids_for_current_transport(create=False)
+    return bool(mine and viewer_id in mine)
 
 
 @method("display.observe")
@@ -161,10 +190,12 @@ def _(rid, params: dict) -> dict:
     if _bd_runtime.install_command() is None:
         return _err(rid, _DISPLAY_ERR, "no supported package manager (apt-get, dnf, pacman) on this host")
     profile_key = hermes_home_key()
-    sid = str(params.get("session_id") or "")
+    # Never honor a client-supplied session_id: write_json would deliver the sudo card
+    # to that session's transport (another chat / another window). Empty sid keeps the
+    # card on the RPC caller's current_transport — the client that clicked Install.
 
     def _ask_password() -> str:
-        return _block("display.install.sudo.request", sid, {"profile_key": profile_key}, timeout=300)
+        return _block("display.install.sudo.request", "", {"profile_key": profile_key}, timeout=300)
 
     def _line(text: str) -> None:
         _broadcast_global_event("display.install.log", {"profile_key": profile_key, "line": text})
@@ -195,10 +226,19 @@ def _(rid, params: dict) -> dict:
 @method("display.lease.acquire")
 @_profile_scoped
 def _(rid, params: dict) -> dict:
-    from tools.bot_desktop import lease as _bd_lease
+    from tools.bot_desktop import lease as _bd_lease, runtime as _bd_runtime
     viewer_id = str(params.get("viewer_id") or "").strip()
     if not viewer_id:
         return _err(rid, _DISPLAY_ERR, "viewer_id required")
+    # A client-chosen id with no live screen used to succeed and wedge computer_use
+    # on human_has_control with nobody at a desktop. Take over is an observing
+    # viewer's capability: the screen must be up, and the id must be one this
+    # connection minted via display.observe.
+    if _bd_runtime.rfb_socket_path() is None:
+        return _err(rid, _DISPLAY_ERR, "this profile's Bot Desktop is not running; call display.start first")
+    if not _this_connection_minted(viewer_id):
+        return _err(rid, _DISPLAY_ERR, "viewer_id must be the id display.observe minted for this connection",
+                    data={"code": "viewer_unminted"})
     lease = _bd_lease.acquire(viewer_id, reason=str(params.get("reason") or ""))
     return _ok(rid, {"lease": _lease_view(lease)})
 

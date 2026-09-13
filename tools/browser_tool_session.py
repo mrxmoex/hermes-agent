@@ -12,8 +12,10 @@ import subprocess
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_constants import get_hermes_home
 from tools.browser_tool_origin import origin as _bt
 from tools import browser_tool_cdp as _cdp
 from tools import browser_tool_cloud as _cloud
@@ -166,6 +168,12 @@ def _create_local_session(task_id: str, allow_real_profile: bool = True) -> Dict
     ``allow_real_profile=False``: the user's cookie jar must not reach an arbitrary
     internal host the model chose.
     """
+    from tools.bot_desktop import lease as _bd_lease
+
+    if _bd_lease.human_holds():
+        raise _bd_lease.HumanHasControl(
+            "A human holds the bot's screen; refusing to launch the shared local browser."
+        )
     if allow_real_profile:
         cdp_url, err = _real_profile._real_profile_cdp()
         if err:
@@ -210,6 +218,12 @@ def _local_backend_process_dead(session_info: Dict[str, Any]) -> bool:
 
 def _create_cdp_session(task_id: str, cdp_url: str) -> Dict[str, str]:
     """Session connecting to a user-supplied CDP endpoint."""
+    from tools.bot_desktop import lease as _bd_lease
+
+    if _shares_bot_desktop_browser({"cdp_url": cdp_url}) and _bd_lease.human_holds():
+        raise _bd_lease.HumanHasControl(
+            "A human holds the bot's screen; refusing to attach to the shared local browser."
+        )
     info = _session_record("cdp", cdp_url, {"cdp_override": True})
     _bt.logger.info("Created CDP browser session %s → %s for task %s",
                 info["session_name"], _bt._sanitize_url_for_logs(cdp_url), task_id)
@@ -231,8 +245,15 @@ def _create_cloud_session_or_fallback(task_id: str, provider) -> Dict[str, Any]:
         provider_name = type(provider).__name__
         _bt.logger.warning("Cloud provider %s failed (%s); attempting fallback to local Chromium for task %s",
                            provider_name, e, task_id, exc_info=True)
+        from tools.bot_desktop import lease as _bd_lease
+        if _bd_lease.human_holds():
+            raise _bd_lease.HumanHasControl(
+                "A human holds the bot's screen; refusing to fall back to the shared local browser."
+            ) from e
         try:
             session_info = _create_local_session(task_id)
+        except _bd_lease.HumanHasControl:
+            raise
         except Exception as local_error:
             raise RuntimeError(f"Cloud provider {provider_name} failed ({e}) and local "
                                f"fallback also failed ({local_error})") from e
@@ -245,9 +266,15 @@ def _create_cloud_session_or_fallback(task_id: str, provider) -> Dict[str, Any]:
 def _create_session_for_key(task_id: str, force_local: bool) -> Dict[str, Any]:
     """Fresh session for ``task_id`` (runs OUTSIDE the lock: cloud mode makes a network call).
     Precedence: CDP override > hybrid local sidecar (never real-profile) > cloud > local."""
-    cdp_override = _cdp._get_cdp_override()
-    if cdp_override and not force_local:
-        return _create_cdp_session(task_id, cdp_override)
+    if not force_local:
+        if _shared_cdp_override_held_by_human():
+            from tools.bot_desktop import lease as _bd_lease
+            raise _bd_lease.HumanHasControl(
+                "A human holds the bot's screen; refusing to attach to the shared local browser."
+            )
+        cdp_override = _cdp._get_cdp_override()
+        if cdp_override:
+            return _create_cdp_session(task_id, cdp_override)
     if force_local:
         return _create_local_session(task_id, allow_real_profile=False)
     provider = _cloud._get_cloud_provider()
@@ -316,6 +343,11 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, Any]:
 
 def _discard_timed_out_browser_session(task_id: str, session_info: Dict[str, Any], task_socket_dir: str) -> None:
     """Drop a stuck client generation without losing cloud cleanup state."""
+    if _defer_shared_browser_teardown(session_info):
+        _bt.logger.warning(
+            "Skipping timed-out discard of %s: a human holds the shared browser", task_id,
+        )
+        return
     with _bt._cleanup_lock:
         if _bt._active_sessions.get(task_id) is not session_info:
             return
@@ -404,7 +436,18 @@ def _handle_browser_command_timeout(task_id: str, session_info: Dict[str, Any], 
     ``ensure_healthy`` → clean agent-browser ``close`` → fresh session. Tree-kill the daemon's process tree
     via ``agent.deadline.kill_process_tree`` and evict the cache entry now; the next browser call respawns
     from scratch. See #72206.
+
+    A human on the shared Chromium must not lose that browser because an agent
+    command timed out. Same class as the janitor defer: no tree-kill, no
+    suspect mark (``ensure_healthy`` would treat a deferred cleanup as a miss
+    and mint a second Chromium).
     """
+    if _defer_shared_browser_teardown(session_info):
+        _bt.logger.warning(
+            "browser command timed out for %s but a human holds the shared browser; "
+            "leaving the session in place", task_id,
+        )
+        return
     if session_info.get("bb_session_id") or session_info.get("cdp_url"):
         _discard_timed_out_browser_session(task_id, session_info, task_socket_dir)
         return
@@ -569,39 +612,488 @@ def _run_browser_command(
         return preflight
     browser_cmd = preflight["browser_cmd"]
 
+    # Admit BEFORE session create/recycle. ``_get_session_info`` can launch real-profile
+    # Chromium, spawn Lightpanda, attach a CDP supervisor, or tear down a suspect session
+    # — all of that must stay off the shared screen while a human holds the lease.
+    admitted, refuse = _shared_browser_fence(task_id)
+    if refuse:
+        return refuse
+    admitted, session_info, refuse = _session_after_shared_fence(task_id, admitted)
+    if refuse:
+        return refuse
+    result = _run_browser_command_unfenced(
+        task_id, command, args, timeout, _engine_override, browser_cmd, session_info
+    )
+    stole = _discard_if_lease_moved(admitted)
+    if stole:
+        _discard_shared_browser_captures(command=command, args=args, result=result)
+        return stole
+    return result
+
+
+_HUMAN_TOOK_OVER = (
+    "A human took over the bot's screen while this browser command ran; its result was "
+    "discarded. Call computer_use action='wait_for_human' to block until they hand back."
+)
+
+
+def _peek_active_session(task_id: str) -> Optional[Dict[str, Any]]:
+    """Cached session dict, or None. Does not create, recycle, or attach anything."""
+    with _bt._cleanup_lock:
+        existing = _bt._active_sessions.get(task_id)
+    return dict(existing) if existing is not None else None
+
+
+def _non_nav_session_key(task_id: Optional[str] = None) -> str:
+    """Session key a non-nav tool must fence and attach: last navigation, not the raw task id.
+
+    Hybrid routing records ``{task}::local`` after a private-URL navigate. Fencing the
+    bare task id predicted-cloud-skips (another browser) while the sidecar is this
+    profile's Bot Desktop Chromium — the same skip that left ``admitted=None`` so a
+    reminted sidecar write was delivered or rewritten.
+    """
+    return _bt._last_session_key(task_id or "default")
+
+
+def _predicted_local_shared_browser(task_id: str) -> bool:
+    """True when a *new* session for ``task_id`` would be the Bot Desktop Chromium.
+
+    Mirrors ``_create_session_for_key`` precedence without launching: a CDP
+    override is another browser unless the URL is this profile's live dock
+    instance or this profile's real-profile Chrome; a configured cloud
+    provider is another browser; everything else (including a sidecar
+    ``::local`` key) lands on this profile's DISPLAY.
+    """
+    force_local = _bt._is_local_sidecar_key(task_id)
+    if not force_local:
+        override = _cdp._get_cdp_override_raw()
+        if override:
+            return _shares_bot_desktop_browser({"cdp_url": override})
+        if _cloud._get_cloud_provider() is not None:
+            return False
+    return True
+
+
+def _supervisor_cdp_url(task_id: str) -> str:
+    """Live supervisor endpoint for ``task_id``, or empty. Does not start one."""
+    try:
+        from tools.browser_supervisor import SUPERVISOR_REGISTRY
+
+        supervisor = SUPERVISOR_REGISTRY.get(task_id)
+    except Exception:
+        return ""
+    if supervisor is None:
+        return ""
+    return str(getattr(supervisor, "cdp_url", "") or "")
+
+
+def _dock_supervisor_session_info(task_id: str) -> Dict[str, Any]:
+    """Session-info overlay when the live supervisor is this profile's shared Chromium.
+
+    Supervisor-only paths (eval / dialog / CDP) never call
+    ``_session_after_shared_fence``, so a predicted-cloud cache miss would
+    otherwise leave the dock / real-profile unfenced. Foreign / cloud
+    supervisors stay ``{}``.
+    """
+    cdp_url = _supervisor_cdp_url(task_id)
+    if not cdp_url:
+        return {}
+    if _shares_bot_desktop_browser({"cdp_url": cdp_url}):
+        return {"cdp_url": cdp_url}
+    return {}
+
+
+def _live_supervisor_for_session(task_id: str):
+    """Registered supervisor only when it is the CLI session's browser.
+
+    Leftover ``/browser connect`` can keep a dock supervisor on the same
+    task_id as a cached cloud session. Snapshot merge, eval, dialog, vault
+    fill, and frame CDP used to talk that screen while the CLI session was
+    another browser. Overlay still remints those paths when a human holds.
+    """
+    try:
+        from tools.browser_supervisor import SUPERVISOR_REGISTRY
+
+        supervisor = SUPERVISOR_REGISTRY.get(task_id)
+    except Exception:
+        return None
+    if supervisor is None:
+        return None
+    if not _supervisor_belongs_to_session(supervisor, _peek_active_session(task_id) or {}):
+        return None
+    return supervisor
+
+
+def _supervisor_belongs_to_session(supervisor, session_info: Dict[str, Any]) -> bool:
+    """True when ``supervisor`` is the same browser the CLI session talks to.
+
+    Leftover ``/browser connect`` can keep a dock supervisor registered under
+    the same task_id as a cached cloud session. Snapshot used to merge that
+    screen's ``pending_dialogs`` into the cloud accessibility tree. Eval/dialog
+    overlay still fences leftover when a human holds; this helper is only the
+    merge/attach identity check.
+
+    Both sides empty (local ``--session`` / test doubles) belong together.
+    A CDP session matches only the same loopback/endpoint. A local session
+    with no ``cdp_url`` talks leftover only when leftover is the dock
+    instance this session would ``--cdp``-attach. Leftover
+    ``/browser connect`` to this profile's real-profile Chrome is a
+    different browser — do not let eval/dialog/snapshot merge talk leftover
+    RP while the CLI talks the throwaway packaged Chromium.
+    """
+    if supervisor is None:
+        return False
+    sup_cdp = getattr(supervisor, "cdp_url", "") or ""
+    if not isinstance(sup_cdp, str):
+        sup_cdp = ""
+    sess_cdp = (session_info or {}).get("cdp_url") or ""
+    if not isinstance(sess_cdp, str):
+        sess_cdp = ""
+    if not sess_cdp and not sup_cdp:
+        return True
+    if sup_cdp and sess_cdp:
+        return _cdp_endpoints_match(sup_cdp, sess_cdp)
+    if not sess_cdp:
+        attach = _bot_desktop_attach_port(session_info or {})
+        leftover_port = _cdp_loopback_port(sup_cdp)
+        return attach is not None and leftover_port is not None and attach == leftover_port
+    return False
+
+
+def _session_info_for_shared_browser_fence(task_id: str) -> Dict[str, Any]:
+    """Session info for the lease bracket — never creates or recycles a session.
+
+    Skip even a cache peek when this profile has no screen and no human lease
+    (so existing Lightpanda unit tests do not start cleanup threads). If a
+    screen is published or a human holds, peek the cache; on a miss assume
+    local unless config already names a cloud / user-CDP backend. A failed
+    cloud session can still fall back to local later — ``_run_browser_command``
+    re-admits on that provenance.
+
+    A live supervisor on the dock Chromium wins over a predicted-cloud miss
+    (and over a cached non-shared label): evaluate / dialog / CDP talk that
+    endpoint directly and never re-admit.
+    """
+    from tools.bot_desktop import lease as _bd_lease, runtime as _bd_runtime
+
+    if not (_bd_runtime.published_env().get("DISPLAY") or _bd_lease.human_holds()):
+        return {}
+    cached = _peek_active_session(task_id)
+    if cached is not None:
+        if _shares_bot_desktop_browser(cached):
+            return cached
+        return _dock_supervisor_session_info(task_id) or cached
+    dock = _dock_supervisor_session_info(task_id)
+    if dock:
+        return dock
+    if _predicted_local_shared_browser(task_id):
+        return {"features": {"local": True}}
+    return {}
+
+
+def _admit_bot_desktop_browser(session_info: Dict[str, Any]):
+    """Admit a shared-browser run. Returns ``(lease_or_None, refuse_dict_or_None)``."""
+    if not _shares_bot_desktop_browser(session_info):
+        return None, None
+    from tools.bot_desktop import lease as _bd_lease
+    try:
+        return _bd_lease.assert_agent_may_act(), None
+    except _bd_lease.HumanHasControl as e:
+        return None, {"success": False, "error": str(e), "code": "human_has_control"}
+
+
+def _shared_browser_fence(task_id: str):
+    """Admit the shared Bot Desktop browser for ``task_id`` (same pair as ``_admit``)."""
+    return _admit_bot_desktop_browser(_session_info_for_shared_browser_fence(task_id))
+
+
+def _session_after_shared_fence(task_id: str, admitted):
+    """Create/reuse the session after a fence admit. Never remints a ticket already held.
+
+    Predicted-cloud can still fall back to local Chromium; re-admit on that provenance.
+    A human hold during create/fallback is ``code: human_has_control``, not a generic
+    session-create failure — the agent must call ``wait_for_human``.
+    """
+    from tools.bot_desktop.lease import HumanHasControl
+
     try:
         session_info = _get_session_info(task_id)
+    except HumanHasControl as e:
+        return admitted, None, {"success": False, "error": str(e), "code": "human_has_control"}
     except Exception as e:
         _bt.logger.warning("Failed to create browser session for task=%s: %s", task_id, e)
-        return {"success": False, "error": f"Failed to create browser session: {str(e)}"}
-    # The bot's LOCAL browser lives on its Bot Desktop screen, in the same profile a human who took
-    # over is typing into. While the human holds the lease every action AND read against it is
-    # refused (the page may show their credential); the fence brackets the whole run so a takeover
-    # mid-command also voids the result. Cloud / user-supplied CDP sessions are a different browser.
-    if _shares_bot_desktop_browser(session_info):
-        from tools.bot_desktop import lease as _bd_lease
+        return admitted, None, {"success": False, "error": f"Failed to create browser session: {str(e)}"}
+    if admitted is None and _shares_bot_desktop_browser(session_info):
+        admitted, refuse = _admit_bot_desktop_browser(session_info)
+        if refuse:
+            return admitted, None, refuse
+    return admitted, session_info, None
+
+
+def _discard_if_lease_moved(admitted) -> Optional[Dict[str, Any]]:
+    if admitted is None:
+        return None
+    from tools.bot_desktop import lease as _bd_lease
+    if _bd_lease.get().epoch != admitted.epoch:
+        return {"success": False, "code": "human_has_control", "error": _HUMAN_TOOK_OVER}
+    return None
+
+
+def _lease_moved_after_payload(admitted, *, result=None) -> Optional[Dict[str, Any]]:
+    """Terminal remint check after a shared-browser payload is assembled.
+
+    Mid-flight checks discard the run. Screenshot encode, console merge,
+    image JSON, and oversized snapshot spills must not ship if the epoch
+    moved while that payload was built.
+    """
+    stole = _discard_if_lease_moved(admitted)
+    if stole:
+        _discard_shared_browser_captures(result=result)
+    return stole
+
+
+def _unlink_shared_capture(raw: str) -> None:
+    """Unlink ``raw`` only when it resolves inside this profile's HERMES_HOME."""
+    try:
+        path = Path(raw).expanduser().resolve()
+        home = Path(get_hermes_home()).resolve()
+        if home not in path.parents and path.parent != home:
+            return
+        path.unlink(missing_ok=True)
+    except Exception:
+        return
+
+
+def _adopt_shared_browser_capture(src: str, dest: str) -> None:
+    """Place a fallback/temp capture at ``dest`` and drop the source sibling.
+
+    Lightpanda vision preroute used to ``copy2`` onto a new uuid name and leave
+    the Chrome-fallback original under this profile home. A later remint
+    unlinked only the copy, so ``read_file`` / ``MEDIA:`` could still recover
+    the human's frame. One destination, one file: copy only when dest is
+    missing, then unlink a source that lives in this HERMES_HOME.
+    """
+    if not src or not dest:
+        return
+    src_path = Path(src).expanduser()
+    dest_path = Path(dest).expanduser()
+    try:
+        if src_path.resolve() == dest_path.resolve():
+            return
+    except Exception:
+        if os.path.normpath(str(src_path)) == os.path.normpath(str(dest_path)):
+            return
+    if src_path.exists() and not dest_path.exists():
         try:
-            admitted = _bd_lease.assert_agent_may_act()
-        except _bd_lease.HumanHasControl as e:
-            return {"success": False, "error": str(e), "code": "human_has_control"}
-        result = _run_browser_command_unfenced(task_id, command, args, timeout, _engine_override, browser_cmd, session_info)
-        if _bd_lease.get().epoch != admitted.epoch:
-            return {"success": False, "code": "human_has_control",
-                    "error": "A human took over the bot's screen while this browser command ran; its result was "
-                             "discarded. Call computer_use action='wait_for_human' to block until they hand back."}
-        return result
-    return _run_browser_command_unfenced(task_id, command, args, timeout, _engine_override, browser_cmd, session_info)
+            dest_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src_path, dest_path)
+        except Exception:
+            return
+    if dest_path.exists():
+        _unlink_shared_capture(str(src_path))
+
+
+def _discard_shared_browser_captures(
+    *,
+    command: Optional[str] = None,
+    args: Optional[List[str]] = None,
+    result: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Unlink capture files a reminted run already wrote.
+
+    ``computer_use`` fences before persist; browser screenshot writes the PNG
+    first, and an oversized snapshot spills the full tree to cache/web.
+    A discarded tool result must not leave the human's frame on disk
+    for a later ``read_file`` / ``MEDIA:`` path.
+    """
+    paths: List[str] = []
+    data = (result or {}).get("data") if isinstance(result, dict) else None
+    if isinstance(data, dict) and data.get("path"):
+        paths.append(str(data["path"]))
+    if isinstance(result, dict) and result.get("screenshot_path"):
+        paths.append(str(result["screenshot_path"]))
+    extra = (result or {}).get("_stored_snapshot_paths") if isinstance(result, dict) else None
+    if isinstance(extra, list):
+        paths.extend(str(p) for p in extra if p)
+    elif extra:
+        paths.append(str(extra))
+    if command == "screenshot":
+        for arg in args or []:
+            if isinstance(arg, str) and arg.endswith((".png", ".jpg", ".jpeg", ".webp")):
+                paths.append(arg)
+    for raw in paths:
+        _unlink_shared_capture(raw)
+
+
+def _bracket_bot_desktop_browser(
+    session_info: Dict[str, Any],
+    run,
+    *,
+    command: Optional[str] = None,
+    args: Optional[List[str]] = None,
+):
+    """Refuse or discard a shared-browser result the same way ``computer_use`` does.
+
+    Used by callers that already have session info (Lightpanda Chrome fallback,
+    vault eval). ``_run_browser_command`` admits first, then creates the session,
+    so a human hold cannot launch or recycle the shared Chromium.
+
+    ``command`` / ``args`` are the same capture-unlink keys ``_run_browser_command``
+    already passes: a reminted fallback screenshot may have written the PNG
+    to an argv path without putting it on ``result.data.path``.
+    """
+    admitted, refuse = _admit_bot_desktop_browser(session_info)
+    if refuse:
+        return refuse
+    result = run()
+    stole = _discard_if_lease_moved(admitted)
+    if stole:
+        _discard_shared_browser_captures(
+            command=command,
+            args=args,
+            result=result if isinstance(result, dict) else None,
+        )
+        return stole
+    return result
+
+
+def _defer_shared_browser_teardown(session_info: Optional[Dict[str, Any]]) -> bool:
+    """True when janitor/recycle must not close the shared Chromium (human holds it)."""
+    if not session_info or not _shares_bot_desktop_browser(session_info):
+        return False
+    from tools.bot_desktop import lease as _bd_lease
+    return _bd_lease.human_holds()
 
 
 def _shares_bot_desktop_browser(session_info: Dict[str, Any]) -> bool:
-    """Decided by provenance, not transport: every LOCAL session (plain ``--session``, real-profile CDP
-    attach, Lightpanda) is a browser Hermes launched with this profile's Bot Desktop DISPLAY, so it is the
-    screen a human who took over is typing into. Cloud / user-supplied CDP sessions are another browser.
-    A human lease with the screen already gone (dead Xvnc) still fences — computer_use does the same."""
-    if not (session_info.get("features") or {}).get("local"):
-        return False
+    """The shared Bot Desktop Chromium — by local provenance OR by endpoint identity.
+
+    Every LOCAL session (plain ``--session``, real-profile CDP attach, Lightpanda)
+    is a browser Hermes launched with this profile's DISPLAY. Cloud and a
+    user-supplied CDP session are another browser — unless that CDP URL is this
+    profile's live dock instance or this profile's real-profile Chrome
+    (``/browser connect`` / ``browser.cdp_url`` still label that attach
+    ``cdp_override``). Real-profile identity is the in-process cache / leftover
+    session row, or a Chromium still running on this profile's snapshot copy
+    dir after those rows die. A human lease with the screen already gone
+    (dead Xvnc) still fences local sessions — computer_use does the same.
+    """
     from tools.bot_desktop import lease as _bd_lease, runtime as _bd_runtime
-    return bool(_bd_runtime.published_env().get("DISPLAY")) or _bd_lease.human_holds()
+    from tools.bot_desktop.browser import cdp_url_is_running_instance
+
+    if (session_info.get("features") or {}).get("local"):
+        return bool(_bd_runtime.published_env().get("DISPLAY")) or _bd_lease.human_holds()
+    cdp_url = session_info.get("cdp_url")
+    if not isinstance(cdp_url, str) or not cdp_url:
+        return False
+    return cdp_url_is_running_instance(cdp_url) or _cdp_is_this_profile_real_profile(cdp_url)
+
+
+def _shared_cdp_override_held_by_human() -> bool:
+    """True when ``/browser connect`` points at this screen and a human holds it.
+
+    A cached cloud session makes ``_session_info_for_shared_browser_fence`` skip
+    (another browser). ``_ensure_cdp_supervisor`` / ``_get_cdp_override`` still
+    preferred the leftover override and probed or attached that Chromium.
+    """
+    raw = _cdp._get_cdp_override_raw()
+    if not raw:
+        return False
+    if not _shares_bot_desktop_browser({"cdp_url": raw}):
+        return False
+    from tools.bot_desktop import lease as _bd_lease
+    return _bd_lease.human_holds()
+
+
+def _cdp_loopback_port(url: str) -> Optional[int]:
+    """DevTools port when ``url`` is loopback HTTP/WS, else ``None``.
+
+    Same parser as the dock (``loopback_cdp_port``): scheme-less
+    ``127.0.0.1:PORT`` is how ``browser.cdp_url`` / ``BROWSER_CDP_URL`` are
+    often stored, and ``_predicted_local_shared_browser`` fences the raw
+    override before ``_resolve_cdp_override`` rewrites it.
+    """
+    from tools.bot_desktop.browser import loopback_cdp_port
+
+    return loopback_cdp_port(url)
+
+
+def _cdp_is_this_profile_real_profile(cdp_url: str) -> bool:
+    """True when ``cdp_url`` is this profile's consented real-profile Chrome.
+
+    Cache stores the HTTP discovery root; callers often have the rewritten
+    ``ws://`` URL on the same loopback port. Those rows are process-local —
+    a surviving copy-dir Chrome (``_surviving_chrome_cdp``) outlives them, and
+    ``/browser connect`` then labels the attach ``cdp_override``.
+    """
+    if not isinstance(cdp_url, str) or not cdp_url:
+        return False
+    rp = _bt._active_sessions.get(_bt._REAL_PROFILE_SESSION) or {}
+    rp_cdp = str((_bt._real_profile_cdp_cache or {}).get("cdp") or rp.get("cdp_url") or "")
+    if rp_cdp and _cdp_endpoints_match(cdp_url, rp_cdp):
+        return True
+    return _cdp_is_live_real_profile_copy(cdp_url)
+
+
+def _real_profile_copy_dirs() -> List[Path]:
+    """Hermes-owned real-profile snapshot dirs (``{HERMES_HOME}/browser-profile/<browser>``)."""
+    root = Path(get_hermes_home()) / "browser-profile"
+    try:
+        return [p for p in root.iterdir() if p.is_dir()]
+    except OSError:
+        return []
+
+
+def _cdp_is_live_real_profile_copy(cdp_url: str) -> bool:
+    """True when ``cdp_url`` is Chromium still running on a snapshot copy dir.
+
+    Same cheap probe as the dock (``DevToolsActivePort`` + live pid + connect),
+    not ``agent-browser get cdp``. Foreign Chrome on another loopback port stays
+    unshared even when a copy dir exists.
+    """
+    from tools.bot_desktop.browser import running_instance_cdp_port
+
+    want = _cdp_loopback_port(cdp_url)
+    if want is None:
+        return False
+    return any(running_instance_cdp_port(str(p)) == want for p in _real_profile_copy_dirs())
+
+
+def _cdp_endpoints_match(left: str, right: str) -> bool:
+    """Same CDP endpoint, including ``http://127.0.0.1:PORT`` vs rewritten ``ws://``.
+
+    Real-profile cache stores the HTTP discovery root; ``/browser connect`` and
+    ``_get_cdp_override`` rewrite it to a WebSocket URL on the same port.
+    Scheme-less ``127.0.0.1:PORT`` (raw config / ``BROWSER_CDP_URL``) matches both.
+    """
+    if left == right:
+        return True
+    a, b = _cdp_loopback_port(left), _cdp_loopback_port(right)
+    return a is not None and a == b
+
+
+def _session_info_for_routed_cdp(cdp_url: str) -> Dict[str, Any]:
+    """Session identity for a CDP URL the wrapper already resolved.
+
+    Dock instance (endpoint identity) OR this profile's real-profile Chrome
+    (keyed ``hermes-real-profile``; a cache hit never writes ``_active_sessions``
+    under the caller key). Foreign / cloud URLs stay unshared. Do not consult
+    a leftover dock supervisor — that would fence the wrong browser.
+    """
+    info: Dict[str, Any] = {"cdp_url": cdp_url or ""}
+    if not cdp_url:
+        return info
+    if _shares_bot_desktop_browser(info):
+        return info
+    rp = _bt._active_sessions.get(_bt._REAL_PROFILE_SESSION) or {}
+    rp_cdp = str((_bt._real_profile_cdp_cache or {}).get("cdp") or rp.get("cdp_url") or "")
+    if rp_cdp and _cdp_endpoints_match(cdp_url, rp_cdp):
+        if rp and _shares_bot_desktop_browser(rp):
+            out = dict(rp)
+            out["cdp_url"] = cdp_url
+            return out
+        return {"cdp_url": cdp_url, "features": {"local": True, "real_profile": True}}
+    return info
 
 
 def _bot_desktop_attach_port(session_info: Dict[str, Any]) -> Optional[int]:
@@ -609,8 +1101,10 @@ def _bot_desktop_attach_port(session_info: Dict[str, Any]) -> Optional[int]:
     if not _shares_bot_desktop_browser(session_info):
         return None
     from tools.bot_desktop import browser as _bd_browser
-    return _bd_browser.running_instance_cdp_port(str(_bd_browser.profile_dir()),
-                                                 exclude_session=session_info["session_name"])
+    return _bd_browser.running_instance_cdp_port(
+        str(_bd_browser.profile_dir()),
+        exclude_session=session_info.get("session_name"),
+    )
 
 
 def _run_browser_command_unfenced(task_id: str, command: str, args: List[str], timeout: int,
@@ -648,8 +1142,17 @@ def _run_browser_command_unfenced(task_id: str, command: str, args: List[str], t
         result = {"success": False, "error": str(e)}
 
     # Lightpanda automatic Chrome fallback — runs for ALL exit paths (timeout,
-    # empty, non-JSON, nonzero rc, parsed).
-    fallback_reason = _lp._lightpanda_fallback_reason(engine, command, result)
+    # empty, non-JSON, nonzero rc, parsed). Temp Chrome is this screen; do not
+    # retry a cloud / foreign-CDP command onto the shared desktop.
+    feat = session_info.get("features") or {}
+    other_browser = (
+        bool(session_info.get("cdp_url"))
+        and not feat.get("local")
+        and not feat.get("lightpanda")
+    )
+    fallback_reason = (
+        None if other_browser else _lp._lightpanda_fallback_reason(engine, command, result)
+    )
     if fallback_reason:
         _bt.logger.info("Lightpanda fallback: retrying '%s' with Chrome (task=%s): %s", command, task_id, fallback_reason)
         if command == "screenshot":  # separate Chrome session to the same URL

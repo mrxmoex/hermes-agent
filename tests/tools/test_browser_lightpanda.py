@@ -24,6 +24,22 @@ def _reset_engine_cache():
     bt._browser_engine_resolved = False
 
 
+def _cleared_env_keeping_profile(**extra):
+    """Wipe process env (so AGENT_BROWSER_* knobs vanish) without dropping the test profile.
+
+    ``_run_browser_command`` admits the Bot Desktop lease before it creates a session.
+    Clearing ``HERMES_HOME`` makes ``get_hermes_home()`` fall through to ``~/.hermes``,
+    and a leftover human lease there refuses every local command.
+    """
+    kept = {
+        key: os.environ[key]
+        for key in ("HERMES_HOME", "HERMES_TEST_ISOLATION")
+        if key in os.environ
+    }
+    kept.update(extra)
+    return kept
+
+
 @pytest.fixture(autouse=True)
 def _clean_engine_cache():
     """Reset engine cache before and after each test."""
@@ -119,6 +135,17 @@ class TestNeedsLightpandaFallback:
         from tools.browser_tool_lightpanda_fallback import _needs_lightpanda_fallback
         result = {"success": False, "error": "page.goto: Timeout"}
         assert _needs_lightpanda_fallback("lightpanda", "open", result) is True
+
+    def test_handoff_refuse_does_not_trigger_fallback(self):
+        """A reminted lease is not a Lightpanda engine failure."""
+        from tools.browser_tool_lightpanda_fallback import _needs_lightpanda_fallback
+        result = {
+            "success": False,
+            "code": "human_has_control",
+            "error": "A human has control of this bot's screen.",
+        }
+        assert _needs_lightpanda_fallback("lightpanda", "click", result) is False
+        assert _needs_lightpanda_fallback("lightpanda", "screenshot", result) is False
 
 
     def test_empty_snapshot_triggers_fallback(self):
@@ -441,7 +468,7 @@ class TestEngineOverride:
              patch("tools.interrupt.is_interrupted", return_value=False), \
              patch("tools.browser_tool_session._needs_chromium_sandbox_bypass", return_value=True), \
              patch("tools.browser_tool_lifecycle._write_owner_pid"), \
-             patch.dict(os.environ, {}, clear=True):
+             patch.dict(os.environ, _cleared_env_keeping_profile(), clear=True):
             # AppArmor/root detection would normally auto-inject Chromium args.
             bt_session._run_browser_command("task1", "snapshot", [])
 

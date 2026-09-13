@@ -86,6 +86,38 @@ def test_skips_guard_when_private_urls_allowed(monkeypatch):
     assert result["total_messages"] == 1
 
 
+def test_console_probe_remint_does_not_fall_through(monkeypatch):
+    """Href-probe remint must not become a miss that then reads console."""
+    calls = []
+    remint = {
+        "success": False,
+        "error": "Human has control of the screen",
+        "code": "human_has_control",
+    }
+    monkeypatch.setattr(bt_eval_policy, "_eval_ssrf_guard_active", lambda tid: True)
+
+    def _run(_task_id, command, _args=None, **_kwargs):
+        calls.append(command)
+        if command == "eval":
+            return remint
+        return {
+            "success": True,
+            "data": {
+                "messages": [{"type": "log", "text": "WHAT-THE-HUMAN-TYPED"}],
+                "errors": [{"message": "WHAT-THE-HUMAN-TYPED"}],
+            },
+        }
+
+    monkeypatch.setattr(bt_session, "_run_browser_command", _run)
+
+    result = json.loads(browser_tool.browser_console(task_id="test"))
+    assert result.get("code") == "human_has_control"
+    assert calls == ["eval"]
+    assert "console" not in calls
+    assert "errors" not in calls
+    assert "WHAT-THE-HUMAN-TYPED" not in json.dumps(result)
+
+
 def test_guard_does_not_block_on_failed_console_command(monkeypatch):
     """If the console command itself fails, browser_console returns the error naturally."""
     def _run(task_id, command, args=None, **kwargs):

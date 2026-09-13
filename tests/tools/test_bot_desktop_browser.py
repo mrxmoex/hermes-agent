@@ -41,6 +41,38 @@ def _fake_running_instance(user_data_dir, pid: int, port: int) -> None:
     os.symlink(f"host-{pid}", user_data_dir / "SingletonLock")
 
 
+def test_loopback_cdp_port_is_host_identity_not_a_port_number():
+    """LAN / cloud / garbage URLs are another browser even if the port matches the dock."""
+    assert browser.loopback_cdp_port("ws://127.0.0.1:45555/devtools/browser/x") == 45555
+    assert browser.loopback_cdp_port("http://localhost:9222") == 9222
+    assert browser.loopback_cdp_port("ws://[::1]:9333/devtools/browser/x") == 9333
+    assert browser.loopback_cdp_port("127.0.0.1:9444") == 9444
+    assert browser.loopback_cdp_port("https://browserbase.example/cdp") is None
+    assert browser.loopback_cdp_port("ws://192.168.1.9:45555/devtools/browser/x") is None
+    assert browser.loopback_cdp_port("ws://0.0.0.0:9222") is None
+    assert browser.loopback_cdp_port("") is None
+    assert browser.loopback_cdp_port(None) is None
+
+
+def test_cdp_url_is_running_instance_matches_only_the_live_dock_port(tmp_path):
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+    try:
+        _fake_running_instance(tmp_path, os.getpid(), port)
+        assert browser.cdp_url_is_running_instance(f"ws://127.0.0.1:{port}/devtools/browser/x",
+                                                   user_data_dir=str(tmp_path))
+        assert not browser.cdp_url_is_running_instance("ws://127.0.0.1:9222/devtools/browser/x",
+                                                       user_data_dir=str(tmp_path))
+        assert not browser.cdp_url_is_running_instance(f"ws://192.168.1.9:{port}/devtools/browser/x",
+                                                       user_data_dir=str(tmp_path))
+    finally:
+        listener.close()
+    assert not browser.cdp_url_is_running_instance(f"ws://127.0.0.1:{port}/devtools/browser/x",
+                                                   user_data_dir=str(tmp_path))
+
+
 def test_running_instance_port_requires_live_pid_and_open_port(tmp_path):
     listener = socket.socket()
     listener.bind(("127.0.0.1", 0))

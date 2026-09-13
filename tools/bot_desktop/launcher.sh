@@ -49,7 +49,10 @@ if [[ -e "$xlock" ]] && ! kill -0 "$(tr -d ' ' < "$xlock" 2>/dev/null)" 2>/dev/n
   rm -f "$xlock" "/tmp/.X11-unix/X${HERMES_BD_DISPLAY_NUM}"
 fi
 : > "$XAUTHORITY"; chmod 600 "$XAUTHORITY"
-xauth -q -f "$XAUTHORITY" add "$DISPLAY" MIT-MAGIC-COOKIE-1 "$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+# Cookie via stdin: `xauth add … $(od …)` puts the MIT-MAGIC-COOKIE on argv
+# for the instant of that line (readable by any local UID via ps).
+printf 'add %s MIT-MAGIC-COOKIE-1 %s\n' "$DISPLAY" "$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')" \
+  | xauth -q -f "$XAUTHORITY" source -
 
 # ---- look: dark theme from whatever the host ships (first match wins), Hermes wallpaper ----
 pick_theme() { local d t; for t in "$@"; do for d in /usr/share/themes "$HOME/.themes"; do [[ -d "$d/$t" ]] && { echo "$t"; return; }; done; done; echo "$1"; }

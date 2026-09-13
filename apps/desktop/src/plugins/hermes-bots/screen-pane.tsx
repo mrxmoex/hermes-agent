@@ -10,14 +10,23 @@
  * answers with close 4000 (`control-taken`) simply re-attaches in watch mode.
  */
 
-import { Button, Codicon, EmptyState, GlyphSpinner, host, useValue } from '@hermes/plugin-sdk'
-import type { RpcEvent } from '@hermes/plugin-sdk'
+import { Button, Codicon, EmptyState, GlyphSpinner, useValue } from '@hermes/plugin-sdk'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { useBots } from './i18n'
-import { type DisplayLease, type DisplayObserveResult, displayRequest, type DisplayStatus, isDisplayUnavailable, isEventForBotScreen, leaseHeldBy, resolveScreenWsUrl, retainBotScreen, viewerHash } from './screen-connection'
+import { type DisplayLease, type DisplayObserveResult, displayRequest, type DisplayStatus, isDisplayUnavailable, leaseHeldBy, resolveScreenWsUrl, retainBotScreen, viewerHash } from './screen-connection'
+import { useOnGatewayOpen, usePullScreenStatusUntilSettled, useScreenBackendEvents } from './screen-events'
 import { ScreenInstallCard } from './screen-install'
-import { $screenState, screenStateFor, setScreenLease, setScreenStatus, setScreenUnavailable, setScreenViewer } from './screen-state'
+import {
+  $screenState,
+  applyScreenStatusIfUnchanged,
+  screenStateFor,
+  screenStatusGeneration,
+  setScreenLease,
+  setScreenStatus,
+  setScreenUnavailable,
+  setScreenViewer
+} from './screen-state'
 import type { RosterRow } from './types'
 
 type RfbLike = {
@@ -66,9 +75,10 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
   const attachGeneration = useRef(0)
 
   const refresh = useCallback(async () => {
+    const started = screenStatusGeneration(bot)
+
     try {
-      const next = await displayRequest<DisplayStatus>(bot, 'display.status')
-      setScreenStatus(bot, next)
+      applyScreenStatusIfUnchanged(bot, await displayRequest<DisplayStatus>(bot, 'display.status'), started)
       setError(null)
     } catch (err) {
       if (isDisplayUnavailable(err)) {
@@ -79,17 +89,17 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
     }
   }, [bot])
 
-  useEffect(() => {
-    void refresh()
+  usePullScreenStatusUntilSettled(bot)
+  useScreenBackendEvents(bot)
 
-    return host.onEvent('display.lease', (event: RpcEvent) => {
-      const payload = event.payload as { lease?: DisplayLease } | undefined
-
-      if (payload?.lease && isEventForBotScreen(bot, event, status?.profile_key)) {
-        setScreenLease(bot, payload.lease)
-      }
-    })
-  }, [bot, refresh, status?.profile_key])
+  // Portal already resyncs on this edge. An open pane must too: after serve
+  // restart / SSH / sleep-wake the RFB socket is dead and a warm cache lies.
+  useOnGatewayOpen(
+    useCallback(() => {
+      setConn('idle')
+      void refresh()
+    }, [refresh])
+  )
 
   const detach = useCallback((handBack = false) => {
     attachGeneration.current += 1
@@ -108,15 +118,28 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
     retention.current = null
   }, [])
 
-  const attach = useCallback(async () => {
+  const attach = useCallback(async (opts?: { resumeWatch?: boolean }) => {
     if (!canvasHost.current) {
       return
     }
 
+    // Reconnect remints viewer_id. If this window held the lease, transfer it
+    // onto the new id or input dies and the agent stays on human_has_control.
+    // resumeWatch (close 4000) is the opposite: someone else just took over.
+    const prior = screenStateFor($screenState.get(), bot)
+    const heldBefore = !opts?.resumeWatch && leaseHeldBy(prior?.lease ?? null, prior?.viewer ?? null)
+
     detach()
     const generation = attachGeneration.current
-    setConn('attaching')
+    if (!opts?.resumeWatch) {
+      setConn('attaching')
+    }
     setError(null)
+
+    // Retention is adopted only when a live RFB session exists. Any other
+    // exit (observe/ticket/url throw, superseded attach, missing canvas)
+    // must release — otherwise an inactive registry-routed bot stays pinned.
+    let handedOff = false
 
     try {
       // Load the client BEFORE dialing: noVNC's Websock installs its own `onopen`, so a socket that
@@ -131,9 +154,35 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
       }
 
       retention.current = retain
-      const observe = await displayRequest<DisplayObserveResult>(bot, 'display.observe')
+      // Pass the id this connection already minted so observe can keep it
+      // (and the lease). A reload or a new transport still gets a fresh id.
+      const observe = await displayRequest<DisplayObserveResult>(bot, 'display.observe', {
+        viewer_id: prior?.viewer?.id ?? ''
+      })
+      if (generation !== attachGeneration.current) {
+        return
+      }
+
       const minted = { id: observe.viewer_id, hash: await viewerHash(observe.viewer_id) }
       setScreenStatus(bot, observe)
+      // Last-writer-wins acquire would steal from a viewer who took over
+      // during this reconnect. Transfer only while OUR old id still holds.
+      if (
+        heldBefore &&
+        observe.viewer_id &&
+        observe.viewer_id !== prior?.viewer?.id &&
+        leaseHeldBy(observe.lease, prior?.viewer ?? null)
+      ) {
+        const transferred = await displayRequest<{ lease: DisplayLease }>(bot, 'display.lease.acquire', {
+          viewer_id: observe.viewer_id
+        })
+
+        if (generation !== attachGeneration.current) {
+          return
+        }
+
+        setScreenLease(bot, transferred.lease)
+      }
       const url = await resolveScreenWsUrl(bot, observe.ticket)
 
       if (generation !== attachGeneration.current || !canvasHost.current) {
@@ -178,6 +227,11 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
 
         if (closeCode === CLOSE_CONTROL_TAKEN || reason.includes('control-taken')) {
           setConn('control-taken')
+          // Overlay stays until the replacement stream connects (`resumeWatch`
+          // skips the attaching spinner). A fresh observe mints a new watcher
+          // id, so the next attach is not evicted again unless someone else
+          // takes over after we are back in watch mode.
+          void attach({ resumeWatch: true })
         } else if (event.detail?.clean) {
           setConn('idle')
         } else {
@@ -188,10 +242,20 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
         void refresh()
       })
       rfb.current = client
+      handedOff = true
     } catch (err) {
       if (generation === attachGeneration.current) {
         setConn('error')
         setError(err instanceof Error ? err.message : String(err))
+      }
+    } finally {
+      if (!handedOff && generation === attachGeneration.current) {
+        rfb.current?.disconnect()
+        rfb.current = null
+        socket.current?.close()
+        socket.current = null
+        retention.current?.()
+        retention.current = null
       }
     }
   }, [bot, detach, refresh, t.screen.streamLost])
@@ -205,6 +269,16 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
       void attach()
     }
   }, [attach, conn, status?.running])
+
+  // Switching to the stopped UI unmounts the canvas but not this component, so
+  // the RFB socket and profile retention would otherwise leak until unmount.
+  // Do not send 1000: a leftover human lease must keep fencing computer_use.
+  useEffect(() => {
+    if (status?.running === false) {
+      detach(false)
+      setConn('idle')
+    }
+  }, [detach, status?.running])
 
   useEffect(() => {
     if (rfb.current) {
@@ -271,7 +345,21 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
     return <EmptyState description={t.screen.portalUnavailable} title={t.screen.unavailableTitle} />
   }
 
-  if (status && !status.supported) {
+  // Live chrome requires a settled status. A transient display.status failure
+  // used to fall through here (empty canvas, no error — the banner only
+  // renders when conn === 'error') and never retry.
+  if (!status) {
+    return (
+      <div className="grid min-h-48 place-items-center p-6 text-center">
+        <div className="flex flex-col items-center gap-2 text-xs text-muted-foreground">
+          <GlyphSpinner /> {t.screen.heroConnecting}
+          {error ? <div className="text-red-500">{error}</div> : null}
+        </div>
+      </div>
+    )
+  }
+
+  if (!status.supported) {
     return <EmptyState description={t.screen.unsupportedBody} title={t.screen.unsupportedTitle} />
   }
 
@@ -280,11 +368,18 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
   }
 
   if (status && !status.running) {
+    const leftoverHuman = (state?.lease ?? status.lease)?.holder === 'human'
+
     return (
       <div className="grid min-h-48 place-items-center p-6 text-center">
         <div className="flex flex-col items-center gap-2">
           <div className="text-sm font-medium">{t.screen.stoppedTitle}</div>
           <div className="text-xs text-muted-foreground">{t.screen.stoppedBody}</div>
+          {leftoverHuman ? (
+            <Button disabled={busy} onClick={() => void handBack(true)} size="sm" title={t.screen.handBackForceHint} variant="secondary">
+              <Codicon name="debug-continue" /> {t.screen.handBackForce}
+            </Button>
+          ) : null}
           <Button disabled={busy} onClick={() => void start()} size="sm">
             {busy ? <GlyphSpinner /> : <Codicon name="play" />}
             {t.screen.start}

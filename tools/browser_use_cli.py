@@ -18,6 +18,8 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from hermes_constants import get_hermes_home
+from tools.bot_desktop.lease import HumanHasControl
+from tools.bot_desktop.runtime import desktop_env, detach_from_desktop
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -122,6 +124,8 @@ def _export_session_cdp(env: dict, get_session_info: Callable[[str], Any], cache
     """Export the CDP endpoint from ``get_session_info(cache_key)``; error string on failure / no CDP."""
     try:
         cdp = str((get_session_info(cache_key) or {}).get("cdp_url") or "")
+    except HumanHasControl:
+        raise
     except Exception as e:
         return fail_msg(e)
     if not cdp:
@@ -138,7 +142,10 @@ def _blocked_url_in_code(code: str) -> Optional[str]:
 
 def _base_subprocess_env() -> dict:
     from tools.browser_tool import _build_browser_env
-    env = _build_browser_env()
+    env = detach_from_desktop(_build_browser_env())
+    # Default detached: this harness often drives another browser (cloud / user CDP /
+    # Browser Use native). ``browser_exec`` re-applies ``desktop_env`` only after the
+    # shared-browser fence admits this profile's dock Chromium.
     # The CLI runs under its own Python (uv tool / uvx); an inherited PYTHONPATH/PYTHONHOME
     # (Hermes's venv) wins over its site-packages → wrong-ABI C-extensions and a crash.
     # PYTHONPATH/PYTHONHOME inherited from the agent process point at Hermes's venv site-packages, and a
@@ -390,6 +397,13 @@ def _resolve_managed_chromium_cdp(env: dict, task_id: Optional[str], session_nam
         return None
     res = _run_browser_command(_backend_cache_key(task_id, session_name), "get", ["cdp-url"],
                                timeout=_get_open_command_timeout(first_open=True))
+    # Independently-fenced get remints. ``browser_exec`` only recovers via
+    # ``_lease_moved_error`` when the outer fence admitted; a predicted-cloud
+    # skip leaves that inert. Raise so the caller keeps ``human_has_control``.
+    if (res or {}).get("code") == "human_has_control":
+        raise HumanHasControl(
+            (res or {}).get("error") or "A human has control of this bot's screen."
+        )
     cdp = str(((res or {}).get("data") or {}).get("cdpUrl") or "") if (res or {}).get("success") else ""
     if not cdp:
         return (f"The local browser could not be started: {(res or {}).get('error') or 'agent-browser returned no CDP endpoint'} "
@@ -422,12 +436,14 @@ def _resolve_backend_cdp(env: dict, task_id: Optional[str], session_name: str = 
         return None
     try:
         from tools.browser_tool_cloud import _get_cloud_provider
-        from tools.browser_tool_session import _get_session_info
+        from tools.browser_tool_session import _get_session_info, _shared_cdp_override_held_by_human
         from tools.browser_tool_cdp import _get_cdp_override
     except Exception as e:  # pragma: no cover — stubbed browser_tool in tests
         logger.debug("browser_tool backend resolution unavailable: %s", e)
         return None
-    override = _quiet(_get_cdp_override, "")
+    # Cached cloud skip + leftover ``/browser connect`` used to discover this
+    # screen's Chrome (``/json/version``) before the post-route re-admit.
+    override = "" if _shared_cdp_override_held_by_human() else _quiet(_get_cdp_override, "")
     if override:
         _set_cdp_env(env, override)
         return None
@@ -519,6 +535,27 @@ def _route_backend(env: dict, session: str, task_id: Optional[str], local: bool)
     return _resolve_backend_cdp(env, task_id, session_name=session)
 
 
+def _routed_shared_browser_info(env: dict, task_id: Optional[str], session: str) -> dict:
+    """Identity ``_route_backend`` actually landed on, for post-skip re-admit.
+
+    Prefer the backend-cache session when it is shared. Real-profile Chrome is
+    launched on this screen but is keyed ``hermes-real-profile`` (and a cache
+    hit never writes ``_active_sessions``) — match that CDP next. Do not overlay
+    a leftover dock supervisor onto a cloud route.
+    """
+    from tools.browser_tool import _active_sessions
+    from tools.browser_tool_session import _session_info_for_routed_cdp, _shares_bot_desktop_browser
+
+    routed_cdp = env.get("BU_CDP_WS") or env.get("BU_CDP_URL") or ""
+    cached = _active_sessions.get(_backend_cache_key(task_id, session)) or {}
+    if cached and _shares_bot_desktop_browser(cached):
+        info = dict(cached)
+        if routed_cdp:
+            info["cdp_url"] = routed_cdp
+        return info
+    return _session_info_for_routed_cdp(routed_cdp)
+
+
 def _group_popen_kwargs() -> dict:
     """Popen kwargs starting the CLI in its own process group (a new session on POSIX) so a
     timeout can take down every process that inherited the capture pipes, not just the CLI
@@ -603,7 +640,59 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
             return tool_error(f"Invalid session name {session!r}: use 1-64 letters, digits, "
                               "dashes, or underscores (e.g. 'r7k2').")
         env["BU_NAME"] = session
-    route_err = _route_backend(env, session, task_id, bool(local))
+    # Late import: browser_tool_session → lightpanda fallback → this module.
+    from tools.browser_tool_session import (
+        _admit_bot_desktop_browser,
+        _lease_moved_after_payload,
+        _shared_browser_fence,
+    )
+    # ``get cdp-url`` is already fenced; the harness then talks CDP directly
+    # (clicks, capture_screenshot) and must be bracketed the same way.
+    admitted, refuse = _shared_browser_fence(_backend_cache_key(task_id, session))
+    if refuse:
+        return tool_error(
+            refuse.get("error") or "Human has control of this bot's screen.",
+            code=refuse.get("code") or "human_has_control",
+        )
+    # Predicted-cloud / user-CDP skip the fence (another browser) but ``_build_browser_env``
+    # still merged this profile's DISPLAY and dock Chromium pins. Re-attach only when
+    # we actually admitted the shared local browser; otherwise the CLI would discover
+    # the human's dock instance on that seat.
+    if admitted is not None:
+        env = desktop_env(env)
+
+    def _lease_moved_error(*, result=None):
+        discarded = _lease_moved_after_payload(admitted, result=result)
+        if not discarded:
+            return None
+        return tool_error(
+            discarded.get("error") or "A human took over the bot's screen.",
+            code=discarded.get("code") or "human_has_control",
+        )
+
+    try:
+        route_err = _route_backend(env, session, task_id, bool(local))
+    except HumanHasControl as e:
+        return tool_error(str(e), code="human_has_control")
+    # Same class as ``_session_after_shared_fence``: a predicted-cloud skip
+    # plus a successful dock / local resolve used to leave ``admitted=None``,
+    # so the harness's direct CDP traffic had no ticket to discard against.
+    # Admit the *routed* identity only — do not overlay a leftover dock
+    # supervisor onto a cloud cache entry (that would fence the wrong browser).
+    if admitted is None:
+        admitted, refuse = _admit_bot_desktop_browser(
+            _routed_shared_browser_info(env, task_id, session)
+        )
+        if refuse:
+            return tool_error(
+                refuse.get("error") or "Human has control of this bot's screen.",
+                code=refuse.get("code") or "human_has_control",
+            )
+        if admitted is not None:
+            env = desktop_env(env)
+    moved = _lease_moved_error()
+    if moved:
+        return moved
     if route_err:
         return tool_error(route_err)
     _attach_vault_supervisor(env, task_id)
@@ -628,11 +717,19 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     try:
         proc = _run_cli_killing_process_group(cmd, code, env, timeout)
     except subprocess.TimeoutExpired:
+        moved = _lease_moved_error()
+        if moved:
+            return moved
         return tool_error(f"browser-use exec timed out after {timeout}s. The daemon may still be working; retry "
                           f"with a larger timeout_s (max {_MAX_TIMEOUT_S}), or split the work into several calls that "
                           "append to workspace files — anything already written to the workspace is preserved.")
     except OSError as e:
         return tool_error(f"Failed to launch browser-use CLI: {e}")
+
+    leftover = _find_screenshot(proc.stdout, started)
+    moved = _lease_moved_error(result={"screenshot_path": leftover} if leftover else None)
+    if moved:
+        return moved
 
     result = {"success": proc.returncode == 0, "exit_code": proc.returncode, "output": proc.stdout}
     if workspace:
@@ -644,13 +741,17 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
         stderr = stderr[:_STDERR_CAP_CHARS] + "\n… (stderr truncated)"
     if stderr:
         result["stderr"] = stderr
-    screenshot = _find_screenshot(proc.stdout, started)
+    screenshot = leftover
     if screenshot:
         result["screenshot_path"] = screenshot
         native = _native_screenshot_result(result, screenshot)
-        if native is not None:
-            return native
-    return tool_result(result)
+        payload = native if native is not None else tool_result(result)
+    else:
+        payload = tool_result(result)
+    moved = _lease_moved_error(result=result if screenshot else None)
+    if moved:
+        return moved
+    return payload
 
 
 _HEADER_BASE = (

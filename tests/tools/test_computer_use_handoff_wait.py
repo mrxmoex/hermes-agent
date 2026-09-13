@@ -14,10 +14,21 @@ from tools.computer_use.handoff import handle_handoff
 
 
 @pytest.fixture(autouse=True)
-def _fresh_lease():
+def _fresh_lease(monkeypatch):
+    from tools.bot_desktop import runtime
+    monkeypatch.setattr(runtime, "is_supported_host", lambda: True)
     lease._reset_for_tests()
     yield
     lease._reset_for_tests()
+
+
+def test_handoff_refuses_immediately_on_unsupported_hosts(monkeypatch):
+    from tools.bot_desktop import runtime
+    monkeypatch.setattr(runtime, "is_supported_host", lambda: False)
+    t0 = time.monotonic()
+    res = json.loads(handle_handoff("wait_for_human", {"seconds": 30, "grace": 20}))
+    assert res["code"] == "unsupported_host" and res["ok"] is False
+    assert time.monotonic() - t0 < 2, "an unsupported host must not block on the grace window"
 
 
 def test_wait_for_human_returns_no_takeover_when_nobody_answers_but_waits_out_a_real_takeover():

@@ -410,6 +410,18 @@ class _BrowserSessionBackend:
         reason = _suspect_browser_sessions.pop(self._session_key, None)
         if reason is None:
             return True
+        with _cleanup_lock:
+            held = _active_sessions.get(self._session_key)
+        if _session._defer_shared_browser_teardown(held):
+            # Deferred teardown is not a miss: do not mint a replacement Chromium
+            # on the screen the human is typing into. Keep the suspect flag so
+            # the next use after hand-back still recycles.
+            _suspect_browser_sessions[self._session_key] = reason
+            logger.info(
+                "Deferring suspect recycle of %s: a human holds the bot's screen (%s)",
+                self._session_key, reason,
+            )
+            return True
         logger.info("Recycling suspect browser session %s before reuse (%s)", self._session_key, reason)
         try:
             _lifecycle._cleanup_single_browser_session(self._session_key)
@@ -588,7 +600,12 @@ def _err(error: str, **extra) -> dict:
     return {"success": False, "error": error, **extra}
 
 
+_PRIVATE_RESULT_KEYS = ("_stored_snapshot_paths",)
+
+
 def _dumps(payload: Dict[str, Any], **kw) -> str:
+    if any(key in payload for key in _PRIVATE_RESULT_KEYS):
+        payload = {key: value for key, value in payload.items() if key not in _PRIVATE_RESULT_KEYS}
     return json.dumps(payload, ensure_ascii=False, **kw)
 
 
@@ -671,8 +688,13 @@ def _post_redirect_block(nav_session_key: str, url: str, final_url: str, auto_lo
         what = "a private/internal address"
     else:
         return None
-    _session._run_browser_command(nav_session_key, "open", ["about:blank"], timeout=10)
-    return json.dumps(_err(f"Blocked: redirect landed on {what}"))
+    blanked = _session._run_browser_command(nav_session_key, "open", ["about:blank"], timeout=10)
+    # about:blank is fenced on its own ticket. A take-over / hand-back must
+    # stay ``human_has_control`` — do not rewrite it as a successful SSRF block.
+    if blanked.get("code") == "human_has_control":
+        extra = {"code": blanked["code"]}
+        return _dumps(_err(blanked.get("error", _session._HUMAN_TOOK_OVER), **extra))
+    return _dumps(_err(f"Blocked: redirect landed on {what}"))
 
 
 def _snapshot_fields(snap_result: Dict[str, Any]) -> Dict[str, Any]:
@@ -682,15 +704,42 @@ def _snapshot_fields(snap_result: Dict[str, Any]) -> Dict[str, Any]:
     snapshot_text = data.get("snapshot", "")
     refs = data.get("refs", {})
     threshold = get_browser_snapshot_threshold()
+    stored: list = []
     if len(snapshot_text) > threshold:
-        snapshot_text = _snapshot._truncate_snapshot(snapshot_text, max_chars=threshold)
-    return {"snapshot": _snapshot._redact_browser_output(snapshot_text), "element_count": len(refs) if refs else 0}
+        snapshot_text = _snapshot._truncate_snapshot(
+            snapshot_text, max_chars=threshold, stored_paths=stored)
+    fields = {
+        "snapshot": _snapshot._redact_browser_output(snapshot_text),
+        "element_count": len(refs) if refs else 0,
+    }
+    if stored:
+        fields["_stored_snapshot_paths"] = stored
+    return fields
 
 
 def _merge_fallback_warning(response: Dict[str, Any], result: Dict[str, Any]) -> None:
     """Copy a secondary result's fallback warning only if the response has none yet."""
     if result.get("fallback_warning") and not response.get("fallback_warning"):
         _lp._copy_fallback_warning(response, result)
+
+
+def _lease_moved_json(admitted, result=None) -> Optional[str]:
+    """JSON refuse when the shared-browser epoch moved since ``admitted``.
+
+    When ``result`` is the assembled payload, remint also unlinks captures
+    that payload already spilled (screenshot PNG, oversized snapshot).
+    """
+    stole = _session._lease_moved_after_payload(admitted, result=result)
+    return _dumps(stole) if stole else None
+
+
+def _refuse_if_lease_moved_or_blocked(admitted, blocked: Optional[str]) -> Optional[str]:
+    """After a subsidiary page-URL probe: discard if the epoch moved, else ``blocked``.
+
+    ``_run_browser_command`` remints. A take-over during ``_blocked_private_page*``
+    used to let get_images / back / eval return the earlier epoch's payload.
+    """
+    return _lease_moved_json(admitted) or blocked
 
 
 def _attach_auto_snapshot(response: Dict[str, Any], nav_session_key: str) -> None:
@@ -728,34 +777,61 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
                     "cloud for public URLs; set browser.auto_local_for_private_urls: false to disable)",
                     url, type(_cloud._get_cloud_provider()).__name__ if _cloud._get_cloud_provider() else "none")
 
-    session_info = _session._get_session_info(nav_session_key)
+    # Admit BEFORE session create/recycle — same hole as ``_run_browser_command``.
+    # ``_get_session_info`` launches Chromium / Lightpanda / real-profile CDP.
+    admitted, refuse = _session._shared_browser_fence(nav_session_key)
+    if refuse:
+        return _dumps(refuse)
+    admitted, session_info, refuse = _session._session_after_shared_fence(nav_session_key, admitted)
+    if refuse:
+        return _dumps(refuse)
     is_first_nav = session_info.get("_first_nav", True)
     if is_first_nav:
         session_info["_first_nav"] = False
         _maybe_start_recording(nav_session_key)
+        moved = _lease_moved_json(admitted)
+        if moved:
+            return moved
 
     result = _session._run_browser_command(nav_session_key, "open", [url],
                                   timeout=_get_open_command_timeout(first_open=is_first_nav))
     if not result.get("success"):
-        return _dumps(_err(result.get("error", "Navigation failed")))
+        return _dumps(_err(result.get("error", "Navigation failed"),
+                           **({"code": result["code"]} if result.get("code") else {})))
+    moved = _lease_moved_json(admitted)
+    if moved:
+        return moved
 
     data = result.get("data", {})
     title = data.get("title", "")
     final_url = data.get("url", url)
-    blocked = _post_redirect_block(nav_session_key, url, final_url, auto_local_this_nav)
-    if blocked is not None:
-        return blocked
-
     response = {"success": True, "url": final_url, "title": title}
     features = session_info.get("features") or {}
     if features.get("real_profile"):  # auditability: this ran on the user's real-profile copy-browser
         response["used_real_profile"] = True
-    # Only a successful, non-blocked navigation becomes the task owner: failed opens
-    # and blocked redirects must not retarget follow-up clicks to an irrelevant session.
-    _last_active_session_key[effective_task_id] = nav_session_key
     _lp._copy_fallback_warning(response, result)
     _add_navigate_warnings(response, title, session_info if is_first_nav else None)
+    # Blank-on-SSRF and auto-snapshot remint unless they share this ticket.
+    # The url/title from open still belong to that epoch — do not return them
+    # as a successful navigate after a completed take-over / hand-back.
+    moved = _lease_moved_json(admitted)
+    if moved:
+        return moved
+    blocked = _post_redirect_block(nav_session_key, url, final_url, auto_local_this_nav)
+    # Take-over during about:blank is the same epoch as open. Do not report a
+    # successful SSRF block (or retarget follow-ups) after a completed hand-over.
+    moved = _lease_moved_json(admitted)
+    if moved:
+        return moved
+    if blocked is not None:
+        return blocked
+    # Only a successful, non-blocked navigation becomes the task owner: failed
+    # opens and blocked redirects must not retarget follow-up clicks.
+    _last_active_session_key[effective_task_id] = nav_session_key
     _attach_auto_snapshot(response, nav_session_key)
+    moved = _lease_moved_json(admitted, result=response)
+    if moved:
+        return moved
     return _dumps(response)
 
 
@@ -787,28 +863,38 @@ def browser_snapshot(
     if _is_camofox_mode():
         return _camofox("camofox_snapshot", full, task_id)
     effective_task_id = _last_session_key(task_id or "default")
+    admitted, refuse = _session._shared_browser_fence(effective_task_id)
+    if refuse:
+        return _dumps(refuse)
     result = _session._run_browser_command(effective_task_id, "snapshot", [] if full else ["-c"])
     if not result.get("success"):
         return _failed_response(result, "Failed to get snapshot")
+    moved = _lease_moved_json(admitted)
+    if moved:
+        return moved
 
     blocked = _blocked_private_page_content(effective_task_id)
-    if blocked is not None:
-        return blocked
+    refused = _refuse_if_lease_moved_or_blocked(admitted, blocked)
+    if refused is not None:
+        return refused
 
     response = {"success": True, **_snapshot_fields(result)}
     _lp._copy_fallback_warning(response, result)
 
     # Merge supervisor state (pending dialogs + frame tree) when a CDP supervisor is
     # attached. See website/docs/developer-guide/browser-supervisor.md.
+    # Same ticket as the CLI snapshot: reminting here would attach a later epoch's dialogs.
     try:
-        from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
-        _supervisor = SUPERVISOR_REGISTRY.get(effective_task_id)
+        _supervisor = _session._live_supervisor_for_session(effective_task_id)
         if _supervisor is not None:
             _sv_snap = _supervisor.snapshot()
             if _sv_snap.active:
                 response.update(_snapshot._redact_browser_output(_sv_snap.to_dict()))
     except Exception as _sv_exc:
         logger.debug("supervisor snapshot merge failed: %s", _sv_exc)
+    moved = _lease_moved_json(admitted, result=response)
+    if moved:
+        return moved
 
     return _dumps(response)
 
@@ -875,7 +961,10 @@ def browser_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
     if result.get("success"):
         response = {"success": True, "typed": display_text, "element": ref}
     else:
-        response = _err(result.get("error", f"Failed to type into {ref}"))
+        # Same shape as ``_failed_response`` / click — do not drop
+        # ``code: human_has_control`` when fill was refused or discarded.
+        extra = {"code": result["code"]} if result.get("code") else {}
+        response = _err(result.get("error", f"Failed to type into {ref}"), **extra)
     return _dumps(redact_browser_typed_text_for_display(_lp._copy_fallback_warning(response, result), text))
 
 
@@ -896,13 +985,20 @@ def browser_back(task_id: Optional[str] = None) -> str:
     if _is_camofox_mode():
         return _camofox("camofox_back", task_id)
     effective_task_id = _last_session_key(task_id or "default")
+    admitted, refuse = _session._shared_browser_fence(effective_task_id)
+    if refuse:
+        return _dumps(refuse)
     result = _session._run_browser_command(effective_task_id, "back", [])
     if result.get("success"):
         # History can land on a private/internal/metadata address the navigate
         # preflight never saw (earlier redirect chain, manipulated client-side history).
         blocked = _blocked_private_page(effective_task_id, "Browser history navigation (back) landed on this address.")
-        if blocked is not None:
-            return blocked
+        refused = _refuse_if_lease_moved_or_blocked(admitted, blocked)
+        if refused is not None:
+            return refused
+    moved = _lease_moved_json(admitted)
+    if moved:
+        return moved
     return _tool_response(result, {"url": result.get("data", {}).get("url", "")}, "Failed to go back")
 
 
@@ -920,10 +1016,15 @@ def _blocked_private_page_json(blocked_url: str, why: str) -> str:
 
 def _blocked_private_page(effective_task_id: str, why: str) -> Optional[str]:
     """Blocked payload when the SSRF guard is active and the current page is private, else
-    None. Fail-open on probe failure (see ``_current_page_private_url``)."""
+    None. Fail-open on probe failure (see ``_current_page_private_url``). A reminted
+    href probe is not a miss — click / type / press / console used to fall through
+    and run the next independently-fenced hop after a completed take-over."""
     if not _eval_policy._eval_ssrf_guard_active(effective_task_id):
         return None
-    blocked_url = _eval_policy._current_page_private_url(effective_task_id)
+    blocked_url, remint = _eval_policy._current_page_private_probe(effective_task_id)
+    if remint:
+        extra = {"code": remint["code"]} if remint.get("code") else {}
+        return _dumps(_err(remint.get("error", _session._HUMAN_TOOK_OVER), **extra))
     return _blocked_private_page_json(blocked_url, why) if blocked_url else None
 
 
@@ -958,9 +1059,19 @@ def browser_console(clear: bool = False, expression: Optional[str] = None, task_
     if blocked is not None:
         return blocked
 
+    admitted, refuse = _session._shared_browser_fence(effective_task_id)
+    if refuse:
+        return _dumps(refuse)
+
     clear_args = ["--clear"] if clear else []
     console_result = _session._run_browser_command(effective_task_id, "console", clear_args)
+    stole = _session._discard_if_lease_moved(admitted)
+    if stole or console_result.get("code") == "human_has_control":
+        return _dumps(stole) if stole else _failed_response(console_result, "Failed to read console")
     errors_result = _session._run_browser_command(effective_task_id, "errors", clear_args)
+    stole = _session._discard_if_lease_moved(admitted)
+    if stole or errors_result.get("code") == "human_has_control":
+        return _dumps(stole) if stole else _failed_response(errors_result, "Failed to read JS errors")
 
     messages = [
         {"type": msg.get("type", "log"), "text": _snapshot._redact_browser_output(msg.get("text", "")), "source": "console"}
@@ -976,6 +1087,9 @@ def browser_console(clear: bool = False, expression: Optional[str] = None, task_
     }
     _lp._copy_fallback_warning(response, console_result)
     _merge_fallback_warning(response, errors_result)
+    stole = _session._lease_moved_after_payload(admitted)
+    if stole:
+        return _dumps(stole)
     return _dumps(response)
 
 
@@ -996,29 +1110,32 @@ def _eval_ok_response(parsed: Any, **extra) -> Dict[str, Any]:
     return {"success": True, "result": _snapshot._redact_browser_output(parsed), "result_type": type(parsed).__name__, **extra}
 
 
-def _eval_result_or_blocked(effective_task_id: str, parsed: Any, result: Dict[str, Any], **extra) -> str:
+def _eval_result_or_blocked(effective_task_id: str, parsed: Any, result: Dict[str, Any],
+                            admitted=None, **extra) -> str:
     """Eval tool JSON, unless the post-eval page-URL recheck finds an eval navigated the
-    page to a private address — then the result is withheld."""
+    page to a private address — then the result is withheld. A take-over during that
+    probe must discard the eval payload (same ticket as the eval, not a remint)."""
     blocked = _blocked_private_page_content(effective_task_id)
-    if blocked is not None:
-        return blocked
+    refused = _refuse_if_lease_moved_or_blocked(admitted, blocked)
+    if refused is not None:
+        return refused
     return _dumps(_lp._copy_fallback_warning(_eval_ok_response(parsed, **extra), result), default=str)
 
 
-def _eval_supervisor_fast_path(effective_task_id: str, expression: str) -> Optional[str]:
+def _eval_supervisor_fast_path(effective_task_id: str, expression: str, admitted=None) -> Optional[str]:
     """``Runtime.evaluate`` on the CDP supervisor's persistent WebSocket (no subprocess cost).
     Tool JSON when the supervisor gave a definitive answer (value, blocked page, or a real
     JS-side exception — NOT retried via subprocess, that would just reproduce it slower);
     None to fall through to the subprocess path."""
     try:
-        from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
-        supervisor = SUPERVISOR_REGISTRY.get(effective_task_id)
+        supervisor = _session._live_supervisor_for_session(effective_task_id)
         if supervisor is None:
             return None
         sup_result = supervisor.evaluate_runtime(expression)
         if sup_result.get("ok"):
             return _eval_result_or_blocked(
-                effective_task_id, _parse_eval_value(sup_result.get("result")), {}, method="cdp_supervisor")
+                effective_task_id, _parse_eval_value(sup_result.get("result")), {},
+                admitted=admitted, method="cdp_supervisor")
         err = sup_result.get("error") or "evaluate_runtime failed"
         if "supervisor" not in err.lower():
             return _dumps(_err(err))
@@ -1044,7 +1161,10 @@ def _eval_failure_response(result: Dict[str, Any]) -> str:
             "(e.g. .innerText, .href, .src, .value) or use "
             "JSON.stringify() / a snapshot tool instead."
         )
-    return json.dumps(_lp._copy_fallback_warning(_err(err), result))
+    # Keep ``code: human_has_control`` — type's sibling. A reminted CLI eval
+    # refuse must not look like a generic eval failure.
+    extra = {"code": result["code"]} if result.get("code") else {}
+    return json.dumps(_lp._copy_fallback_warning(_err(err, **extra), result))
 
 
 def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
@@ -1067,14 +1187,26 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
     if _is_camofox_mode():
         return _camofox_eval(expression, task_id)
 
-    fast = _eval_supervisor_fast_path(effective_task_id, expression)
+    # Supervisor Runtime.evaluate talks CDP directly; the CLI eval path is
+    # already fenced inside ``_run_browser_command``.
+    admitted, refuse = _session._shared_browser_fence(effective_task_id)
+    if refuse:
+        return _dumps(refuse)
+
+    fast = _eval_supervisor_fast_path(effective_task_id, expression, admitted=admitted)
     if fast is not None:
-        return fast
+        stole = _session._discard_if_lease_moved(admitted)
+        return _dumps(stole) if stole else fast
 
     result = _session._run_browser_command(effective_task_id, "eval", [expression])
+    stole = _session._discard_if_lease_moved(admitted)
+    if stole:
+        return _dumps(stole)
     if not result.get("success"):
         return _eval_failure_response(result)
-    return _eval_result_or_blocked(effective_task_id, _parse_eval_value(result.get("data", {}).get("result")), result)
+    return _eval_result_or_blocked(
+        effective_task_id, _parse_eval_value(result.get("data", {}).get("result")), result,
+        admitted=admitted)
 
 
 def _camofox_eval(expression: str, task_id: Optional[str] = None) -> str:
@@ -1154,20 +1286,34 @@ def browser_get_images(task_id: Optional[str] = None) -> str:
         return _camofox("camofox_get_images", task_id)
 
     effective_task_id = _last_session_key(task_id or "default")
+    admitted, refuse = _session._shared_browser_fence(effective_task_id)
+    if refuse:
+        return _dumps(refuse)
     result = _session._run_browser_command(effective_task_id, "eval", [_GET_IMAGES_JS])
     if not result.get("success"):
         return _failed_response(result, "Failed to get images")
 
     blocked = _blocked_private_page_content(effective_task_id)
-    if blocked is not None:
-        return blocked
+    refused = _refuse_if_lease_moved_or_blocked(admitted, blocked)
+    if refused is not None:
+        return refused
 
     raw_result = result.get("data", {}).get("result", "[]")
     try:
         images = json.loads(raw_result) if isinstance(raw_result, str) else raw_result
-        return _json_with_fallback({"success": True, "images": _snapshot._redact_browser_output(images), "count": len(images)}, result)
+        payload = _json_with_fallback(
+            {"success": True, "images": _snapshot._redact_browser_output(images), "count": len(images)},
+            result,
+        )
     except json.JSONDecodeError:
-        return _json_with_fallback({"success": True, "images": [], "count": 0, "warning": "Could not parse image data"}, result)
+        payload = _json_with_fallback(
+            {"success": True, "images": [], "count": 0, "warning": "Could not parse image data"},
+            result,
+        )
+    stole = _session._lease_moved_after_payload(admitted)
+    if stole:
+        return _dumps(stole)
+    return payload
 
 
 _LP_VISION_FALLBACK_REASON = "Lightpanda has no graphical renderer for screenshots; used Chrome for vision capture."
@@ -1179,8 +1325,21 @@ from tools import browser_tool_vision as _vision
 def _capture_vision_screenshot(effective_task_id: str, annotate: bool, screenshot_path: Path, lp_prerouted: bool):
     """Take (or adopt the pre-routed) screenshot; returns ``(result, path, error_json_or_None)``."""
     if lp_prerouted and screenshot_path.exists():
-        result = _lp._annotate_lightpanda_fallback(
-            {"success": True, "data": {"path": str(screenshot_path)}}, _LP_VISION_FALLBACK_REASON)
+        # Adopting the prerouted PNG skips ``_run_browser_command``. Re-apply
+        # the lease bracket so a takeover after the preroute cannot deliver it.
+        # The PNG is temp Chrome on this screen — not the cached cloud / leftover
+        # ``/browser connect`` row ``_session_info_for_shared_browser_fence``
+        # would return (that skip used to deliver the frame).
+        result = _session._bracket_bot_desktop_browser(
+            {"features": {"local": True}},
+            lambda: _lp._annotate_lightpanda_fallback(
+                {"success": True, "data": {"path": str(screenshot_path)}}, _LP_VISION_FALLBACK_REASON
+            ),
+        )
+        if isinstance(result, dict) and result.get("code") == "human_has_control":
+            _session._discard_shared_browser_captures(
+                result={"data": {"path": str(screenshot_path)}},
+            )
     else:
         screenshot_args = (["--annotate"] if annotate else []) + ["--full", str(screenshot_path)]
         # A failed Lightpanda pre-route forces Chrome so _run_browser_command
@@ -1188,9 +1347,10 @@ def _capture_vision_screenshot(effective_task_id: str, annotate: bool, screensho
         result = _session._run_browser_command(effective_task_id, "screenshot", screenshot_args,
                                       _engine_override="auto" if lp_prerouted else None)
     if not result.get("success"):
-        return result, screenshot_path, _json_with_fallback(_err(
-            f"Failed to take screenshot ({_vision._vision_mode_label()} mode): {result.get('error', 'Unknown error')}"
-        ), result)
+        return result, screenshot_path, _failed_response(
+            result,
+            f"Failed to take screenshot ({_vision._vision_mode_label()} mode): {result.get('error', 'Unknown error')}",
+        )
     if result.get("data", {}).get("path"):
         screenshot_path = Path(result["data"]["path"])
     if not screenshot_path.exists():
@@ -1219,8 +1379,25 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
     if blocked is not None:
         return blocked
 
-    _lp_prerouted, _lp_fallback_warning, screenshot_path = _vision._lightpanda_vision_preroute(
+    admitted, refuse = _session._shared_browser_fence(effective_task_id)
+    if refuse:
+        return _dumps(refuse)
+
+    def _guard(payload):
+        stole = _session._discard_if_lease_moved(admitted)
+        if stole:
+            _session._discard_shared_browser_captures(
+                result={"data": {"path": str(screenshot_path)}},
+            )
+            return _dumps(stole)
+        return payload
+
+    preroute = _vision._lightpanda_vision_preroute(
         effective_task_id, annotate, screenshot_path)
+    _lp_prerouted, _lp_fallback_warning, screenshot_path, *rest = preroute
+    remint = rest[0] if rest else None
+    if remint and remint.get("code") == "human_has_control":
+        return _guard(_dumps(remint))
     result: Dict[str, Any] = {}
     try:
         screenshots_dir.mkdir(parents=True, exist_ok=True)
@@ -1228,12 +1405,12 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         result, screenshot_path, error = _capture_vision_screenshot(
             effective_task_id, annotate, screenshot_path, _lp_prerouted)
         if error is not None:
-            return error
+            return _guard(error)
         # Native image routing: attach the screenshot directly instead of describing it
         # through an aux vision LLM (no information loss).
         from tools.vision_tools import _should_use_native_vision_fast_path
         if _should_use_native_vision_fast_path():
-            return _vision._native_vision_result(screenshot_path, question, annotate, result, _lp_fallback_warning)
+            return _guard(_vision._native_vision_result(screenshot_path, question, annotate, result, _lp_fallback_warning))
 
         analysis = _vision._analyze_screenshot_with_aux_llm(screenshot_path, question)
         response_data = {"success": True, "analysis": analysis or "Vision analysis returned no content.",
@@ -1241,7 +1418,7 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         _lp._copy_fallback_warning(response_data, result)
         if annotate and result.get("data", {}).get("annotations"):
             response_data["annotations"] = result["data"]["annotations"]
-        return _dumps(response_data)
+        return _guard(_dumps(response_data))
     except Exception as e:
         # Keep a captured screenshot — the failure is in the analysis, not the capture,
         # and deleting it loses evidence. The 24-hour cleanup bounds disk growth.
@@ -1251,7 +1428,7 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
             error_info["screenshot_path"] = str(screenshot_path)
             error_info["note"] = "Screenshot was captured but vision analysis failed. You can still share it via MEDIA:<path>."
         _lp._copy_fallback_warning(error_info, result)
-        return _dumps(error_info)
+        return _guard(_dumps(error_info))
 
 
 # ---------------------------------------------------------------------------

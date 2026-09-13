@@ -122,6 +122,8 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         # Dialog auto-dismiss watchdog handles (per dialog id) + id generator.
         self._dialog_watchdogs: Dict[str, asyncio.TimerHandle] = {}
         self._dialog_seq = 0
+        self._dialog_intercept_paused = False
+        self._dialog_bridge_script_ids: Dict[str, str] = {}
 
     # ── Public sync API ──────────────────────────────────────────────────────
 
@@ -272,7 +274,9 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
             attach = await self._cdp("Target.attachToTarget", {"targetId": target_id, "flatten": True}, timeout=timeout)
             sid = attach["result"]["sessionId"]
             await self._enable_page_domains(sid, timeout=timeout)
-            await self._install_dialog_bridge(sid)
+            await self._sync_dialog_intercept_to_lease()
+            if not getattr(self, "_dialog_intercept_paused", False):
+                await self._install_dialog_bridge(sid)
             return sid
 
         async def _focus() -> Dict[str, Any]:
@@ -367,6 +371,7 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
                 continue
 
             reader_task = asyncio.create_task(self._read_loop(), name="cdp-reader")
+            lease_watch = None
             try:
                 # Reset the per-connection page session id; ``_pending_dialogs`` / ``_frames``
                 # are deliberately kept — they reconcile as fresh events arrive (worst case a
@@ -377,6 +382,7 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
                 last_success_at = time.time()
                 backoff = 0.5  # reset after a successful attach
                 self._ready_event.set()
+                lease_watch = asyncio.create_task(self._watch_dialog_lease(), name="dialog-lease-watch")
                 await reader_task
             except BaseException as e:
                 if self._fail_start(e):
@@ -385,6 +391,10 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
                                self.task_id, time.time() - last_success_at, _redact_cdp_error_text(e))
             finally:
                 self._set_active(False)
+                if lease_watch is not None and not lease_watch.done():
+                    lease_watch.cancel()
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await lease_watch
                 if not reader_task.done():
                     reader_task.cancel()
                     with contextlib.suppress(asyncio.CancelledError, Exception):
@@ -409,7 +419,9 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         attach = await self._cdp("Target.attachToTarget", {"targetId": page_target["targetId"], "flatten": True})
         self._page_session_id = sid = attach["result"]["sessionId"]
         await self._enable_page_domains(sid, timeout=10.0)
-        await self._install_dialog_bridge(sid)
+        await self._sync_dialog_intercept_to_lease()
+        if not getattr(self, "_dialog_intercept_paused", False):
+            await self._install_dialog_bridge(sid)
 
     async def _cdp(self, method: str, params: Optional[Dict[str, Any]] = None, *,
                    session_id: Optional[str] = None, timeout: float = 10.0) -> Dict[str, Any]:

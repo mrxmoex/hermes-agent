@@ -17,6 +17,20 @@ class TestResolveCdpOverride:
 
         assert _resolve_cdp_override(WS_URL) == WS_URL
 
+    def test_scheme_less_host_port_uses_http_discovery(self):
+        """``/browser connect`` often stores ``127.0.0.1:PORT`` with no scheme."""
+        from tools.browser_tool_cdp import _resolve_cdp_override
+
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {"webSocketDebuggerUrl": WS_URL}
+
+        with patch("requests.get", return_value=response) as mock_get:
+            resolved = _resolve_cdp_override(f"{HOST}:{PORT}")
+
+        assert resolved == WS_URL
+        mock_get.assert_called_once_with(VERSION_URL, timeout=10)
+
 
     def test_redacts_secret_query_params_in_success_log(self):
         from tools.browser_tool_cdp import _resolve_cdp_override

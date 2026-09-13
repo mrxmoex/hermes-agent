@@ -17,8 +17,11 @@ import shutil
 import socket
 from pathlib import Path
 from typing import Optional, Tuple
+from urllib.parse import urlparse
 
 from tools.bot_desktop import runtime
+
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
 _SYSTEM_BROWSERS = ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser")
 
@@ -90,6 +93,46 @@ def running_instance_cdp_port(user_data_dir: str, *, exclude_session: Optional[s
     except OSError:
         return None
     return port
+
+
+def loopback_cdp_port(url: Optional[str]) -> Optional[int]:
+    """TCP port of a loopback CDP URL, or ``None`` (LAN, cloud, or malformed).
+
+    Only ``127.0.0.1`` / ``localhost`` / ``::1`` count — a user CDP on another
+    machine is another browser even when the port number matches the dock.
+    """
+    if not url or not isinstance(url, str):
+        return None
+    raw = url.strip()
+    if not raw:
+        return None
+    parsed = urlparse(raw if "://" in raw else f"http://{raw}")
+    host = (parsed.hostname or "").lower()
+    if host not in _LOOPBACK_HOSTS:
+        return None
+    try:
+        port = parsed.port
+    except ValueError:
+        return None
+    if port is None:
+        port = 443 if parsed.scheme in {"https", "wss"} else 80
+    if not (1 <= port <= 65535):
+        return None
+    return port
+
+
+def cdp_url_is_running_instance(url: Optional[str], user_data_dir: Optional[str] = None) -> bool:
+    """True when ``url`` is the live Chromium on this profile's Bot Desktop user-data-dir.
+
+    ``/browser connect`` and ``browser.cdp_url`` label that attach ``cdp_override``,
+    not ``local``. The label is correct for a foreign Chrome; it is wrong when the
+    URL is this profile's dock instance. Identity is the live DevTools port.
+    """
+    want = loopback_cdp_port(url)
+    if want is None:
+        return False
+    have = running_instance_cdp_port(user_data_dir or str(profile_dir()))
+    return have is not None and have == want
 
 
 def _launched_by_session(chromium_pid: int) -> Optional[str]:

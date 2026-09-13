@@ -11,6 +11,38 @@ import pytest
 from hermes_cli.dashboard_auth import ws_tickets
 
 
+def test_install_sudo_ignores_a_client_supplied_session_id(tmp_path, monkeypatch):
+    """write_json routes a nonempty session_id to that session's transport. A client that
+    names another chat's id would put the administrator-password card on the wrong window."""
+    from tools.bot_desktop import install, runtime
+    import tui_gateway.server as server
+
+    monkeypatch.setattr(runtime, "is_supported_host", lambda: True)
+    monkeypatch.setattr(runtime, "install_command", lambda: "sudo apt-get install -y x")
+    seen = []
+    done = threading.Event()
+
+    def fake_block(event, sid, payload, timeout=300):
+        seen.append((event, sid))
+        return ""
+
+    def fake_install(*, ask_password, on_line, timeout_seconds=900.0, claimed=False):
+        ask_password()
+        done.set()
+        return 0
+
+    monkeypatch.setattr(install, "install_packages", fake_install)
+    monkeypatch.setattr(server, "_block", fake_block)
+    monkeypatch.setattr(server, "_broadcast_global_event", lambda *a, **k: None)
+    resp = server.handle_request({
+        "jsonrpc": "2.0", "id": 1, "method": "display.install",
+        "params": {"session_id": "other-chat"},
+    })
+    assert resp["result"]["started"], resp
+    assert done.wait(5)
+    assert seen == [("display.install.sudo.request", "")], seen
+
+
 def test_install_worker_keeps_the_requested_profile_scope(tmp_path, monkeypatch):
     from hermes_constants import get_hermes_home
     from tools.bot_desktop import install, runtime
@@ -65,6 +97,45 @@ def test_thumbnail_is_suppressed_while_a_human_holds_the_lease(monkeypatch, _fre
     assert _call(server, "display.thumbnail", {})["result"]["data_url"].endswith("SECRET")
 
 
+def test_thumbnail_crossing_a_takeover_is_discarded(monkeypatch, _fresh_lease):
+    """A frame grabbed while the agent held can still finish after the human took over
+    (and even after they handed back). Epoch, not the final holder, is the fence."""
+    import tui_gateway.server as server
+    from tools.bot_desktop import thumbnail
+
+    def grab_during_handoff():
+        _fresh_lease.acquire("viewer-1")
+        _fresh_lease.release("viewer-1")
+        return "data:image/jpeg;base64,HUMAN_PRIVATE_FRAME"
+
+    monkeypatch.setattr(thumbnail, "thumbnail_data_url", grab_during_handoff)
+    result = _call(server, "display.thumbnail", {})["result"]
+    assert result["data_url"] is None
+    assert result["suppressed"] == "human_has_control"
+
+
+def test_acquire_requires_a_live_screen_and_a_minted_viewer_id(monkeypatch, tmp_path, _fresh_lease):
+    """A client-chosen id (or any id while the screen is down) must not take the
+    lease: computer_use would sit on human_has_control with nobody at a desktop."""
+    from tools.bot_desktop import runtime
+    import tui_gateway.server as server
+
+    monkeypatch.setattr(runtime, "rfb_socket_path", lambda: None)
+    refused = _call(server, "display.lease.acquire", {"viewer_id": "any-id"})
+    assert "error" in refused, refused
+    assert _fresh_lease.get().holder == _fresh_lease.AGENT
+
+    monkeypatch.setattr(runtime, "rfb_socket_path", lambda: tmp_path / "rfb.sock")
+    unminted = _call(server, "display.lease.acquire", {"viewer_id": "any-id"})
+    assert unminted["error"]["data"]["code"] == "viewer_unminted"
+    assert _fresh_lease.get().holder == _fresh_lease.AGENT
+
+    observed = _rpc(server, "display.observe", {})["result"]
+    taken = _rpc(server, "display.lease.acquire", {"viewer_id": observed["viewer_id"]})["result"]
+    assert taken["lease"]["holder"] == _fresh_lease.HUMAN
+    assert observed["viewer_id"] not in json.dumps(taken)
+
+
 def test_release_without_viewer_id_cannot_yank_another_viewers_lease(_fresh_lease):
     """lease.release(None) skips the holder check, so a client that lost its viewer id (or a bare RPC)
     must be refused unless it forces; a matching viewer id and force keep working."""
@@ -112,6 +183,16 @@ def test_observe_mints_the_viewer_id_and_status_never_discloses_the_holder(monke
         stolen = server.dispatch({"jsonrpc": "2.0", "id": 10, "method": "display.observe",
                                   "params": {"viewer_id": with_mine["viewer_id"]}}, other)["result"]
         assert stolen["viewer_id"] != with_mine["viewer_id"]
+
+        class _Slotted:
+            __slots__ = ()
+            def write(self, obj):
+                return True
+        slotted = _Slotted()
+        first = server.dispatch({"jsonrpc": "2.0", "id": 11, "method": "display.observe", "params": {}}, slotted)["result"]
+        kept = server.dispatch({"jsonrpc": "2.0", "id": 12, "method": "display.observe",
+                                "params": {"viewer_id": first["viewer_id"]}}, slotted)["result"]
+        assert kept["viewer_id"] == first["viewer_id"], "slotted transports must still reuse a minted id"
 
         _rpc(server, "display.status", {})  # installs the broadcast listener
         lease.acquire(holder)

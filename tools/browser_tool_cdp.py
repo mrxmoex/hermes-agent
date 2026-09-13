@@ -12,8 +12,10 @@ from tools.browser_tool_origin import origin_module as _origin
 def _resolve_cdp_override(cdp_url: str) -> str:
     """Normalize a user-supplied CDP endpoint into a concrete websocket URL.
 
-    Full ``ws://.../devtools/browser/...`` endpoints pass through; HTTP discovery roots and bare ``ws://host:port``
-    resolve via ``/json/version`` → ``webSocketDebuggerUrl`` (falls back to the raw value with a warning).
+    Full ``ws://.../devtools/browser/...`` endpoints pass through; HTTP discovery
+    roots, scheme-less ``host:port``, and bare ``ws://host:port`` resolve via
+    ``/json/version`` → ``webSocketDebuggerUrl`` (falls back to the raw value
+    with a warning).
     """
     _bt = _origin()
     raw = (cdp_url or "").strip()
@@ -23,7 +25,11 @@ def _resolve_cdp_override(cdp_url: str) -> str:
     if "/devtools/browser/" in lowered:
         return raw
 
-    discovery_url = raw
+    # ``browser.cdp_url`` / ``BROWSER_CDP_URL`` are often stored as
+    # ``127.0.0.1:PORT``. Without a scheme, ``/json/version`` is not a URL
+    # and this function returned the raw host:port — ``browser_cdp`` then
+    # reminted leftover Chrome as a generic "not a WebSocket URL" error.
+    discovery_url = raw if "://" in raw else f"http://{raw}"
     if lowered.startswith(("ws://", "wss://")):
         if not (raw.count(":") == 2 and raw.rstrip("/").rsplit(":", 1)[-1].isdigit() and "/" not in raw.split(":", 2)[-1]):
             return raw
@@ -102,18 +108,58 @@ def _ensure_cdp_supervisor(task_id: str) -> None:
     """Start a CDP supervisor for ``task_id`` if an endpoint is reachable.
 
     Idempotent (``get_or_start`` skips an existing ``(task_id, cdp_url)`` and restarts on URL change), so safe on
-    every navigate / ``/browser connect``. URL precedence: the CDP override, then the session's own ``cdp_url``
-    (cloud providers, e.g. Browserbase). Swallows all errors — a failed attach must not break the session;
-    snapshots just lack ``pending_dialogs`` / ``frame_tree``.
+    every navigate / ``/browser connect``.     URL precedence: the CDP override when leftover belongs to this
+    session (same endpoint, or a local ``--session`` that would
+    ``--cdp``-attach that leftover dock port), then the session's own
+    ``cdp_url`` (cloud providers, e.g. Browserbase). A leftover
+    ``/browser connect`` on this screen must not steal a cloud / foreign
+    session's supervisor, must not ``/json/version``-probe leftover
+    before identity, and must not attach leftover RP to a throwaway
+    ``--session``. Swallows all errors — a failed attach must not break
+    the session; snapshots just lack ``pending_dialogs`` / ``frame_tree``.
     """
     _bt = _origin()
-    cdp_url = _get_cdp_override()
-    if not cdp_url:
-        with _bt._cleanup_lock:
-            session_info = _bt._active_sessions.get(task_id, {})
-        maybe = str(session_info.get("cdp_url") or "")
-        if maybe:
-            cdp_url = _resolve_cdp_override(maybe)
+    # A cached cloud session skips the outer fence. Preferring the leftover
+    # ``/browser connect`` override here used to ``/json/version``-probe and
+    # attach a supervisor to this screen while a human held it — and, while
+    # the agent held, steal the supervisor away from the cloud session so
+    # snapshot/eval mixed this screen into another browser's result.
+    try:
+        from tools.browser_tool_session import (
+            _shared_cdp_override_held_by_human,
+            _supervisor_belongs_to_session,
+        )
+        skip_override = _shared_cdp_override_held_by_human()
+    except Exception:
+        skip_override = False
+        _supervisor_belongs_to_session = None  # type: ignore[assignment]
+    leftover_raw = "" if skip_override else (_get_cdp_override_raw() or "")
+    with _bt._cleanup_lock:
+        session_info = _bt._active_sessions.get(task_id, {})
+    session_cdp = str(session_info.get("cdp_url") or "")
+    leftover = ""
+    if leftover_raw:
+        # Match on the configured URL first. ``_get_cdp_override`` HTTP
+        # ``/json/version``-probes leftover Chrome. A leftover supervisor
+        # belongs only when this session talks that endpoint — leftover
+        # ``/browser connect`` to this profile's real-profile Chrome is
+        # not a throwaway ``--session``. The empty-cdp ``else`` used to
+        # resolve leftover unconditionally (operator-connect attach) and
+        # opened leftover RP while the CLI launched packaged Chromium.
+        belongs = False
+        try:
+            belongs = bool(
+                _supervisor_belongs_to_session
+                and _supervisor_belongs_to_session(
+                    type("_Leftover", (), {"cdp_url": leftover_raw})(),
+                    session_info,
+                )
+            )
+        except Exception:
+            belongs = False
+        if belongs:
+            leftover = _resolve_cdp_override(leftover_raw)
+    cdp_url = leftover or (_resolve_cdp_override(session_cdp) if session_cdp else "")
     if not cdp_url:
         return
     try:

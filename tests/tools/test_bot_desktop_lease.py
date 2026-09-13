@@ -21,7 +21,9 @@ _SETENC = b"\x02\x00\x00\x02" + b"\x00\x00\x00\x07" + b"\xff\xff\xff\x21"  # Set
 
 
 @pytest.fixture(autouse=True)
-def _fresh_lease():
+def _fresh_lease(monkeypatch):
+    from tools.bot_desktop import runtime
+    monkeypatch.setattr(runtime, "is_supported_host", lambda: True)
     lease._reset_for_tests()
     yield
     lease._reset_for_tests()

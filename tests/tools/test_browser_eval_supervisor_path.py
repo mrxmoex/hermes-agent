@@ -32,6 +32,10 @@ def _patch_supervisor(monkeypatch, supervisor):
     """Wire SUPERVISOR_REGISTRY.get to return ``supervisor`` for any task_id."""
     import tools.browser_supervisor as bs
 
+    # Local ``--session`` / test doubles have no CDP URL. A MagicMock child
+    # attribute would otherwise look like another browser and skip leftover I/O.
+    if supervisor is not None and not isinstance(getattr(supervisor, "cdp_url", ""), str):
+        supervisor.cdp_url = ""
     registry = MagicMock()
     registry.get.return_value = supervisor
     monkeypatch.setattr(bs, "SUPERVISOR_REGISTRY", registry)

@@ -155,6 +155,13 @@ def _cleanup_inactive_browser_sessions():
                                if current_time - last_time > _bt.BROWSER_SESSION_INACTIVITY_TIMEOUT]
 
     for task_id in sessions_to_cleanup:
+        with _bt._cleanup_lock:
+            info = _bt._active_sessions.get(task_id)
+        if _session._defer_shared_browser_teardown(info):
+            # Refused agent commands no longer refresh the idle clock. Closing
+            # the shared Chromium here would kill the page the human is typing in.
+            _bt.logger.debug("Deferring inactive cleanup for %s: a human holds the bot's screen", task_id)
+            continue
         elapsed = int(current_time - _bt._session_last_activity.get(task_id, current_time))
         _bt.logger.info("Cleaning up inactive session for task: %s (inactive for %ss)", task_id, elapsed)
         try:
@@ -621,6 +628,11 @@ def _force_reap_browser_session(task_id: str) -> None:
 
     Janitor last resort after repeated cleanup failures (#100738).
     """
+    with _bt._cleanup_lock:
+        held = _bt._active_sessions.get(task_id)
+    if _session._defer_shared_browser_teardown(held):
+        _bt.logger.debug("Skipping force-reap for %s: a human holds the bot's screen", task_id)
+        return
     _cdp._stop_cdp_supervisor(task_id)
     with _bt._cleanup_lock:
         session_info = _bt._active_sessions.get(task_id)
@@ -633,6 +645,14 @@ def _force_reap_browser_session(task_id: str) -> None:
 
 def _cleanup_single_browser_session(task_id: str) -> None:
     """Reap a single browser session by its exact session key."""
+    # Look up first: a human on the shared Chromium must not lose the daemon,
+    # CDP supervisor, or recording because the agent's idle clock went stale.
+    with _bt._cleanup_lock:
+        session_info = _bt._active_sessions.get(task_id)
+    if _session._defer_shared_browser_teardown(session_info):
+        _bt.logger.debug("Skipping browser cleanup for %s: a human holds the bot's screen", task_id)
+        return
+
     _cdp._stop_cdp_supervisor(task_id)  # close our WebSocket BEFORE the backend tears down the endpoint
 
     # Camofox: managed persistence keeps the profile (cookies) across tasks; skip the full

@@ -5,24 +5,24 @@
  * is live and who holds it, so the user knows before opening whether they
  * are about to watch, take over, install or start.
  *
- * Reads the same per-bot cache the pane paints (`$screenState`) and refreshes
- * it once on mount so a bot the user never opened still shows real state.
+ * Reads the same per-bot cache the pane paints (`$screenState`) and pulls
+ * `display.status` until the cache settles (retrying transient RPC failures).
  */
 
-import { Codicon, host, useValue } from '@hermes/plugin-sdk'
-import type { RpcEvent } from '@hermes/plugin-sdk'
+import { Codicon, useValue } from '@hermes/plugin-sdk'
 import type { ProfileGroupRoute } from '@hermes/plugin-sdk'
-import { useEffect, useMemo } from 'react'
+import { useCallback, useMemo } from 'react'
 
 import { $lastRoster } from './data'
 import { useBots } from './i18n'
 import { resolveBotConnectionRoute } from './routing'
-import { type DisplayLease, displayRequest, type DisplayStatus, isDisplayUnavailable, isEventForBotScreen, leaseHeldBy, type ScreenViewer } from './screen-connection'
+import { type DisplayLease, type DisplayStatus, leaseHeldBy, type ScreenViewer } from './screen-connection'
+import { pullScreenStatus, useOnGatewayOpen, usePullScreenStatusUntilSettled, useScreenBackendEvents } from './screen-events'
 import { openBotScreen } from './screen-open'
-import { $screenState, screenStateFor, setScreenLease, setScreenStatus, setScreenUnavailable } from './screen-state'
+import { $screenState, screenStateFor } from './screen-state'
 import type { BotMeta, RosterRow } from './types'
 
-export type PortalTone = 'live' | 'human' | 'other' | 'off' | 'missing' | 'unsupported' | 'unavailable' | 'unknown'
+export type PortalTone = 'live' | 'handoff' | 'human' | 'other' | 'off' | 'missing' | 'unsupported' | 'unavailable' | 'unknown'
 
 /** Pure: map cached status + lease (+ this window's minted viewer, if attached) to what the portal says. */
 export function portalTone(status: DisplayStatus | null, lease: DisplayLease | null, viewer: ScreenViewer | null = null, unavailable = false): PortalTone {
@@ -42,12 +42,19 @@ export function portalTone(status: DisplayStatus | null, lease: DisplayLease | n
     return 'missing'
   }
 
-  if (!status.running) {
-    return 'off'
-  }
-
+  // A leftover human lease / pending handoff outlives a crashed or stopped
+  // launcher (dead Xvnc still fences computer_use). Surface that on the portal
+  // so the user can open the pane and Hand back — do not hide it behind "off".
   if (lease?.holder === 'human') {
     return leaseHeldBy(lease, viewer) ? 'human' : 'other'
+  }
+
+  if (lease?.pending_handoff) {
+    return 'handoff'
+  }
+
+  if (!status.running) {
+    return 'off'
   }
 
   return 'live'
@@ -55,6 +62,7 @@ export function portalTone(status: DisplayStatus | null, lease: DisplayLease | n
 
 const TONE_ICON: Record<PortalTone, string> = {
   live: 'device-desktop',
+  handoff: 'bell',
   human: 'record-keys',
   other: 'eye',
   off: 'debug-stop',
@@ -66,6 +74,7 @@ const TONE_ICON: Record<PortalTone, string> = {
 
 const TONE_DOT: Record<PortalTone, string> = {
   live: 'bg-emerald-500',
+  handoff: 'bg-amber-500',
   human: 'bg-red-500',
   other: 'bg-amber-500',
   off: 'bg-(--ui-text-quaternary)',
@@ -79,59 +88,15 @@ export function useScreenPortalState(bot: RosterRow) {
   const all = useValue($screenState)
   const state = screenStateFor(all, bot)
   const status = state?.status ?? null
-  const profileKey = status?.profile_key
 
-  useEffect(() => {
-    if (status || state?.unavailable) {
-      return
-    }
+  useScreenBackendEvents(bot)
+  usePullScreenStatusUntilSettled(bot)
 
-    let cancelled = false
+  const resync = useCallback(() => {
+    void pullScreenStatus(bot)
+  }, [bot])
 
-    void displayRequest<DisplayStatus>(bot, 'display.status')
-      .then(next => {
-        if (!cancelled) {
-          setScreenStatus(bot, next)
-        }
-      })
-      .catch((error: unknown) => {
-        // An older Hermes without display.* is a settled answer (hide the surface);
-        // an offline bot is transient and stays in its unknown state.
-        if (!cancelled && isDisplayUnavailable(error)) {
-          setScreenUnavailable(bot)
-        }
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [bot, state?.unavailable, status])
-
-  useEffect(
-    () =>
-      host.onEvent('display.lease', (event: RpcEvent) => {
-        const payload = event.payload as { profile_key?: string; lease?: DisplayLease } | undefined
-
-        if (payload?.lease && isEventForBotScreen(bot, event, profileKey)) {
-          setScreenLease(bot, payload.lease)
-        }
-      }),
-    [bot, profileKey]
-  )
-
-  // A start/stop/crash made outside this window (CLI, gateway auto-start, another Desktop) is
-  // pushed by the serve-side runtime watcher; without it the portal's status was one-shot.
-  useEffect(
-    () =>
-      host.onEvent('display.status', (event: RpcEvent) => {
-        const payload = event.payload as DisplayStatus | undefined
-
-        if (payload?.profile_key && isEventForBotScreen(bot, event, profileKey)) {
-          setScreenStatus(bot, payload)
-        }
-      }),
-    [bot, profileKey]
-  )
+  useOnGatewayOpen(resync)
 
   return { status, lease: state?.lease ?? null, tone: portalTone(status, state?.lease ?? null, state?.viewer ?? null, state?.unavailable) }
 }
@@ -142,6 +107,7 @@ export function ScreenPortal({ bot, meta, compact = false }: { bot: RosterRow; m
 
   const subtitle = {
     live: t.screen.portalWatching,
+    handoff: t.screen.handoffRequested,
     human: t.screen.portalYouControl,
     other: t.screen.portalOtherControls,
     off: t.screen.portalStopped,

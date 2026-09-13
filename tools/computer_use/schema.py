@@ -8,7 +8,20 @@ than pixel coordinates, which remain supported for models trained on them.
 
 from __future__ import annotations
 
+import copy
 from typing import Any, Dict
+
+# Bot Screen handoff: only meaningful on a Linux gateway that can run the per-profile
+# desktop. Stripped from the live schema on other hosts so the model is not told to
+# "take over this screen from Hermes Desktop" where no such screen exists.
+_HANDOFF_ACTIONS = ("request_handoff", "wait_for_human")
+_HANDOFF_ONLY_PROPERTIES = ("reason", "grace")
+_HANDOFF_ACTION_BLURB = (
+    " When a login, 2FA, CAPTCHA or payment step needs the human, call "
+    "`request_handoff` (with `reason`) so they can take over this screen from the Hermes "
+    "Desktop app, then `wait_for_human`; while they hold control every other action is refused."
+)
+_HANDOFF_SECONDS_BLURB = " wait_for_human: how long to block for the hand-back (default 600, max 1800)."
 
 # One consolidated tool with an `action` discriminator keeps the schema compact
 # and the per-turn token cost low. Property groups: capture (mode, app, pid,
@@ -39,9 +52,7 @@ _PROPERTIES: Dict[str, Any] = {
             "Which action to perform. `capture` is free (no side effects). All other actions "
             "require approval unless auto-approved. Use `set_value` for select/popup elements and "
             "sliders — it selects the matching option directly without opening the native menu (no "
-            "focus steal). When a login, 2FA, CAPTCHA or payment step needs the human, call "
-            "`request_handoff` (with `reason`) so they can take over this screen from the Hermes "
-            "Desktop app, then `wait_for_human`; while they hold control every other action is refused."
+            f"focus steal).{_HANDOFF_ACTION_BLURB}"
         ),
     },
     "mode": {
@@ -152,7 +163,7 @@ _PROPERTIES: Dict[str, Any] = {
             "Key combo, e.g. 'cmd+s', 'ctrl+alt+t', 'return', 'escape', 'tab'. Use '+' to combine."
         ),
     },
-    "seconds": {"type": "number", "description": "wait: seconds to pause (max 30). wait_for_human: how long to block for the hand-back (default 600, max 1800)."},
+    "seconds": {"type": "number", "description": f"wait: seconds to pause (max 30).{_HANDOFF_SECONDS_BLURB}"},
     "grace": {"type": "number", "description": "wait_for_human: seconds to wait for someone to take over before returning no_takeover (default 60); once a human holds control the full `seconds` applies."},
     "raise_window": {
         "type": "boolean",
@@ -212,3 +223,23 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
 def get_computer_use_schema() -> Dict[str, Any]:
     """Return the generic OpenAI function-calling schema."""
     return COMPUTER_USE_SCHEMA
+
+
+def schema_for_host(*, bot_desktop_supported: bool) -> Dict[str, Any]:
+    """Live schema for this host. Handoff actions stay on Linux Bot Screen hosts only.
+
+    The module-level ``COMPUTER_USE_SCHEMA`` is the full catalog (tests and docs);
+    this copy is what ``get_tool_definitions`` ships. Host identity is process-stable,
+    so the rewrite does not break per-conversation prompt cache.
+    """
+    if bot_desktop_supported:
+        return COMPUTER_USE_SCHEMA
+    schema = copy.deepcopy(COMPUTER_USE_SCHEMA)
+    props = schema["parameters"]["properties"]
+    action = props["action"]
+    action["enum"] = [name for name in action["enum"] if name not in _HANDOFF_ACTIONS]
+    action["description"] = action["description"].replace(_HANDOFF_ACTION_BLURB, "")
+    props["seconds"]["description"] = props["seconds"]["description"].replace(_HANDOFF_SECONDS_BLURB, "")
+    for name in _HANDOFF_ONLY_PROPERTIES:
+        props.pop(name, None)
+    return schema

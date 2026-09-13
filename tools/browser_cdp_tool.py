@@ -15,6 +15,15 @@ from typing import Any, Dict, Optional
 
 from tools.registry import registry, tool_error
 from tools.browser_extension_router import routed_browser_handler
+from tools.browser_tool_session import (
+    _HUMAN_TOOK_OVER,
+    _admit_bot_desktop_browser,
+    _lease_moved_after_payload,
+    _live_supervisor_for_session,
+    _non_nav_session_key,
+    _session_info_for_routed_cdp,
+    _shared_browser_fence,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +110,16 @@ def _run_async(coro):
     return asyncio.run(coro)
 
 
+def _cdp_override_raw() -> str:
+    """Configured CDP override with no discovery I/O, or \"\"."""
+    try:
+        from tools.browser_tool_cdp import _get_cdp_override_raw
+        return (_get_cdp_override_raw() or "").strip()
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.debug("browser_cdp: failed to read CDP override: %s", exc)
+        return ""
+
+
 def _resolve_cdp_endpoint() -> str:
     """Normalized CDP WebSocket URL via ``browser_tool_cdp._get_cdp_override``, or ""."""
     try:
@@ -155,7 +174,13 @@ def _browser_cdp_private_guard(*, task_id: str, method: str, params: Dict[str, A
             if literal:
                 return _blocked(template.format(literal), method)
         if method not in _CDP_PRIVATE_PAGE_ALLOWED_METHODS:
-            blocked_url = policy._current_page_private_url(task_id)
+            blocked_url, remint = policy._current_page_private_probe(task_id)
+            if remint:
+                return json.dumps({
+                    "success": False,
+                    "error": remint.get("error") or _HUMAN_TOOK_OVER,
+                    "code": remint.get("code") or "human_has_control",
+                })
             if blocked_url:
                 return _blocked(f"Blocked: page URL targets a private or internal address ({blocked_url}). "
                                 f"Raw CDP method {method!r} could expose private page content or state.", method)
@@ -207,14 +232,31 @@ async def _cdp_call(ws_url: str, method: str, params: Dict[str, Any], target_id:
 
 def _browser_cdp_via_supervisor(task_id: str, frame_id: str, method: str, params: Optional[Dict[str, Any]],
                                 timeout: float) -> str:
-    """Route a CDP call through the live supervisor session for an OOPIF frame."""
+    """Route a CDP call through the live supervisor session for an OOPIF frame.
+
+    The supervisor WebSocket is the same Chromium ``browser_eval`` / ``browser_dialog``
+    already fence: a human on the Bot Desktop must not be observed or driven here.
+    User-CDP / cloud supervisors are another browser and stay unfenced.
+    """
+    admitted, refuse = _shared_browser_fence(task_id)
+    if refuse:
+        return json.dumps(refuse)
+    result = _browser_cdp_via_supervisor_unfenced(task_id, frame_id, method, params, timeout)
+    stole = _lease_moved_after_payload(admitted)
+    return json.dumps(stole) if stole else result
+
+
+def _browser_cdp_via_supervisor_unfenced(
+    task_id: str, frame_id: str, method: str, params: Optional[Dict[str, Any]], timeout: float,
+) -> str:
+    """Supervisor CDP after the shared-browser lease has been admitted (or does not apply)."""
     try:
         from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
     except Exception as exc:  # pragma: no cover — defensive
         return tool_error(f"CDP supervisor is not available: {exc}. frame_id routing requires a running "
                           "supervisor attached via /browser connect or an active Browserbase session.")
 
-    supervisor = SUPERVISOR_REGISTRY.get(task_id)
+    supervisor = _live_supervisor_for_session(task_id)
     if supervisor is None:
         return tool_error(f"No CDP supervisor is attached for task={task_id!r}. Call browser_navigate or "
                           "/browser connect first so the supervisor can attach. Once attached, browser_snapshot "
@@ -262,7 +304,7 @@ def browser_cdp(method: str, params: Optional[Dict[str, Any]] = None, target_id:
     WebSocket instead — the only reliable way to evaluate inside an iframe where fresh per-call connections
     hit signed-URL expiry (Browserbase). Both paths share the same private-page/SSRF guard. Returns JSON
     ``{"success": True, "method", "result"}`` or ``{"error": ...}``."""
-    effective_task_id = task_id or "default"
+    effective_task_id = _non_nav_session_key(task_id)
 
     if frame_id:
         blocked = _browser_cdp_private_guard(task_id=effective_task_id, method=method, params=params or {})
@@ -276,11 +318,27 @@ def browser_cdp(method: str, params: Optional[Dict[str, Any]] = None, target_id:
     if not _WS_AVAILABLE:
         return tool_error("The 'websockets' Python package is required but not installed. "
                           "Install it with: pip install websockets")
+    # Admit the *configured* override before ``/json/version``. That discovery
+    # is a DevTools read of leftover dock / real-profile Chrome; scheme-less
+    # ``127.0.0.1:PORT`` is how ``/browser connect`` stores it. Tests that
+    # patch only ``_resolve_cdp_endpoint`` still hit the resolved admit below.
+    raw = _cdp_override_raw()
+    if raw:
+        admitted, refuse = _admit_bot_desktop_browser(_session_info_for_routed_cdp(raw))
+        if refuse:
+            return json.dumps(refuse)
     endpoint = _resolve_cdp_endpoint()
     if not endpoint:
         return tool_error("No CDP endpoint is available. Run '/browser connect' to attach to a running Chrome, "
                           "Brave, Chromium, or Edge browser, or set 'browser.cdp_url' in config.yaml. The Camofox "
                           "backend is REST-only and does not expose CDP.", cdp_docs=CDP_DOCS_URL)
+    # Stateless CDP is usually another browser (user Chrome on 9222, cloud).
+    # Admit before the WS-shape check: leftover real-profile / dock Chrome is
+    # often still scheme-less ``127.0.0.1:PORT`` or HTTP after ``/json/version``
+    # misses. That used to remint as a generic "not a WebSocket URL" error.
+    admitted, refuse = _admit_bot_desktop_browser(_session_info_for_routed_cdp(endpoint))
+    if refuse:
+        return json.dumps(refuse)
     if not endpoint.startswith(("ws://", "wss://")):
         return tool_error(f"CDP endpoint is not a WebSocket URL: {endpoint!r}. Expected ws://... or wss://... — "
                           "the /browser connect resolver should have rewritten this. Check that a Chromium-family "
@@ -301,13 +359,25 @@ def browser_cdp(method: str, params: Optional[Dict[str, Any]] = None, target_id:
     try:
         result = _run_async(_cdp_call(endpoint, method, call_params, target_id, safe_timeout))
     except asyncio.TimeoutError as exc:
+        stole = _lease_moved_after_payload(admitted)
+        if stole:
+            return json.dumps(stole)
         return tool_error(f"CDP call timed out after {safe_timeout}s: {exc}", method=method)
     except (TimeoutError, RuntimeError) as exc:
+        stole = _lease_moved_after_payload(admitted)
+        if stole:
+            return json.dumps(stole)
         return tool_error(str(exc), method=method)
     except WebSocketException as exc:
+        stole = _lease_moved_after_payload(admitted)
+        if stole:
+            return json.dumps(stole)
         return tool_error(f"WebSocket error talking to CDP at {endpoint}: {exc}. The browser may have "
                           "disconnected — try '/browser connect' again.", method=method)
     except Exception as exc:  # pragma: no cover — unexpected
+        stole = _lease_moved_after_payload(admitted)
+        if stole:
+            return json.dumps(stole)
         logger.exception("browser_cdp unexpected error")
         return tool_error(f"Unexpected error: {type(exc).__name__}: {exc}", method=method)
 
@@ -316,6 +386,9 @@ def browser_cdp(method: str, params: Optional[Dict[str, Any]] = None, target_id:
         flagged_paths=_CDP_FLAGGED_BINARY_PATHS.get(method, ()))}
     if target_id:
         payload["target_id"] = target_id
+    stole = _lease_moved_after_payload(admitted)
+    if stole:
+        return json.dumps(stole)
     return json.dumps(payload, ensure_ascii=False)
 
 

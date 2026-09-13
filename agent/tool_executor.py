@@ -789,6 +789,19 @@ def _resolve_sequential_tool_timeout() -> float | None:
 _SEQUENTIAL_DEADLINE_EXEMPT_TOOLS = frozenset({"delegate_task"})
 
 
+def _is_sequential_deadline_exempt(function_name: str, function_args: dict | None = None) -> bool:
+    """Tools whose call supervises its own liveness: no generic sequential deadline.
+
+    ``wait_for_human`` owns a documented 600 s (max 1800 s) lease wait. Under the generic
+    420 s sequential deadline the agent sees ``tool_timeout`` ~180 s early while the
+    worker stays blocked in ``wait_for_release`` — the same orphan-turn class as
+    ``delegate_task``. Other ``computer_use`` actions stay under the deadline.
+    """
+    if function_name in _SEQUENTIAL_DEADLINE_EXEMPT_TOOLS:
+        return True
+    return function_name == "computer_use" and (function_args or {}).get("action") == "wait_for_human"
+
+
 def _abandoned_sequential_result(agent, ref: _ToolCallRef, message: str, result_cls, **outcome) -> _ManagedToolResult:
     """Emit the terminal post_tool_call for a worker the sequential runner gave up on
     (timeout / interrupt) and wrap ``message`` in its marker ``result_cls``."""
@@ -835,7 +848,7 @@ def _run_sequential_tool_execution_middleware(
     """Run one sequential call on a worker thread under the concurrent executor's deadline.
     Interactive tools (``clarify``) own their wait via ``agent.clarify_timeout``; the
     generic deadline would report ``tool_timeout`` while the prompt is still live."""
-    timeout_s = None if function_name in _SEQUENTIAL_DEADLINE_EXEMPT_TOOLS else _resolve_sequential_tool_timeout()
+    timeout_s = None if _is_sequential_deadline_exempt(function_name, function_args) else _resolve_sequential_tool_timeout()
     ref = _ToolCallRef(function_name, function_args, effective_task_id, tool_call_id, middleware_trace)
     kwargs = dict(ref.middleware_kwargs(), execute=execute, scope_block=scope_block, display_index=display_index)
     if function_name in _NEVER_PARALLEL_TOOLS:

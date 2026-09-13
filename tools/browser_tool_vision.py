@@ -3,8 +3,6 @@
 Split out of ``tools/browser_tool.py``. Facade-owned state is read through ``_bt`` (``tools.browser_tool``, resolved per call) — no import cycle.
 """
 
-import os
-import shutil
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -12,6 +10,7 @@ from hermes_cli.config import cfg_get
 from tools.browser_tool_origin import origin as _bt
 from tools import browser_tool_cloud as _cloud
 from tools import browser_tool_lightpanda_fallback as _lp
+from tools import browser_tool_session as _session
 
 
 def _vision_mode_label() -> str:
@@ -21,32 +20,36 @@ def _vision_mode_label() -> str:
 
 def _lightpanda_vision_preroute(
     effective_task_id: str, annotate: bool, screenshot_path: Path,
-) -> Tuple[bool, Optional[str], Path]:
+) -> Tuple[bool, Optional[str], Path, Optional[Dict[str, Any]]]:
     """Capture the vision screenshot via the Chrome fallback when Lightpanda is the engine
-    (it has no graphical renderer). Returns ``(prerouted, fallback_warning, path)``;
-    on fallback failure ``prerouted`` is False and the caller takes the normal
-    screenshot path (forcing Chrome) so the standard fallback metadata still applies."""
+    (it has no graphical renderer). Returns ``(prerouted, fallback_warning, path, remint)``;
+    on a reminted handoff ``remint`` carries ``code: human_has_control`` so the caller
+    does not fail-open to a second screenshot. Other fallback failures leave
+    ``prerouted`` False so the caller takes the normal Chrome screenshot path."""
     engine = _cloud._get_browser_engine()
     if engine != "lightpanda" or not _cloud._should_inject_engine(engine):
-        return False, None, screenshot_path
+        return False, None, screenshot_path, None
     _bt.logger.debug("browser_vision: pre-routing screenshot to Chrome (engine=lightpanda)")
-    screenshot_args = ["--annotate"] if annotate else []
+    screenshot_path = Path(screenshot_path)
+    screenshot_path.parent.mkdir(parents=True, exist_ok=True)
+    # Write onto the tool's destination — the same argv ``_capture_vision_screenshot``
+    # uses. A copy onto a fresh uuid used to leave the fallback original on disk
+    # after a remint unlinked only the copy.
+    screenshot_args = (["--annotate"] if annotate else []) + ["--full", str(screenshot_path)]
     fb_result = _lp._chrome_fallback_screenshot(effective_task_id, screenshot_args, _bt._get_command_timeout())
     fb_result = _lp._annotate_lightpanda_fallback(fb_result, _bt._LP_VISION_FALLBACK_REASON)
+    if fb_result.get("code") == "human_has_control":
+        return False, None, screenshot_path, fb_result
     if not fb_result.get("success"):
         _bt.logger.warning("Lightpanda Chrome fallback vision screenshot failed: %s", fb_result.get("error"))
-        return False, None, screenshot_path
-    fb_path = fb_result.get("data", {}).get("path", "")
-    if fb_path and os.path.exists(fb_path):
-        import uuid as uuid_mod
-        from hermes_constants import get_hermes_dir
-
-        screenshots_dir = get_hermes_dir("cache/screenshots", "browser_screenshots")
-        screenshots_dir.mkdir(parents=True, exist_ok=True)
-        persistent_path = screenshots_dir / f"browser_screenshot_{uuid_mod.uuid4().hex}.png"
-        shutil.copy2(fb_path, persistent_path)
-        screenshot_path = persistent_path
-    return True, fb_result.get("fallback_warning"), screenshot_path
+        return False, None, screenshot_path, None
+    fb_path = (fb_result.get("data") or {}).get("path") or ""
+    if fb_path:
+        _session._adopt_shared_browser_capture(str(fb_path), str(screenshot_path))
+    if not screenshot_path.exists():
+        _bt.logger.warning("Lightpanda Chrome fallback vision screenshot produced no file")
+        return False, None, screenshot_path, None
+    return True, fb_result.get("fallback_warning"), screenshot_path, None
 
 
 def _native_vision_result(
