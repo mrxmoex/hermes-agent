@@ -15,6 +15,11 @@ _listener = None
 _watch_started = False
 _watch_lock = threading.Lock()
 
+# Same cadence as the RFB input gate. A leftover supervisor whose socket is
+# still up only admitted before reconnect; this is how a live read loop /
+# Fetch interceptor notices a cross-process Take over.
+LEASE_POLL_S = 0.25
+
 
 def supervisor_may_touch_page(cdp_url: str = "") -> bool:
     """False when a leftover supervisor must not talk to this Chromium.
@@ -32,6 +37,18 @@ def supervisor_may_touch_page(cdp_url: str = "") -> bool:
         return False
     except Exception:
         return True
+
+
+def request_leftover_stop(supervisor) -> bool:
+    """Mark a leftover dock supervisor to drop the jar. Safe on its own thread.
+
+    Does not ``join()`` — that deadlocks the supervisor loop. Callers close the
+    WebSocket or break the read loop; ``_run`` then exits instead of reconnecting.
+    """
+    if supervisor_may_touch_page(getattr(supervisor, "cdp_url", "") or ""):
+        return False
+    setattr(supervisor, "_stop_requested", True)
+    return True
 
 
 def install_supervisor_lease_hook() -> None:
@@ -66,7 +83,7 @@ def _watch_loop() -> None:
                 stop_reserved_supervisors()
         except Exception:
             pass
-        time.sleep(1.0)
+        time.sleep(LEASE_POLL_S)
 
 
 def stop_reserved_supervisors(home: Optional[str] = None) -> None:

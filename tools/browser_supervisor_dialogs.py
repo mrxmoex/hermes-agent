@@ -187,8 +187,11 @@ class DialogSupervisionMixin:
             return
         if DIALOG_BRIDGE_HOST not in url:
             try:
-                from tools.browser_tool_supervisor_lease import supervisor_may_touch_page
-                if not supervisor_may_touch_page(getattr(self, "cdp_url", "") or ""):
+                from tools.browser_tool_supervisor_lease import request_leftover_stop
+                if request_leftover_stop(self):
+                    closer = getattr(self, "_close_ws", None)
+                    if closer is not None:
+                        await closer()
                     return
             except Exception:
                 pass
@@ -234,18 +237,19 @@ class DialogSupervisionMixin:
         unblocks), else native CDP — ``promptText`` only for prompt dialogs when
         given; raises on CDP failure."""
         try:
-            from tools.bot_desktop.lease import HumanHasControl
-            from tools.browser_tool_session import _admit_shared_browser
-            _admit_shared_browser(cdp_url=getattr(self, "cdp_url", "") or "")
-        except HumanHasControl:
-            # A leftover watchdog / auto-policy must not accept or dismiss on the
-            # page a human is typing into. Closing the WS (lease hook) unblocks a
-            # bridge XHR by failing it closed; do not mutate the page here.
-            logger.info(
-                "CDP supervisor %s: skipping dialog response; a human holds the Bot Desktop lease",
-                getattr(self, "task_id", "?"),
-            )
-            return
+            from tools.browser_tool_supervisor_lease import request_leftover_stop
+            if request_leftover_stop(self):
+                # A leftover watchdog / auto-policy must not accept or dismiss on the
+                # page a human is typing into. Close the WS so a bridge XHR fails
+                # closed; do not mutate the page, and do not join this thread.
+                logger.info(
+                    "CDP supervisor %s: skipping dialog response; a human holds the Bot Desktop lease",
+                    getattr(self, "task_id", "?"),
+                )
+                closer = getattr(self, "_close_ws", None)
+                if closer is not None:
+                    await closer()
+                return
         except Exception:
             pass
         session_id = dialog.cdp_session_id or None

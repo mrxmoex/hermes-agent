@@ -138,6 +138,7 @@ def test_dialog_respond_does_not_talk_to_cdp_while_human_holds(monkeypatch):
     sup = _Sup()
     asyncio.run(sup._respond(dialog, accept=True, prompt_text="SECRET"))
     assert sup.called is False
+    assert getattr(sup, "_stop_requested", False) is True
 
 
 def test_fetch_passthrough_does_not_talk_to_cdp_while_human_holds(monkeypatch):
@@ -166,3 +167,48 @@ def test_fetch_passthrough_does_not_talk_to_cdp_while_human_holds(monkeypatch):
         {"requestId": "r1", "request": {"url": "https://example.com/"}}, session_id="s",
     ))
     assert sup.called is False
+    assert getattr(sup, "_stop_requested", False) is True
+
+
+def test_request_leftover_stop_marks_dock_supervisor_when_human_holds(monkeypatch):
+    """Safe on the supervisor thread: set the flag, never join."""
+    import tools.bot_desktop.browser as bdb
+    from tools.browser_tool_supervisor_lease import request_leftover_stop
+
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: 9333)
+    dock = MagicMock()
+    dock.cdp_url = "ws://127.0.0.1:9333/devtools/browser/x"
+    dock._stop_requested = False
+    remote = MagicMock()
+    remote.cdp_url = "wss://browserbase.example/cdp"
+    remote._stop_requested = False
+    lease.acquire("human-viewer")
+    assert request_leftover_stop(dock) is True
+    assert dock._stop_requested is True
+    assert request_leftover_stop(remote) is False
+    assert remote._stop_requested is False
+    lease.release("human-viewer")
+    dock._stop_requested = False
+    assert request_leftover_stop(dock) is False
+    assert dock._stop_requested is False
+
+
+def test_read_loop_detaches_live_socket_when_human_holds(monkeypatch):
+    """Reconnect admit is not enough — a still-up leftover WS must drop on the next frame."""
+    import tools.bot_desktop.browser as bdb
+    from tools.browser_supervisor import CDPSupervisor
+
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: 9333)
+
+    class _WS:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            return '{"method":"Page.frameNavigated","params":{}}'
+
+    sup = CDPSupervisor(task_id="review", cdp_url="ws://127.0.0.1:9333/devtools/browser/x")
+    sup._ws = _WS()
+    lease.acquire("human-viewer")
+    asyncio.run(sup._read_loop())
+    assert sup._stop_requested is True

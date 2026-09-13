@@ -446,9 +446,26 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         """Continuously dispatch incoming CDP frames (responses → futures, events → handlers)."""
         assert self._ws is not None
         try:
+            from tools.browser_tool_supervisor_lease import LEASE_POLL_S, request_leftover_stop
+        except Exception:
+            LEASE_POLL_S, request_leftover_stop = 0.25, None
+        last_lease_check = 0.0
+        try:
             async for raw in self._ws:
                 if self._stop_requested:
                     break
+                now = time.monotonic()
+                if request_leftover_stop is not None and now - last_lease_check >= LEASE_POLL_S:
+                    last_lease_check = now
+                    try:
+                        if request_leftover_stop(self):
+                            logger.info(
+                                "CDP supervisor %s: detaching; a human holds the Bot Desktop lease",
+                                self.task_id,
+                            )
+                            break
+                    except Exception:
+                        pass
                 try:
                     msg = json.loads(raw)
                 except Exception:
