@@ -282,3 +282,57 @@ def test_profile_mode_blocks_root_credentials(tmp_path, monkeypatch):
     root_tok.parent.mkdir(parents=True, exist_ok=True)
     root_tok.write_text("x")
     assert "MCP token" in (get_read_block_error(str(root_tok)) or "")
+
+
+def test_bot_desktop_cookie_jar_blocked(fake_home):
+    """bot-desktop/ is the Bot Screen cookie jar + X cookie + lease.
+
+    ``browser-profile/`` at the HERMES_HOME root is already denied; the
+    screen moved that jar under ``bot-desktop/browser-profile/``, which
+    the root-only prefix miss. Defense-in-depth (terminal can still
+    cat); not a lease-gated computer_use fence.
+    """
+    from agent.file_safety import get_read_block_error
+
+    cookies = _create(fake_home, Path("bot-desktop") / "browser-profile" / "Default" / "Cookies")
+    lease = _create(fake_home, Path("bot-desktop") / "lease.json")
+    xauth = _create(fake_home, Path("bot-desktop") / "Xauthority")
+    port = _create(fake_home, Path("bot-desktop") / "dock-cdp-port")
+
+    for path in (cookies, lease, xauth, port, fake_home / "bot-desktop"):
+        err = get_read_block_error(str(path))
+        assert err is not None, path
+        assert "Bot Desktop" in err
+
+
+def test_bot_desktop_outside_home_not_blocked(fake_home, tmp_path):
+    """A project directory named bot-desktop is not the screen runtime."""
+    from agent.file_safety import get_read_block_error
+
+    project = tmp_path / "myproject" / "bot-desktop" / "notes.txt"
+    project.parent.mkdir(parents=True)
+    project.write_text("not a cookie jar", encoding="utf-8")
+    assert get_read_block_error(str(project)) is None
+
+
+def test_profile_mode_blocks_root_and_profile_bot_desktop(tmp_path, monkeypatch):
+    """Named-profile turns must still miss the launch home's cookie jar."""
+    import agent.file_safety as fs
+
+    root = tmp_path / "hermes"
+    profile = root / "profiles" / "coder"
+    profile.mkdir(parents=True)
+    monkeypatch.setattr(fs, "_hermes_home_path", lambda: profile)
+    monkeypatch.setattr(fs, "_hermes_root_path", lambda: root)
+
+    from agent.file_safety import get_read_block_error
+
+    profile_cookies = profile / "bot-desktop" / "browser-profile" / "Default" / "Cookies"
+    profile_cookies.parent.mkdir(parents=True)
+    profile_cookies.write_bytes(b"jar")
+    root_cookies = root / "bot-desktop" / "browser-profile" / "Default" / "Cookies"
+    root_cookies.parent.mkdir(parents=True)
+    root_cookies.write_bytes(b"jar")
+
+    assert "Bot Desktop" in (get_read_block_error(str(profile_cookies)) or "")
+    assert "Bot Desktop" in (get_read_block_error(str(root_cookies)) or "")

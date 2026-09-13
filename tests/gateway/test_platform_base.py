@@ -697,6 +697,9 @@ class TestMediaDeliveryDefaultMode:
 
         denied = ["state.db", "state.db-wal", "state.db-shm", "kanban.db", "kanban.db-wal",
                   "sessions/20260101_abc.json", "browser-profile/Default/Cookies",
+                  "bot-desktop/browser-profile/Default/Cookies",
+                  "bot-desktop/lease.json", "bot-desktop/Xauthority",
+                  "bot-desktop/dock-cdp-port",
                   "kanban/boards/team-a/kanban.db", "kanban/boards/team-a/kanban.db-wal"]
         allowed = ["kanban/boards/team-a/attachments/report.pdf", "adhoc_report.pdf", "logs/agent.log"]
         for rel in denied + allowed:
@@ -722,7 +725,9 @@ class TestMediaDeliveryDefaultMode:
         monkeypatch.setattr("gateway.platforms.base._HERMES_ROOT", hermes_root)
 
         denied = [".env", "auth.json", "state.db", "state.db-wal", "config.yaml",
-                  "sessions/20260101_abc.json", "mcp-tokens/server.json"]
+                  "sessions/20260101_abc.json", "mcp-tokens/server.json",
+                  "bot-desktop/browser-profile/Default/Cookies",
+                  "bot-desktop/lease.json"]
         allowed = ["cache/images/gen.png", "report.pdf"]
         for rel in denied + allowed:
             path = profile_b / rel

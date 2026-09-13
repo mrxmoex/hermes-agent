@@ -75,7 +75,11 @@ _SENSITIVE_MANAGED_FILE_BASENAMES = frozenset({
 # match). The browser can descend into subdirs, so a basename-only guard would
 # still expose ``mcp-tokens/<server>.json``; match on ANY path component so the
 # trees are blocked wherever they sit under the root, no HERMES_HOME resolution.
-_SENSITIVE_MANAGED_DIR_NAMES = frozenset({"mcp-tokens", "pairing"})
+# bot-desktop/ is the Bot Screen cookie jar + Xauthority + lease + dock-cdp-port.
+# The managed-files / workspace-FS APIs already deny mcp-tokens/ and pairing/ as
+# trees; without this name the dashboard can download ~/.hermes/bot-desktop/...
+# the same way export/backup used to ship it.
+_SENSITIVE_MANAGED_DIR_NAMES = frozenset({"mcp-tokens", "pairing", "bot-desktop"})
 
 
 def _is_sensitive_filename(name: str) -> bool:

@@ -204,6 +204,10 @@ _CREDENTIAL_FILE_NAMES = (
 # Directory-prefix read denies under HERMES_HOME / <root>: (subdir, message for
 # the directory itself, message for a file inside). browser-profile/ is a copy
 # of the user's Cookies / Login Data — the same credential class as auth.json.
+# bot-desktop/ is the Bot Screen runtime: the live Chromium jar (Cookies,
+# Login Data), Xauthority, lease.json, dock-cdp-port. Defense-in-depth only —
+# the terminal tool can still read it (same-UID); this is NOT a lease-gated
+# computer_use fence.
 _READ_DENIED_DIRS = (
     ("mcp-tokens",
      "is the Hermes MCP token directory and cannot be read directly.",
@@ -211,6 +215,9 @@ _READ_DENIED_DIRS = (
     ("browser-profile",
      "is the Hermes real-profile browser snapshot directory (copied cookies/logins) and cannot be read directly.",
      "is inside the Hermes real-profile browser snapshot (copied cookies/logins) and cannot be read directly."),
+    ("bot-desktop",
+     "is the Hermes Bot Desktop runtime directory (cookie jar, X cookie, lease) and cannot be read directly.",
+     "is inside the Hermes Bot Desktop runtime (cookie jar, X cookie, lease) and cannot be read directly."),
     # vault.key + vault.json.enc sit side by side; key + ciphertext = plaintext, so the whole dir is one credential.
     ("vault",
      "is the Hermes credential vault directory and cannot be read directly (secrets are filled server-side by browser_vault_fill).",
@@ -223,7 +230,7 @@ def get_read_block_error(path: str) -> Optional[str]:
 
     Blocked: internal skill-hub caches (prompt-injection carriers), credential
     stores under HERMES_HOME and the global root (exact files, plus anything
-    under ``mcp-tokens/`` and ``browser-profile/``), and project-local ``.env``
+    under ``mcp-tokens/``, ``browser-profile/``, and ``bot-desktop/``), and project-local ``.env``
     files anywhere on disk (``.env.example`` is the documented-shape substitute).
 
     Callers that resolve relative paths against a non-process cwd (e.g.

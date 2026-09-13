@@ -792,7 +792,12 @@ _ROOT_CREDENTIAL_PATHS = (
     # Whole conversation history (every secret ever pasted into a chat) and the copied browser
     # cookie/login store; sessions/ is the legacy transcript dir. SQLite sidecars are listed
     # too: WAL mode touches state.db-wal on every write, so recency trust alone would leak them.
-    "sessions", "browser-profile", *_sqlite_files("state.db"), *_sqlite_files("kanban.db"))
+    # bot-desktop/ is the screen's live Chromium jar (Cookies, Login Data), Xauthority,
+    # lease.json, and dock-cdp-port — same credential class as browser-profile/, just
+    # relocated. MEDIA:~/.hermes/bot-desktop/browser-profile/Default/Cookies must not
+    # ship because the denylist still only named the old snapshot directory.
+    "sessions", "browser-profile", "bot-desktop",
+    *_sqlite_files("state.db"), *_sqlite_files("kanban.db"))
 
 
 def _profile_cache_roots() -> List[Path]:

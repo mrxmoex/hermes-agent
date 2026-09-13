@@ -77,6 +77,23 @@ def test_fs_download_rejects_sensitive_files(client, tmp_path):
     assert response.status_code == 403
 
 
+def test_fs_download_rejects_bot_desktop_cookie_jar(client, tmp_path):
+    """Workspace FS accepts absolute paths. bot-desktop/ is the screen's
+    cookie jar + X cookie + lease — same class as .env, not a lease-gated
+    terminal fence."""
+    cookies = tmp_path / "bot-desktop" / "browser-profile" / "Default" / "Cookies"
+    cookies.parent.mkdir(parents=True)
+    cookies.write_bytes(b"stolen-cookies")
+    lease = tmp_path / "bot-desktop" / "lease.json"
+    lease.write_text('{"holder":"human"}\n')
+
+    for target in (cookies, lease):
+        download = client.get("/api/fs/download", params={"path": str(target)})
+        assert download.status_code == 403, target
+        preview = client.get("/api/fs/read-data-url", params={"path": str(target)})
+        assert preview.status_code == 403, target
+
+
 def test_fs_endpoints_require_auth(tmp_path):
     client = TestClient(web_server.app)
     target = tmp_path / "secret.txt"
