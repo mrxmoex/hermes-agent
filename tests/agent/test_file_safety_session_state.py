@@ -61,3 +61,40 @@ def test_write_file_tool_preserves_existing_session_snapshot(fake_homes):
 
     assert "error" in result
     assert target.read_text(encoding="utf-8") == "original transcript"
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "bot-desktop/lease.json",
+        "bot-desktop/dock-cdp-port",
+        "bot-desktop/browser-profile/Default/Cookies",
+        "bot-desktop/Xauthority",
+    ],
+)
+def test_bot_desktop_runtime_is_write_denied(fake_homes, relative):
+    """write_file of lease.json would flip holder=agent mid-login."""
+    from agent.file_safety import is_write_denied
+
+    root, profile = fake_homes
+    for base in (profile, root):
+        target = base / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("existing", encoding="utf-8")
+        assert is_write_denied(str(target)) is True, target
+
+
+def test_write_file_tool_cannot_forge_a_human_lease_release(fake_homes):
+    """The lease is acquire/release, not a JSON file the agent may rewrite."""
+    import tools.file_tools as ft
+
+    _root, profile = fake_homes
+    target = profile / "bot-desktop" / "lease.json"
+    target.parent.mkdir(parents=True)
+    original = '{"holder":"human","viewer_id":"alice","epoch":9}\n'
+    target.write_text(original, encoding="utf-8")
+
+    result = json.loads(ft.write_file_tool(str(target), '{"holder":"agent","epoch":10}\n'))
+
+    assert "error" in result
+    assert target.read_text(encoding="utf-8") == original

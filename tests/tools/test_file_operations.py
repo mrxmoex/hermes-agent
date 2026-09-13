@@ -94,6 +94,20 @@ class TestIsWriteDenied:
         assert _is_write_denied(str(root / "pairing" / "telegram-approved.json")) is True
         assert _is_write_denied(str(root / "pairing")) is True
 
+    def test_bot_desktop_dir_denied(self, tmp_path, monkeypatch):
+        """bot-desktop/ holds lease.json + the cookie jar. Rewriting the lease
+        via write_file would return control to the agent while a human is
+        mid-login — the same class as forging pairing/ or sessions/."""
+        root = tmp_path / "hermes"
+        profile = root / "profiles" / "coder"
+        profile.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(profile))
+
+        assert _is_write_denied(str(profile / "bot-desktop" / "lease.json")) is True
+        assert _is_write_denied(str(profile / "bot-desktop")) is True
+        assert _is_write_denied(str(root / "bot-desktop" / "dock-cdp-port")) is True
+        assert _is_write_denied(str(root / "bot-desktop")) is True
+
 
 # =========================================================================
 # Result dataclasses

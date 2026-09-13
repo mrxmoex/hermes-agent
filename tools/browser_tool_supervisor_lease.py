@@ -137,12 +137,19 @@ def install_supervisor_lease_hook() -> None:
 
 
 def _watch_once() -> None:
-    """Detach leftover supervisors on every served profile whose human holds.
+    """Detach leftover supervisors and stop reserved WebMs when a human holds.
 
     Must not pre-filter on the launch home's ``human_holds()`` — a sibling
-    bot's Take over writes a different ``lease.json``.
+    bot's Take over writes a different ``lease.json``. Cross-process Take
+    over (Desktop ``display.lease.acquire`` in ``hermes serve``) does not
+    fire this process's ``on_change``; the 0.25s poll is how a WebM
+    started here notices that write. The janitor's 1s scan is the backup.
     """
-    stop_reserved_supervisors()
+    try:
+        from tools.browser_tool_lifecycle import _stop_reserved_recordings
+        _stop_reserved_recordings()
+    except Exception:
+        stop_reserved_supervisors()
 
 
 def _watch_loop() -> None:

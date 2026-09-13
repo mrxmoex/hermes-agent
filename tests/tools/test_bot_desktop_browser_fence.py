@@ -410,6 +410,33 @@ def test_reserved_recording_stops_while_session_is_still_active(monkeypatch):
         _restore_session_state(bt, saved)
 
 
+def test_watch_once_stops_recording_after_cross_process_lease_write(monkeypatch):
+    """Desktop Take over writes lease.json from hermes serve. This process
+    does not get on_change; the 0.25s supervisor watch must stop the WebM
+    without waiting for the janitor's 1s scan.
+    """
+    from tools import browser_tool_supervisor_lease as sl
+    from tools.bot_desktop import lease as bd_lease
+
+    bt, saved = _session_state()
+    stopped: list = []
+    monkeypatch.setattr(bt, "_maybe_stop_recording", lambda tid: stopped.append(tid) or bt._recording_sessions.discard(tid))
+    try:
+        for name in saved:
+            getattr(bt, name).clear()
+        bt._active_sessions["review"] = {"session_name": "h_review", "features": {"local": True}}
+        bt._recording_sessions.add("review")
+        # Other process: write HUMAN to disk, do not notify this process.
+        path = bd_lease._path(None)
+        bd_lease._write(path, bd_lease.Lease(holder=bd_lease.HUMAN, viewer_id="other-host", epoch=9))
+        sl._watch_once()
+        assert "review" in stopped
+        assert "review" not in bt._recording_sessions
+    finally:
+        bt._recording_sessions.clear()
+        _restore_session_state(bt, saved)
+
+
 def test_in_process_acquire_stops_recording_via_lease_hook(monkeypatch):
     """display.lease.acquire writes HUMAN in this process; the WebM must stop then, not on the next tool call."""
     from tools import browser_tool as bt

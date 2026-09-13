@@ -130,7 +130,12 @@ def build_write_approval_paths(home: str) -> set[str]:
 # rewrite. Session transcripts (state.db, sessions/) are application-owned
 # state whose rewrite can falsify history and break resume/compression;
 # mcp-tokens/ and pairing/ hold credential material.
-_HERMES_PROTECTED_SUBPATHS = ("state.db", "sessions", "mcp-tokens", "pairing")
+# bot-desktop/ is the screen lease + cookie jar + X cookie + dock-cdp-port.
+# write_file of lease.json would flip holder=agent while a human is mid-login
+# (bypassing acquire/release). write of dock-cdp-port fail-opens leftover CDP.
+# Defense-in-depth — terminal can still write (same-UID); this is NOT a
+# lease-gated computer_use fence.
+_HERMES_PROTECTED_SUBPATHS = ("state.db", "sessions", "mcp-tokens", "pairing", "bot-desktop")
 
 
 def _classify_write_denial(path: str) -> Optional[str]:
