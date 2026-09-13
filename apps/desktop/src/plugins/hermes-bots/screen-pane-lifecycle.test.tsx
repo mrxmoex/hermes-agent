@@ -193,6 +193,27 @@ it('does not hand back while replacing a stream to reconnect the same viewer', a
   view.unmount()
 })
 
+it('asks observe to keep the minted viewer id so a same-connection reconnect does not remint', async () => {
+  vi.mocked(displayRequest).mockImplementation(async (_bot, method, params = {}) => {
+    if (method === 'display.observe') {
+      const requested = typeof params.viewer_id === 'string' && params.viewer_id ? params.viewer_id : 'this-viewer'
+
+      return { ...status, ticket: 't', viewer_id: requested }
+    }
+
+    return { ...status }
+  })
+
+  const view = render(<BotScreenPane bot={bot} />)
+  await waitFor(() => expect(sockets).toHaveLength(1))
+  await act(async () => {})
+  fireEvent.click(view.getByTitle('Reconnect'))
+  await waitFor(() => expect(sockets).toHaveLength(2))
+  expect(vi.mocked(displayRequest)).toHaveBeenCalledWith(bot, 'display.observe', { viewer_id: 'this-viewer' })
+  expect(vi.mocked(displayRequest)).not.toHaveBeenCalledWith(bot, 'display.lease.acquire', expect.anything())
+  view.unmount()
+})
+
 it('transfers the lease onto the reminted viewer id when reconnecting while holding', async () => {
   let observes = 0
   vi.mocked(displayRequest).mockImplementation(async (_bot, method, params = {}) => {
@@ -214,6 +235,7 @@ it('transfers the lease onto the reminted viewer id when reconnecting while hold
   await act(async () => {})
   fireEvent.click(view.getByTitle('Reconnect'))
   await waitFor(() => expect(sockets).toHaveLength(2))
+  expect(vi.mocked(displayRequest)).toHaveBeenCalledWith(bot, 'display.observe', { viewer_id: 'this-viewer' })
   expect(vi.mocked(displayRequest)).toHaveBeenCalledWith(bot, 'display.lease.acquire', { viewer_id: 'this-viewer-2' })
   view.unmount()
 })

@@ -139,7 +139,11 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
       }
 
       retention.current = retain
-      const observe = await displayRequest<DisplayObserveResult>(bot, 'display.observe')
+      // Pass the id this connection already minted so observe can keep it
+      // (and the lease). A reload or a new transport still gets a fresh id.
+      const observe = await displayRequest<DisplayObserveResult>(bot, 'display.observe', {
+        viewer_id: prior?.viewer?.id ?? ''
+      })
       if (generation !== attachGeneration.current) {
         return
       }
@@ -148,7 +152,12 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
       setScreenStatus(bot, observe)
       // Last-writer-wins acquire would steal from a viewer who took over
       // during this reconnect. Transfer only while OUR old id still holds.
-      if (heldBefore && observe.viewer_id && leaseHeldBy(observe.lease, prior?.viewer ?? null)) {
+      if (
+        heldBefore &&
+        observe.viewer_id &&
+        observe.viewer_id !== prior?.viewer?.id &&
+        leaseHeldBy(observe.lease, prior?.viewer ?? null)
+      ) {
         const transferred = await displayRequest<{ lease: DisplayLease }>(bot, 'display.lease.acquire', {
           viewer_id: observe.viewer_id
         })
