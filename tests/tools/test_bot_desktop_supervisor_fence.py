@@ -12,10 +12,13 @@ from tools.bot_desktop import lease, runtime
 
 @pytest.fixture(autouse=True)
 def _fresh(monkeypatch):
+    from tools.browser_tool_session import _reset_dock_port_memory_for_tests
     lease._reset_for_tests()
+    _reset_dock_port_memory_for_tests()
     monkeypatch.setattr(runtime, "published_env", lambda: {"DISPLAY": ":37"})
     yield
     lease._reset_for_tests()
+    _reset_dock_port_memory_for_tests()
 
 
 def test_ensure_cdp_supervisor_does_not_attach_to_dock_while_human_holds(monkeypatch):
@@ -346,7 +349,8 @@ def test_minted_dock_identity_survives_a_missing_devtools_port(monkeypatch):
     assert sup.targets_bot_desktop is True
     monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: None)
     lease.acquire("human-viewer")
-    assert supervisor_may_touch_page(sup.cdp_url) is True
+    # Mint remembered the dock port; a live DevTools miss must not unfence it.
+    assert supervisor_may_touch_page(sup.cdp_url) is False
     assert supervisor_may_touch_page(
         sup.cdp_url, home=sup.hermes_home, targets_bot_desktop=True,
     ) is False

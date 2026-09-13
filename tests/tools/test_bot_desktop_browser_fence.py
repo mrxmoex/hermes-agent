@@ -12,10 +12,13 @@ from tools.bot_desktop import lease, runtime
 
 @pytest.fixture(autouse=True)
 def _fresh(monkeypatch):
+    from tools.browser_tool_session import _reset_dock_port_memory_for_tests
     lease._reset_for_tests()
+    _reset_dock_port_memory_for_tests()
     monkeypatch.setattr(runtime, "published_env", lambda: {"DISPLAY": ":37"})
     yield
     lease._reset_for_tests()
+    _reset_dock_port_memory_for_tests()
 
 
 def _wire(monkeypatch, commands):
@@ -727,6 +730,52 @@ def test_browser_cdp_does_not_resolve_dock_endpoint_while_human_holds(monkeypatc
 
     probed = []
     monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: 9333)
+    monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override_raw", lambda: "http://127.0.0.1:9333")
+    monkeypatch.setattr(cdp, "_resolve_cdp_endpoint", lambda: probed.append("http") or "ws://127.0.0.1:9333/devtools/browser/x")
+    monkeypatch.setattr(cdp, "_WS_AVAILABLE", True)
+    monkeypatch.setattr(cdp, "_run_async", lambda *_a, **_k: {"data": "SECRET"})
+    lease.acquire("human-viewer")
+    out = json.loads(cdp.browser_cdp("Target.getTargets", {}))
+    assert out.get("code") == "human_has_control"
+    assert probed == []
+    assert "SECRET" not in json.dumps(out)
+
+
+def test_remembered_dock_port_still_fences_when_devtools_file_is_gone(monkeypatch):
+    """A live DevTools miss must not treat the port we already saw as another Chrome."""
+    import tools.bot_desktop.browser as bdb
+    from tools.bot_desktop.lease import HumanHasControl
+    from tools.browser_tool_session import (
+        _admit_shared_browser,
+        _cdp_url_is_bot_desktop_browser,
+        _refuse_shared_session_while_human_holds,
+    )
+
+    dock = "ws://127.0.0.1:9333/devtools/browser/x"
+    other = "ws://127.0.0.1:9222/devtools/browser/x"
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: 9333)
+    assert _cdp_url_is_bot_desktop_browser(dock) is True
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: None)
+    lease.acquire("human-viewer")
+    assert _cdp_url_is_bot_desktop_browser(dock) is True
+    assert _cdp_url_is_bot_desktop_browser(other) is False
+    with pytest.raises(HumanHasControl):
+        _admit_shared_browser(cdp_url=dock)
+    with pytest.raises(HumanHasControl):
+        _refuse_shared_session_while_human_holds(cdp_url="http://127.0.0.1:9333")
+    assert _admit_shared_browser(cdp_url=other) is None
+
+
+def test_browser_cdp_remembers_dock_port_when_devtools_file_is_gone(monkeypatch):
+    """browser_cdp must not HTTP-probe the remembered dock after the port file vanishes."""
+    import tools.bot_desktop.browser as bdb
+    from tools import browser_cdp_tool as cdp
+    from tools.browser_tool_session import _cdp_url_is_bot_desktop_browser
+
+    probed = []
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: 9333)
+    assert _cdp_url_is_bot_desktop_browser("http://127.0.0.1:9333") is True
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: None)
     monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override_raw", lambda: "http://127.0.0.1:9333")
     monkeypatch.setattr(cdp, "_resolve_cdp_endpoint", lambda: probed.append("http") or "ws://127.0.0.1:9333/devtools/browser/x")
     monkeypatch.setattr(cdp, "_WS_AVAILABLE", True)

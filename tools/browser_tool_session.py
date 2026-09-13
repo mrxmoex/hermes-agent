@@ -672,6 +672,17 @@ def _loopback_cdp_port(url: str) -> Optional[int]:
     return port if port is not None and 1 <= port <= 65535 else None
 
 
+# Last live dock DevTools port per profile. Take over can unlink
+# DevToolsActivePort / SingletonLock while Chromium is still the jar the
+# human is typing into; a live miss must not treat that remembered port as
+# "another browser". A different loopback port stays another Chrome.
+_last_dock_cdp_port: Dict[str, int] = {}
+
+
+def _reset_dock_port_memory_for_tests() -> None:
+    _last_dock_cdp_port.clear()
+
+
 def _cdp_url_is_bot_desktop_browser(cdp_url: str) -> bool:
     """True when ``cdp_url`` is this profile's live Bot Desktop Chromium.
 
@@ -683,9 +694,15 @@ def _cdp_url_is_bot_desktop_browser(cdp_url: str) -> bool:
     want = _loopback_cdp_port(cdp_url)
     if want is None:
         return False
+    from hermes_constants import hermes_home_key
     from tools.bot_desktop import browser as _bd_browser
     live = _bd_browser.running_instance_cdp_port(str(_bd_browser.profile_dir()))
-    return live is not None and live == want
+    key = hermes_home_key()
+    if live is not None:
+        _last_dock_cdp_port[key] = live
+        return live == want
+    remembered = _last_dock_cdp_port.get(key)
+    return remembered is not None and remembered == want
 
 
 _LEASE_MOVED_ERROR = (
