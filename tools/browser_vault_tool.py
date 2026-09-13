@@ -44,6 +44,18 @@ def _json_if_lease_moved(admitted) -> Optional[str]:
     stole = _discard_if_lease_moved(admitted)
     return json.dumps(stole) if stole else None
 
+
+def _with_handoff_code(payload: Dict[str, Any], source: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Copy ``code: human_has_control`` from a fenced result onto a vault payload.
+
+    Inspect/fill wrappers used to rebuild ``{success: False, error}`` and drop
+    the machine-readable handoff code (same class as browser_type / CLI eval).
+    """
+    if source and source.get("code") and "code" not in payload:
+        payload = dict(payload)
+        payload["code"] = source["code"]
+    return payload
+
 logger = logging.getLogger(__name__)
 
 
@@ -100,7 +112,8 @@ def _eval_js(task_id: str, expression: str) -> Dict[str, Any]:
         effective = _last_session_key(task_id)
         result = _run_browser_command(effective, "eval", [expression])
         if not result.get("success"):
-            return {"success": False, "error": result.get("error", "eval failed")}
+            out = {"success": False, "error": result.get("error", "eval failed")}
+            return _with_handoff_code(out, result)
         return {"success": True, "result": result.get("data", {}).get("result")}
 
     return _bracket_bot_desktop_browser(_session_info_for_shared_browser_fence(task_id), _run)
@@ -443,7 +456,10 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
     if moved:
         return moved
     if not result.get("success"):
-        return json.dumps({"success": False, "error": str(result.get("error") or "fill failed")[:200]})
+        return json.dumps(_with_handoff_code(
+            {"success": False, "error": str(result.get("error") or "fill failed")[:200]},
+            result,
+        ))
     parsed = _parse_json_result(result.get("result"))
     if isinstance(parsed, str):
         parsed = _parse_json_result(parsed)
@@ -540,9 +556,10 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
     if moved:
         return moved
     if not inspect.get("success"):
-        return json.dumps(
-            {"success": False, "error": f"Could not inspect page inputs: {inspect.get('error', 'eval failed')}"}
-        )
+        return json.dumps(_with_handoff_code(
+            {"success": False, "error": f"Could not inspect page inputs: {inspect.get('error', 'eval failed')}"},
+            inspect,
+        ))
     raw_controls = _parse_json_result(inspect.get("result"))
     if isinstance(raw_controls, str):
         raw_controls = _parse_json_result(raw_controls)
@@ -604,7 +621,7 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
         out = {"success": False, "error": err}
         if fill_result.get("error_type"):
             out["error_type"] = fill_result["error_type"]
-        return json.dumps(out)
+        return json.dumps(_with_handoff_code(out, fill_result))
 
     parsed = _parse_json_result(fill_result.get("result"))
     if isinstance(parsed, str):
