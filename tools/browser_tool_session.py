@@ -4,10 +4,13 @@
 Split out of ``tools/browser_tool.py``. Facade-owned state is read through ``_bt`` (``tools.browser_tool``, resolved per call) — no import cycle.
 """
 
+import contextlib
 import json
 import logging
 import os
+import re
 import shutil
+import signal
 import subprocess
 import threading
 import uuid
@@ -691,6 +694,7 @@ _last_dock_cdp_port: Dict[str, int] = {}
 def _reset_dock_port_memory_for_tests() -> None:
     _last_dock_cdp_port.clear()
     _reset_inflight_dock_cli_for_tests()
+    _reset_reserved_dock_harness_for_tests()
     try:
         from tools.bot_desktop import browser as _bd_browser
         _bd_browser._dock_port_path().unlink(missing_ok=True)
@@ -792,6 +796,208 @@ def interrupt_reserved_browser_cli(home: Optional[str] = None) -> None:
                 proc.kill()
         except Exception:
             _bt.logger.debug("reserved browser CLI interrupt failed", exc_info=True)
+
+
+_HARNESS_NAME_RE = re.compile(r"\A[A-Za-z0-9_-]{1,64}\Z")
+_reserved_dock_harness_lock = threading.Lock()
+_reserved_dock_harness: list[dict] = []
+
+
+def register_reserved_dock_harness(
+    name: str,
+    home: Optional[str] = None,
+    *,
+    pid: Optional[int] = None,
+    kill: Optional[Callable] = None,
+) -> None:
+    """Remember a browser-use harness daemon aimed at this profile's dock Chromium.
+
+    The CLI process-group kill (finding 42) does not reach this daemon: it
+    ``start_new_session``s out of the CLI, then stays CDP-connected after the
+    command returns. Take over must drop that leftover client — same class as
+    attach-only agent-browser (finding 40) — without tree-killing Chromium.
+    """
+    from hermes_constants import hermes_home_key
+    from tools.browser_tool_supervisor_lease import install_supervisor_lease_hook
+
+    if not name or not _HARNESS_NAME_RE.match(name):
+        return
+    install_supervisor_lease_hook()
+    owner = str(home) if home else ""
+    owner_key = hermes_home_key(owner or None)
+    with _reserved_dock_harness_lock:
+        for entry in _reserved_dock_harness:
+            if entry.get("name") == name and entry.get("home_key") == owner_key:
+                if pid is not None:
+                    entry["pid"] = pid
+                if kill is not None:
+                    entry["kill"] = kill
+                return
+        _reserved_dock_harness.append({
+            "name": name,
+            "home": owner or None,
+            "home_key": owner_key,
+            "pid": pid,
+            "kill": kill,
+        })
+
+
+def refresh_reserved_dock_harness_pid(name: str, home: Optional[str] = None) -> Optional[int]:
+    """Resolve and store the live harness PID for a registered dock leftover."""
+    from hermes_constants import hermes_home_key
+
+    owner_key = hermes_home_key(home) if home is not None else hermes_home_key()
+    with _reserved_dock_harness_lock:
+        for entry in _reserved_dock_harness:
+            if entry.get("name") != name or entry.get("home_key") != owner_key:
+                continue
+            pid = entry.get("pid") or _resolve_harness_daemon_pid(name)
+            if pid:
+                entry["pid"] = pid
+            return pid
+    return None
+
+
+def _reset_reserved_dock_harness_for_tests() -> None:
+    with _reserved_dock_harness_lock:
+        _reserved_dock_harness.clear()
+
+
+def _harness_pid_file_candidates(name: str) -> List[Path]:
+    """Pid files the vendor daemon writes. Isolated ``bu.pid`` only when a runtime dir is set."""
+    if not name or not _HARNESS_NAME_RE.match(name):
+        return []
+    dirs: list[Path] = []
+    isolated = os.environ.get("BH_RUNTIME_DIR") or os.environ.get("BH_TMP_DIR")
+    if isolated:
+        dirs.append(Path(isolated))
+    dirs.append(Path("/tmp") if os.name != "nt" else Path(os.environ.get("TEMP") or os.environ.get("TMP") or "/tmp"))
+    try:
+        import tempfile
+        tmp = Path(tempfile.gettempdir())
+        if tmp not in dirs:
+            dirs.append(tmp)
+    except Exception:
+        pass
+    xdg = Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config")) / "browser-harness" / "runtime"
+    dirs.append(xdg)
+    for key in ("BH_HOME", "BROWSER_HARNESS_HOME"):
+        raw = os.environ.get(key)
+        if raw:
+            dirs.append(Path(raw) / "runtime")
+    stems = [f"bu-{name}", name]
+    if isolated:
+        stems.append("bu")
+    out: list[Path] = []
+    seen = set()
+    for directory in dirs:
+        for stem in stems:
+            path = directory / f"{stem}.pid"
+            key = str(path)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(path)
+    return out
+
+
+def _resolve_harness_daemon_pid(name: str) -> Optional[int]:
+    """Live harness PID for ``BU_NAME``, or None. Never trusts an unverified pid file."""
+    if not name or not _HARNESS_NAME_RE.match(name):
+        return None
+    try:
+        from browser_harness import _ipc as _bipc
+        pid = _bipc.identify(name)
+        if type(pid) is int and 0 < pid < (1 << 31) and _verify_harness_daemon(pid):
+            return pid
+    except Exception:
+        pass
+    for path in _harness_pid_file_candidates(name):
+        try:
+            pid = int(path.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            continue
+        if type(pid) is int and 0 < pid < (1 << 31) and _verify_harness_daemon(pid):
+            return pid
+    return None
+
+
+def _verify_harness_daemon(pid: int) -> bool:
+    """True when ``pid`` is a browser-harness daemon, not a recycled/planted number."""
+    try:
+        import psutil
+    except ImportError:
+        return False
+    try:
+        proc = psutil.Process(pid)
+        blob = f"{proc.name() or ''} {' '.join(proc.cmdline() or [])}".lower()
+    except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+        return False
+    return "browser_harness" in blob or "browser-harness" in blob
+
+
+def _kill_harness_daemon_pid(pid: int) -> None:
+    """PID-only kill. ``killpg`` / tree-kill would take a session-leader Chromium with it."""
+    if type(pid) is not int or pid <= 0:
+        return
+    if not _verify_harness_daemon(pid):
+        return
+    if os.name == "nt":
+        from hermes_cli._subprocess_compat import windows_hide_flags
+        with contextlib.suppress(OSError, subprocess.SubprocessError):
+            subprocess.run(
+                ["taskkill", "/F", "/PID", str(pid)],
+                stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=10, check=False,
+                creationflags=windows_hide_flags(),
+            )
+        return
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.kill(pid, signal.SIGKILL)
+
+
+def interrupt_reserved_browser_harness(home: Optional[str] = None) -> None:
+    """Drop leftover browser-use harness CDP clients aimed at a human-held dock.
+
+    After ``browser_exec`` returns, the harness daemon stays attached and
+    ``Target.setAutoAttach`` / Playwright input still land in the field the
+    human is typing into. Finding 42 only kills the in-flight CLI; this
+    daemon is a third leftover CDP client (findings 35–36, 40).
+    """
+    from hermes_constants import hermes_home_key, reset_hermes_home_override, set_hermes_home_override
+    from tools.bot_desktop import lease as _bd_lease
+
+    want = hermes_home_key(home) if home is not None else None
+    victims: list[dict] = []
+    with _reserved_dock_harness_lock:
+        for entry in _reserved_dock_harness:
+            owner_key = entry.get("home_key") or hermes_home_key()
+            if want is not None and owner_key != want:
+                continue
+            owner = entry.get("home")
+            token = None
+            try:
+                if owner:
+                    token = set_hermes_home_override(owner)
+                held = _bd_lease.human_holds()
+            finally:
+                if token is not None:
+                    reset_hermes_home_override(token)
+            if not held:
+                continue
+            victims.append(entry)
+    for entry in victims:
+        try:
+            killer = entry.get("kill")
+            pid = entry.get("pid") or _resolve_harness_daemon_pid(str(entry.get("name") or ""))
+            if pid:
+                entry["pid"] = pid
+            if callable(killer):
+                killer(pid)
+            elif pid:
+                _kill_harness_daemon_pid(pid)
+        except Exception:
+            _bt.logger.debug("reserved browser harness interrupt failed", exc_info=True)
 
 
 def _cdp_url_is_bot_desktop_browser(cdp_url: str) -> bool:

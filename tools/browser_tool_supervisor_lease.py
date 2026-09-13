@@ -177,6 +177,10 @@ def stop_reserved_supervisors(home: Optional[str] = None) -> None:
 
     Also kills leftover agent-browser / browser_exec CLI writers aimed at
     the dock — waiting those out is leftover keystrokes in the human's field.
+
+    Also drops leftover browser-use harness daemons that stay CDP-connected
+    after the CLI returns. Those are a third leftover client; tree-kill is
+    refused (the daemon may be a session leader).
     """
     install_supervisor_lease_hook()
     try:
@@ -227,6 +231,11 @@ def stop_reserved_supervisors(home: Optional[str] = None) -> None:
     try:
         from tools.browser_tool_session import interrupt_reserved_browser_cli
         interrupt_reserved_browser_cli(home=home)
+    except Exception:
+        pass
+    try:
+        from tools.browser_tool_session import interrupt_reserved_browser_harness
+        interrupt_reserved_browser_harness(home=home)
     except Exception:
         pass
 

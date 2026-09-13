@@ -675,6 +675,12 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     timeout = _clamp_timeout(timeout_s)
     started = time.time()
     dock_home = getattr(admitted, "_hermes_home", None) if admitted is not None else None
+    harness_name = session or "default"
+    if dock_home:
+        from tools.browser_tool_session import register_reserved_dock_harness
+        # Register before spawn: the harness daemonizes out of the CLI
+        # process group, so Take over must find it even mid-command.
+        register_reserved_dock_harness(harness_name, dock_home)
     try:
         proc = _run_cli_killing_process_group(cmd, code, env, timeout, dock_home=dock_home)
     except subprocess.TimeoutExpired:
@@ -683,6 +689,10 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
                           "append to workspace files — anything already written to the workspace is preserved.")
     except OSError as e:
         return tool_error(f"Failed to launch browser-use CLI: {e}")
+
+    if dock_home:
+        from tools.browser_tool_session import refresh_reserved_dock_harness_pid
+        refresh_reserved_dock_harness_pid(harness_name, dock_home)
 
     result = {"success": proc.returncode == 0, "exit_code": proc.returncode, "output": proc.stdout}
     if workspace:
