@@ -2234,3 +2234,226 @@ def test_force_cleanup_still_reaps_unrelated_cloud_session_while_human_holds(mon
     finally:
         bt._active_sessions.clear()
         bt._active_sessions.update(saved)
+
+
+def _sibling_homes(tmp_path):
+    launch = tmp_path / "launch"
+    bot = tmp_path / "bot"
+    launch.mkdir()
+    bot.mkdir()
+    return launch, bot
+
+
+def test_run_browser_command_uses_session_owner_lease_after_multiplex_turn(monkeypatch, tmp_path):
+    """After a multiplex turn the process home is the launch profile.
+
+    Ambient ``assert_agent_may_act`` / ``get()`` then read launch's
+    ``lease.json`` (agent, missing file) and clicked the bot jar a human
+    was typing into. ``record stop`` from Desktop Take over is this path:
+    ``_maybe_stop_recording`` does not wrap owner scope itself.
+    """
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.bot_desktop.lease import _path
+    from tools import browser_tool as bt
+    from tools import browser_tool_session as session
+
+    launch, bot = _sibling_homes(tmp_path)
+    commands: list = []
+    saved = _session_state()[1]
+    monkeypatch.setattr(session, "_browser_command_preflight", lambda: {"browser_cmd": "agent-browser"})
+    monkeypatch.setattr(session._lifecycle, "_start_browser_cleanup_thread", lambda: None)
+    monkeypatch.setattr(session._cloud, "_get_browser_engine", lambda: "chrome")
+    monkeypatch.setattr(session._cloud, "_is_headed_mode", lambda: True)
+    monkeypatch.setattr(session._cdp, "_ensure_cdp_supervisor", lambda *a, **k: None)
+    monkeypatch.setattr(
+        session, "_spawn_and_collect",
+        lambda *a, **k: commands.append(a[2] if len(a) > 2 else "cmd") or {
+            "success": True, "data": {"secret": "WHAT-THE-HUMAN-TYPED"},
+        },
+    )
+    token_bot = set_hermes_home_override(str(bot))
+    try:
+        for name in saved:
+            getattr(bt, name).clear()
+        bt._active_sessions["review"] = {
+            "session_name": "h_review", "features": {"local": True},
+        }
+        bt._session_owner_homes["review"] = str(bot)
+        lease.acquire("human-viewer")
+    finally:
+        reset_hermes_home_override(token_bot)
+
+    token_launch = set_hermes_home_override(str(launch))
+    try:
+        result = session._run_browser_command("review", "click", ["e1"])
+        assert result.get("code") == "human_has_control"
+        assert commands == []
+        assert "WHAT-THE-HUMAN-TYPED" not in json.dumps(result)
+
+        stopped = session._run_browser_command("review", "record", ["stop"])
+        assert stopped.get("success") is True
+        assert commands, "record stop must still reach the daemon after the multiplex turn"
+    finally:
+        reset_hermes_home_override(token_launch)
+        for home in (launch, bot):
+            for f in (_path(str(home)), _path(str(home)).with_suffix(".lock")):
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+        _restore_session_state(bt, saved)
+
+
+def test_run_browser_command_does_not_fence_on_the_launch_profile_lease(monkeypatch, tmp_path):
+    """A human on the launch bot must not void a sibling session's click."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.bot_desktop.lease import _path
+    from tools import browser_tool as bt
+    from tools import browser_tool_session as session
+
+    launch, bot = _sibling_homes(tmp_path)
+    commands: list = []
+    saved = _session_state()[1]
+
+    class _Healthy:
+        def ensure_healthy(self):
+            return True
+
+    monkeypatch.setattr(session, "_browser_command_preflight", lambda: {"browser_cmd": "agent-browser"})
+    monkeypatch.setattr(session._lifecycle, "_start_browser_cleanup_thread", lambda: None)
+    monkeypatch.setattr(session._lifecycle, "_session_has_expired", lambda _s: False)
+    monkeypatch.setattr(bt, "_browser_session_backend", lambda *_a, **_k: _Healthy())
+    monkeypatch.setattr(session._cloud, "_get_browser_engine", lambda: "chrome")
+    monkeypatch.setattr(session._cloud, "_is_headed_mode", lambda: True)
+    monkeypatch.setattr(session._cdp, "_ensure_cdp_supervisor", lambda *a, **k: None)
+    monkeypatch.setattr(
+        session, "_spawn_and_collect",
+        lambda *a, **k: commands.append("click") or {"success": True, "data": {"ok": True}},
+    )
+    token_launch = set_hermes_home_override(str(launch))
+    try:
+        lease.acquire("human-viewer")
+    finally:
+        reset_hermes_home_override(token_launch)
+
+    token_launch = set_hermes_home_override(str(launch))
+    try:
+        for name in saved:
+            getattr(bt, name).clear()
+        bt._active_sessions["review"] = {
+            "session_name": "h_review", "features": {"local": True},
+        }
+        bt._session_owner_homes["review"] = str(bot)
+        result = session._run_browser_command("review", "click", ["e1"])
+        assert result.get("success") is True
+        assert commands == ["click"]
+        assert result.get("code") != "human_has_control"
+    finally:
+        reset_hermes_home_override(token_launch)
+        for home in (launch, bot):
+            for f in (_path(str(home)), _path(str(home)).with_suffix(".lock")):
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+        _restore_session_state(bt, saved)
+
+
+def test_run_browser_command_epoch_discard_follows_the_home_that_admitted(monkeypatch, tmp_path):
+    """Take over the owner home mid-command; ambient launch ``get()`` must not keep the frame."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.bot_desktop.lease import HUMAN, Lease, _path, _write
+    from tools import browser_tool as bt
+    from tools import browser_tool_session as session
+
+    launch, bot = _sibling_homes(tmp_path)
+    saved = _session_state()[1]
+
+    class _Healthy:
+        def ensure_healthy(self):
+            return True
+
+    def spawn_then_takeover(*_a, **_k):
+        _write(_path(str(bot)), Lease(holder=HUMAN, viewer_id="human-viewer", epoch=1))
+        return {"success": True, "data": {"secret": "WHAT-THE-HUMAN-TYPED"}}
+
+    monkeypatch.setattr(session, "_browser_command_preflight", lambda: {"browser_cmd": "agent-browser"})
+    monkeypatch.setattr(session._lifecycle, "_start_browser_cleanup_thread", lambda: None)
+    monkeypatch.setattr(session._lifecycle, "_session_has_expired", lambda _s: False)
+    monkeypatch.setattr(bt, "_browser_session_backend", lambda *_a, **_k: _Healthy())
+    monkeypatch.setattr(session._cloud, "_get_browser_engine", lambda: "chrome")
+    monkeypatch.setattr(session._cloud, "_is_headed_mode", lambda: True)
+    monkeypatch.setattr(session._cdp, "_ensure_cdp_supervisor", lambda *a, **k: None)
+    monkeypatch.setattr(session, "_spawn_and_collect", spawn_then_takeover)
+
+    token_launch = set_hermes_home_override(str(launch))
+    try:
+        for name in saved:
+            getattr(bt, name).clear()
+        bt._active_sessions["review"] = {
+            "session_name": "h_review", "features": {"local": True},
+        }
+        bt._session_owner_homes["review"] = str(bot)
+        result = session._run_browser_command("review", "click", ["e1"])
+        assert result.get("code") == "human_has_control"
+        assert "WHAT-THE-HUMAN-TYPED" not in json.dumps(result)
+    finally:
+        reset_hermes_home_override(token_launch)
+        for home in (launch, bot):
+            for f in (_path(str(home)), _path(str(home)).with_suffix(".lock")):
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+        _restore_session_state(bt, saved)
+
+
+def test_get_session_info_does_not_recycle_owner_session_after_multiplex_turn(monkeypatch, tmp_path):
+    """Expired recycle used ambient ``human_holds()``. After the turn that is
+    the launch lease — tree-kill of the Chromium a human holds on the bot."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.bot_desktop.lease import _path
+    from tools import browser_tool as bt
+    from tools import browser_tool_session as session
+
+    launch, bot = _sibling_homes(tmp_path)
+    cleaned: list = []
+    saved = _session_state()[1]
+    monkeypatch.setattr(session._lifecycle, "_start_browser_cleanup_thread", lambda: None)
+    monkeypatch.setattr(
+        session._lifecycle, "_cleanup_single_browser_session",
+        lambda task_id, **k: cleaned.append(task_id),
+    )
+    monkeypatch.setattr(session._lifecycle, "_session_has_expired", lambda _s: True)
+    monkeypatch.setattr(
+        session, "_create_session_for_key",
+        lambda *a, **k: {"session_name": "fresh", "features": {"local": True}},
+    )
+    token_bot = set_hermes_home_override(str(bot))
+    try:
+        for name in saved:
+            getattr(bt, name).clear()
+        existing = {"session_name": "h_review", "features": {"local": True}, "session_key": "review"}
+        bt._active_sessions["review"] = existing
+        bt._session_owner_homes["review"] = str(bot)
+        bt._suspect_browser_sessions["review"] = "timeout"
+        lease.acquire("human-viewer")
+    finally:
+        reset_hermes_home_override(token_bot)
+
+    token_launch = set_hermes_home_override(str(launch))
+    try:
+        got = session._get_session_info("review")
+        assert got is existing
+        assert cleaned == []
+        assert bt._suspect_browser_sessions.get("review") == "timeout"
+    finally:
+        reset_hermes_home_override(token_launch)
+        for home in (launch, bot):
+            for f in (_path(str(home)), _path(str(home)).with_suffix(".lock")):
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+        _restore_session_state(bt, saved)
+

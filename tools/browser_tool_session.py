@@ -283,10 +283,19 @@ def _create_session_for_key(task_id: str, force_local: bool) -> Dict[str, Any]:
 def _get_session_info(task_id: Optional[str] = None) -> Dict[str, Any]:
     """Get or create session info for a session key (thread-safe); also starts the
     inactivity thread and touches activity. A ``::local`` key forces local Chromium
-    even with a cloud provider configured."""
+    even with a cloud provider configured.
+
+    Re-enter the session's owning HERMES_HOME first. After a multiplex turn
+    the process home is the launch profile; recycle / mint refuse must read
+    *this* session's ``lease.json``, not the launch bot's (finding 101).
+    """
     if task_id is None:
         task_id = "default"
+    with _lifecycle._session_owner_scope(task_id):
+        return _get_session_info_unscoped(task_id)
 
+
+def _get_session_info_unscoped(task_id: str) -> Dict[str, Any]:
     _lifecycle._start_browser_cleanup_thread()
     _lifecycle._update_session_activity(task_id)
 
@@ -616,6 +625,23 @@ def _run_browser_command(
         return preflight
     browser_cmd = preflight["browser_cmd"]
 
+    # Owner scope so admit / epoch / leftover identity read the session's
+    # lease after a multiplex turn resets the process home to launch
+    # (finding 101). ``record stop`` stays unfenced inside that home.
+    with _lifecycle._session_owner_scope(task_id):
+        return _run_browser_command_fenced(
+            task_id, command, args, timeout, _engine_override, browser_cmd,
+        )
+
+
+def _run_browser_command_fenced(
+    task_id: str,
+    command: str,
+    args: List[str],
+    timeout: int,
+    _engine_override: Optional[str],
+    browser_cmd,
+) -> Dict[str, Any]:
     try:
         session_info = _get_session_info(task_id)
     except Exception as e:
@@ -640,7 +666,7 @@ def _run_browser_command(
     if _shares_bot_desktop_browser(session_info):
         from tools.bot_desktop import lease as _bd_lease
         try:
-            admitted = _bd_lease.assert_agent_may_act()
+            admitted = _stamp_admitted(_bd_lease.assert_agent_may_act())
         except _bd_lease.HumanHasControl as e:
             # ``record stop`` ceases observation — it must work while the human
             # holds, or an opted-in WebM keeps capturing the credential they type.
@@ -654,10 +680,9 @@ def _run_browser_command(
                 pass
             return {"success": False, "error": str(e), "code": "human_has_control"}
         result = _run_browser_command_unfenced(task_id, command, args, timeout, _engine_override, browser_cmd, session_info)
-        if _bd_lease.get().epoch != admitted.epoch:
-            return {"success": False, "code": "human_has_control",
-                    "error": "A human took over the bot's screen while this browser command ran; its result was "
-                             "discarded. Call computer_use action='wait_for_human' to block until they hand back."}
+        moved = _lease_moved_result(admitted)
+        if moved:
+            return moved
         return result
     return _run_browser_command_unfenced(task_id, command, args, timeout, _engine_override, browser_cmd, session_info)
 
