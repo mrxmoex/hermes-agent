@@ -161,8 +161,8 @@ def _ensure_cdp_supervisor(task_id: str) -> None:
     if not cdp_url:
         return
     try:
-        from tools import browser_tool_lifecycle as _life
-        _life._install_supervisor_lease_hook()
+        from tools.browser_tool_supervisor_lease import install_supervisor_lease_hook
+        install_supervisor_lease_hook()
     except Exception:
         pass
     try:
