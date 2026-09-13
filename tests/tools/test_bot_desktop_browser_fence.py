@@ -268,3 +268,124 @@ def test_browser_vision_preroute_is_fenced_while_human_controls(monkeypatch, tmp
     assert "HUMAN_PRIVATE_FRAME" not in text
     assert parsed.get("success") is False
     assert parsed.get("code") == "human_has_control"
+
+
+class _EvalSupervisor:
+    def __init__(self, ran, result="WHAT-THE-HUMAN-TYPED"):
+        self.ran = ran
+        self.result = result
+
+    def evaluate_runtime(self, expr):
+        self.ran.append(expr)
+        return {"ok": True, "result": self.result}
+
+
+def test_browser_eval_supervisor_is_fenced_while_human_controls(monkeypatch):
+    """Supervisor Runtime.evaluate talks CDP directly, bypassing ``_run_browser_command``."""
+    commands: list = []
+    browser, _ = _wire(monkeypatch, commands)
+    ran: list = []
+    monkeypatch.setattr(
+        "tools.browser_supervisor.SUPERVISOR_REGISTRY",
+        type("R", (), {"get": staticmethod(lambda _tid: _EvalSupervisor(ran))})(),
+    )
+    monkeypatch.setattr(browser._eval_policy, "_eval_ssrf_guard_active", lambda *_a: False)
+    lease.acquire("human-viewer")
+    result = json.loads(browser._browser_eval("document.body.innerText", task_id="review"))
+    assert ran == [], f"human holds the lease, yet supervisor eval ran: {ran}"
+    assert result.get("code") == "human_has_control"
+
+
+def test_browser_eval_supervisor_result_crossing_a_takeover_is_discarded(monkeypatch):
+    commands: list = []
+    browser, _ = _wire(monkeypatch, commands)
+    ran: list = []
+
+    class _Takeover(_EvalSupervisor):
+        def evaluate_runtime(self, expr):
+            lease.acquire("human-viewer")
+            lease.release("human-viewer")
+            return super().evaluate_runtime(expr)
+
+    monkeypatch.setattr(
+        "tools.browser_supervisor.SUPERVISOR_REGISTRY",
+        type("R", (), {"get": staticmethod(lambda _tid: _Takeover(ran))})(),
+    )
+    monkeypatch.setattr(browser._eval_policy, "_eval_ssrf_guard_active", lambda *_a: False)
+    raw = browser._browser_eval("document.body.innerText", task_id="review")
+    text = raw if isinstance(raw, str) else json.dumps(raw)
+    parsed = json.loads(text)
+    assert "WHAT-THE-HUMAN-TYPED" not in text
+    assert parsed.get("code") == "human_has_control"
+
+
+def test_vault_eval_and_save_login_are_fenced_while_human_controls(monkeypatch):
+    from tools import browser_vault_tool as vault
+
+    monkeypatch.setattr(session_mod, "_get_session_info", lambda *a, **k: {
+        "session_name": "review", "cdp_url": None, "features": {"local": True}})
+    ran: list = []
+    monkeypatch.setattr(
+        "tools.browser_supervisor.SUPERVISOR_REGISTRY",
+        type("R", (), {"get": staticmethod(lambda _tid: _EvalSupervisor(ran))})(),
+    )
+    lease.acquire("human-viewer")
+    eval_result = vault._eval_js("review", "window.location.href")
+    assert ran == [], f"human holds the lease, yet vault eval ran: {ran}"
+    assert eval_result.get("code") == "human_has_control"
+    save = json.loads(vault.browser_vault_save_login(task_id="review"))
+    assert ran == []
+    assert save.get("code") == "human_has_control"
+
+
+def test_browser_dialog_is_fenced_while_human_controls(monkeypatch):
+    from tools import browser_dialog_tool as dialog
+
+    monkeypatch.setattr(session_mod, "_get_session_info", lambda *a, **k: {
+        "session_name": "review", "cdp_url": None, "features": {"local": True}})
+    ran: list = []
+
+    class _Sup:
+        def respond_to_dialog(self, **kwargs):
+            ran.append(kwargs)
+            return {"ok": True, "dialog": {"message": "WHAT-THE-HUMAN-TYPED"}}
+
+    monkeypatch.setattr(
+        dialog, "SUPERVISOR_REGISTRY",
+        type("R", (), {"get": staticmethod(lambda _tid: _Sup())})(),
+    )
+    lease.acquire("human-viewer")
+    result = json.loads(dialog.browser_dialog("accept", task_id="review"))
+    assert ran == [], f"human holds the lease, yet dialog ran: {ran}"
+    assert result.get("code") == "human_has_control"
+
+
+def test_snapshot_supervisor_merge_is_fenced_while_human_controls(monkeypatch):
+    """A successful CLI snapshot must not merge human dialog text after takeover."""
+    commands: list = []
+    browser, session = _wire(monkeypatch, commands)
+    monkeypatch.setattr(session, "_run_browser_command", lambda *a, **k: {
+        "success": True, "data": {"snapshot": "ok", "refs": {}}})
+    monkeypatch.setattr(browser, "_blocked_private_page_content", lambda *_a: None)
+
+    class _Snap:
+        active = True
+
+        def to_dict(self):
+            return {"pending_dialogs": [{"message": "WHAT-THE-HUMAN-TYPED"}]}
+
+    class _Sup:
+        def snapshot(self):
+            lease.acquire("human-viewer")
+            lease.release("human-viewer")
+            return _Snap()
+
+    monkeypatch.setattr(
+        "tools.browser_supervisor.SUPERVISOR_REGISTRY",
+        type("R", (), {"get": staticmethod(lambda _tid: _Sup())})(),
+    )
+    raw = browser.browser_snapshot(task_id="review")
+    text = raw if isinstance(raw, str) else json.dumps(raw)
+    parsed = json.loads(text)
+    assert "WHAT-THE-HUMAN-TYPED" not in text
+    assert parsed.get("code") == "human_has_control"

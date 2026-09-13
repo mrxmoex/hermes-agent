@@ -11,6 +11,7 @@ import json
 from typing import Any, Dict, Optional
 
 from tools.browser_supervisor import SUPERVISOR_REGISTRY
+from tools.browser_tool_session import _discard_if_lease_moved, _shared_browser_fence
 from tools.registry import registry
 
 BROWSER_DIALOG_SCHEMA: Dict[str, Any] = {
@@ -74,7 +75,11 @@ def browser_dialog(
     task_id: Optional[str] = None,
 ) -> str:
     """Respond to a pending dialog on the active task's CDP supervisor."""
-    supervisor = SUPERVISOR_REGISTRY.get(task_id or "default")
+    effective_task_id = task_id or "default"
+    admitted, refuse = _shared_browser_fence(effective_task_id)
+    if refuse:
+        return json.dumps(refuse)
+    supervisor = SUPERVISOR_REGISTRY.get(effective_task_id)
     if supervisor is None:
         return json.dumps({
             "success": False,
@@ -86,6 +91,9 @@ def browser_dialog(
             ),
         })
     result = supervisor.respond_to_dialog(action=action, prompt_text=prompt_text, dialog_id=dialog_id)
+    stole = _discard_if_lease_moved(admitted)
+    if stole:
+        return json.dumps(stole)
     if result.get("ok"):
         return json.dumps({"success": True, "action": action, "dialog": result.get("dialog", {})})
     return json.dumps({"success": False, "error": result.get("error", "unknown error")})

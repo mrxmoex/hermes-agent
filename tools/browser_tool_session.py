@@ -621,6 +621,11 @@ def _admit_bot_desktop_browser(session_info: Dict[str, Any]):
         return None, {"success": False, "error": str(e), "code": "human_has_control"}
 
 
+def _shared_browser_fence(task_id: str):
+    """Admit the shared Bot Desktop browser for ``task_id`` (same pair as ``_admit``)."""
+    return _admit_bot_desktop_browser(_session_info_for_shared_browser_fence(task_id))
+
+
 def _discard_if_lease_moved(admitted) -> Optional[Dict[str, Any]]:
     if admitted is None:
         return None

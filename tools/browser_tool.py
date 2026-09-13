@@ -800,6 +800,9 @@ def browser_snapshot(
 
     # Merge supervisor state (pending dialogs + frame tree) when a CDP supervisor is
     # attached. See website/docs/developer-guide/browser-supervisor.md.
+    admitted, refuse = _session._shared_browser_fence(effective_task_id)
+    if refuse:
+        return _dumps(refuse)
     try:
         from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
         _supervisor = SUPERVISOR_REGISTRY.get(effective_task_id)
@@ -809,6 +812,9 @@ def browser_snapshot(
                 response.update(_snapshot._redact_browser_output(_sv_snap.to_dict()))
     except Exception as _sv_exc:
         logger.debug("supervisor snapshot merge failed: %s", _sv_exc)
+    stole = _session._discard_if_lease_moved(admitted)
+    if stole:
+        return _dumps(stole)
 
     return _dumps(response)
 
@@ -1067,11 +1073,21 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
     if _is_camofox_mode():
         return _camofox_eval(expression, task_id)
 
+    # Supervisor Runtime.evaluate talks CDP directly; the CLI eval path is
+    # already fenced inside ``_run_browser_command``.
+    admitted, refuse = _session._shared_browser_fence(effective_task_id)
+    if refuse:
+        return _dumps(refuse)
+
     fast = _eval_supervisor_fast_path(effective_task_id, expression)
     if fast is not None:
-        return fast
+        stole = _session._discard_if_lease_moved(admitted)
+        return _dumps(stole) if stole else fast
 
     result = _session._run_browser_command(effective_task_id, "eval", [expression])
+    stole = _session._discard_if_lease_moved(admitted)
+    if stole:
+        return _dumps(stole)
     if not result.get("success"):
         return _eval_failure_response(result)
     return _eval_result_or_blocked(effective_task_id, _parse_eval_value(result.get("data", {}).get("result")), result)
@@ -1226,9 +1242,7 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
     if blocked is not None:
         return blocked
 
-    admitted, refuse = _session._admit_bot_desktop_browser(
-        _session._session_info_for_shared_browser_fence(effective_task_id)
-    )
+    admitted, refuse = _session._shared_browser_fence(effective_task_id)
     if refuse:
         return _dumps(refuse)
 

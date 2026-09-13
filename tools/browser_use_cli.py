@@ -605,15 +605,12 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
         env["BU_NAME"] = session
     # Late import: browser_tool_session → lightpanda fallback → this module.
     from tools.browser_tool_session import (
-        _admit_bot_desktop_browser,
         _discard_if_lease_moved,
-        _session_info_for_shared_browser_fence,
+        _shared_browser_fence,
     )
     # ``get cdp-url`` is already fenced; the harness then talks CDP directly
     # (clicks, capture_screenshot) and must be bracketed the same way.
-    admitted, refuse = _admit_bot_desktop_browser(
-        _session_info_for_shared_browser_fence(_backend_cache_key(task_id, session))
-    )
+    admitted, refuse = _shared_browser_fence(_backend_cache_key(task_id, session))
     if refuse:
         return tool_error(
             refuse.get("error") or "Human has control of this bot's screen.",

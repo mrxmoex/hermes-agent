@@ -31,6 +31,12 @@ import secrets
 import logging
 from typing import Any, Dict, Optional
 
+from tools.browser_tool_session import (
+    _bracket_bot_desktop_browser,
+    _session_info_for_shared_browser_fence,
+    _shared_browser_fence,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -64,30 +70,33 @@ def _eval_js(task_id: str, expression: str) -> Dict[str, Any]:
     embed secret values — the fallback places the expression in subprocess
     argv. Use :func:`_eval_js_secret` for secret-bearing expressions.
     """
-    try:
-        from tools.browser_supervisor import SUPERVISOR_REGISTRY
+    def _run():
+        try:
+            from tools.browser_supervisor import SUPERVISOR_REGISTRY
 
-        supervisor = SUPERVISOR_REGISTRY.get(task_id)
-        if supervisor is not None:
-            sup = supervisor.evaluate_runtime(expression)
-            if sup.get("ok"):
-                return {"success": True, "result": sup.get("result")}
-            err = str(sup.get("error") or "")
-            if "supervisor" not in err.lower():
-                return {"success": False, "error": err}
-    except ImportError:
-        pass
-    except Exception as exc:  # pragma: no cover — defensive
-        logger.debug("vault fill: supervisor eval unavailable (%s)", exc)
+            supervisor = SUPERVISOR_REGISTRY.get(task_id)
+            if supervisor is not None:
+                sup = supervisor.evaluate_runtime(expression)
+                if sup.get("ok"):
+                    return {"success": True, "result": sup.get("result")}
+                err = str(sup.get("error") or "")
+                if "supervisor" not in err.lower():
+                    return {"success": False, "error": err}
+        except ImportError:
+            pass
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.debug("vault fill: supervisor eval unavailable (%s)", exc)
 
-    from tools.browser_tool import _last_session_key
-    from tools.browser_tool_session import _run_browser_command
+        from tools.browser_tool import _last_session_key
+        from tools.browser_tool_session import _run_browser_command
 
-    effective = _last_session_key(task_id)
-    result = _run_browser_command(effective, "eval", [expression])
-    if not result.get("success"):
-        return {"success": False, "error": result.get("error", "eval failed")}
-    return {"success": True, "result": result.get("data", {}).get("result")}
+        effective = _last_session_key(task_id)
+        result = _run_browser_command(effective, "eval", [expression])
+        if not result.get("success"):
+            return {"success": False, "error": result.get("error", "eval failed")}
+        return {"success": True, "result": result.get("data", {}).get("result")}
+
+    return _bracket_bot_desktop_browser(_session_info_for_shared_browser_fence(task_id), _run)
 
 
 def _ensure_supervisor(task_id: str):
@@ -128,6 +137,9 @@ def _eval_js_secret(task_id: str, expression: str) -> Dict[str, Any]:
     When no supervisor session is available the caller gets a typed refusal
     (``error_type='supervisor_required'``) and nothing is written.
     """
+    _, refuse = _shared_browser_fence(task_id)
+    if refuse:
+        return refuse
     try:
         supervisor = _ensure_supervisor(task_id)
     except Exception as exc:
@@ -147,16 +159,19 @@ def _eval_js_secret(task_id: str, expression: str) -> Dict[str, Any]:
             ),
         }
 
-    sup = supervisor.evaluate_runtime(expression)
-    if sup.get("ok"):
-        return {"success": True, "result": sup.get("result")}
-    return {
-        "success": False,
-        "error_type": "supervisor_required"
-        if "supervisor" in str(sup.get("error") or "").lower()
-        else "eval_failed",
-        "error": str(sup.get("error") or "eval failed"),
-    }
+    def _run():
+        sup = supervisor.evaluate_runtime(expression)
+        if sup.get("ok"):
+            return {"success": True, "result": sup.get("result")}
+        return {
+            "success": False,
+            "error_type": "supervisor_required"
+            if "supervisor" in str(sup.get("error") or "").lower()
+            else "eval_failed",
+            "error": str(sup.get("error") or "eval failed"),
+        }
+
+    return _bracket_bot_desktop_browser(_session_info_for_shared_browser_fence(task_id), _run)
 
 
 def _parse_json_result(raw: Any) -> Any:
@@ -195,14 +210,20 @@ def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[str]:
     """Point the supervisor's page session at the open tab on ``origin`` that holds a ``kind`` form
     (browser_exec sessions open their own tabs, so the tab the supervisor attached to first is rarely the
     login page). Returns the origin when a tab was focused, else None (caller falls back to the current page)."""
-    try:
-        supervisor = _ensure_supervisor(task_id)
-    except Exception:
-        supervisor = None
-    if supervisor is None:
+    def _run():
+        try:
+            supervisor = _ensure_supervisor(task_id)
+        except Exception:
+            supervisor = None
+        if supervisor is None:
+            return None
+        focused = supervisor.focus_page(origin, accept=_TAB_PROBES.get(kind))
+        return (origin or focused.get("url")) if focused.get("ok") else None
+
+    boxed = _bracket_bot_desktop_browser(_session_info_for_shared_browser_fence(task_id), _run)
+    if isinstance(boxed, dict):
         return None
-    focused = supervisor.focus_page(origin, accept=_TAB_PROBES.get(kind))
-    return (origin or focused.get("url")) if focused.get("ok") else None
+    return boxed
 
 
 # ---------------------------------------------------------------------------
@@ -285,6 +306,9 @@ def browser_vault_save_login(label: str = "", task_id: Optional[str] = None) -> 
     from agent.vault_store import get_vault_store
 
     effective_task_id = task_id or "default"
+    _, refuse = _shared_browser_fence(effective_task_id)
+    if refuse:
+        return json.dumps(refuse)
     # The supervisor's default page session is whatever tab it attached to first (on Browser Use that is
     # the daemon's blank tab); the login form lives in the tab with a password field, so focus that one.
     _focus_bound_origin(effective_task_id, "", "login")
@@ -333,6 +357,9 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
     from agent.vault_login_classifier import LoginControl, build_fill_js, build_inspection_js, build_otp_fills, classify_otp_controls
 
     effective_task_id = task_id or "default"
+    _, refuse = _shared_browser_fence(effective_task_id)
+    if refuse:
+        return json.dumps(refuse)
     _focus_bound_origin(effective_task_id, "", "otp")
     origin = _current_page_origin(effective_task_id)
     if not origin:
@@ -438,6 +465,10 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
     if meta.kind == "payment" and not _confirm_payment_fill(meta.label, str(meta.origin)):
         return json.dumps({"success": False, "error_type": "payment_declined",
                            "error": "The user did not confirm filling this payment card. Do not retry; ask them instead."})
+
+    _, refuse = _shared_browser_fence(effective_task_id)
+    if refuse:
+        return json.dumps(refuse)
 
     # ── Origin binding pre-check (cheap early exit; the authoritative check
     # runs synchronously inside the fill script itself) ──────────────────────
