@@ -944,6 +944,15 @@ def _local_browser_reserved_by_human(session_info: Dict[str, Any]) -> bool:
     return _bd_lease.human_holds()
 
 
+def _daemon_owns_shared_chromium(session_info: Dict[str, Any]) -> bool:
+    """True when tree-killing this session's daemon would kill the dock Chromium."""
+    name = str(session_info.get("session_name") or "")
+    if not name:
+        return False
+    from tools.bot_desktop import browser as _bd_browser
+    return _bd_browser.shared_chromium_owner_session() == name
+
+
 def _bot_desktop_attach_port(session_info: Dict[str, Any]) -> Optional[int]:
     """DevTools port of a human-started Chromium on the Bot Desktop's shared profile, else ``None``."""
     if not _shares_bot_desktop_browser(session_info):

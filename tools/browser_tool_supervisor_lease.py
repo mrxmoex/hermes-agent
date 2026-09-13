@@ -171,6 +171,9 @@ def stop_reserved_supervisors(home: Optional[str] = None) -> None:
     ``home`` limits the sweep to one profile (in-process acquire). ``None``
     walks every leftover supervisor under the home it was minted on — the
     cross-process / multiplex path.
+
+    Also detaches attach-only agent-browser daemons (CDP clients that did
+    not spawn the dock Chromium). Daemons that own the shared Chromium stay.
     """
     install_supervisor_lease_hook()
     try:
@@ -179,41 +182,93 @@ def stop_reserved_supervisors(home: Optional[str] = None) -> None:
         from tools.browser_supervisor import SUPERVISOR_REGISTRY
         from tools import browser_tool as _bt
         from tools import browser_tool_session as _session
+        want = hermes_home_key(home) if home is not None else None
+        try:
+            with SUPERVISOR_REGISTRY._lock:
+                items = list(SUPERVISOR_REGISTRY._by_task.items())
+        except Exception:
+            items = []
+        for raw_key, sup in items:
+            try:
+                stored_id = getattr(sup, "task_id", None)
+                task_id = stored_id if isinstance(stored_id, str) and stored_id else raw_key
+                owner = _supervisor_home(sup, task_id)
+                if want is not None and owner is not None and hermes_home_key(owner) != want:
+                    continue
+                with _home_scope(owner):
+                    if want is not None and hermes_home_key() != want:
+                        continue
+                    if not _bd_lease.human_holds():
+                        continue
+                    session_info = _bt._active_sessions.get(task_id)
+                    cdp_url = str(getattr(sup, "cdp_url", "") or "")
+                    stamped_dock = getattr(sup, "targets_bot_desktop", None) is True
+                    leftover_is_dock = stamped_dock or _session._cdp_url_is_bot_desktop_browser(cdp_url)
+                    session_is_dock = (
+                        session_info is not None
+                        and _session._is_shared_bot_desktop_session(session_info)
+                    )
+                    # A leftover dock WS is the jar the human is typing into even
+                    # when the current session row is another browser (cloud /
+                    # /browser connect). Session-is-cloud must not keep that WS.
+                    if not leftover_is_dock and not session_is_dock:
+                        continue
+                    # Re-enter the minting home so stop() pops THIS profile's row,
+                    # not a launch-home collision on the same task_id.
+                    SUPERVISOR_REGISTRY.stop(task_id)
+            except Exception:
+                _bt.logger.debug("reserved supervisor stop failed for %s", task_id, exc_info=True)
+    except Exception:
+        pass
+    _detach_reserved_attached_daemons(home=home)
+
+
+def _detach_reserved_attached_daemons(home: Optional[str] = None) -> None:
+    """Close vendor-daemon CDP clients that did not spawn the dock Chromium.
+
+    Findings 35–36 stop Hermes leftover ``CDPSupervisor`` sockets. The
+    agent-browser daemon is a third CDP client: after Take over it still
+    ``Target.setAutoAttach`` / ``Target.attachToTarget`` when the human
+    opens a tab. Tree-killing a daemon that *spawned* the shared Chromium
+    would kill the Browser they are typing into — those stay reserved.
+    A daemon that only ``--cdp``-attached to a launcher-owned instance can
+    die without taking the page down. Session rows stay so hand-back can
+    re-attach; ``close`` / full teardown remain deferred.
+    """
+    try:
+        import os
+
+        from hermes_constants import hermes_home_key
+        from tools import browser_tool as _bt
+        from tools import browser_tool_session as _session
+        from tools.browser_tool_lifecycle import _kill_verified_daemon
     except Exception:
         return
     want = hermes_home_key(home) if home is not None else None
     try:
-        with SUPERVISOR_REGISTRY._lock:
-            items = list(SUPERVISOR_REGISTRY._by_task.items())
+        with _bt._cleanup_lock:
+            items = list(_bt._active_sessions.items())
     except Exception:
         return
-    for raw_key, sup in items:
+    for task_id, info in items:
+        if not isinstance(info, dict):
+            continue
         try:
-            stored_id = getattr(sup, "task_id", None)
-            task_id = stored_id if isinstance(stored_id, str) and stored_id else raw_key
-            owner = _supervisor_home(sup, task_id)
-            if want is not None and owner is not None and hermes_home_key(owner) != want:
+            owner = _bt._session_owner_homes.get(task_id)
+            owner_s = str(owner) if owner else None
+            if want is not None and owner_s is not None and hermes_home_key(owner_s) != want:
                 continue
-            with _home_scope(owner):
+            with _home_scope(owner_s):
                 if want is not None and hermes_home_key() != want:
                     continue
-                if not _bd_lease.human_holds():
+                if not _session._local_browser_reserved_by_human(info):
                     continue
-                session_info = _bt._active_sessions.get(task_id)
-                cdp_url = str(getattr(sup, "cdp_url", "") or "")
-                stamped_dock = getattr(sup, "targets_bot_desktop", None) is True
-                leftover_is_dock = stamped_dock or _session._cdp_url_is_bot_desktop_browser(cdp_url)
-                session_is_dock = (
-                    session_info is not None
-                    and _session._is_shared_bot_desktop_session(session_info)
-                )
-                # A leftover dock WS is the jar the human is typing into even
-                # when the current session row is another browser (cloud /
-                # /browser connect). Session-is-cloud must not keep that WS.
-                if not leftover_is_dock and not session_is_dock:
+                if _session._daemon_owns_shared_chromium(info):
                     continue
-                # Re-enter the minting home so stop() pops THIS profile's row,
-                # not a launch-home collision on the same task_id.
-                SUPERVISOR_REGISTRY.stop(task_id)
+                name = str(info.get("session_name") or "")
+                if not name:
+                    continue
+                socket_dir = os.path.join(_bt._socket_safe_tmpdir(), f"agent-browser-{name}")
+                _kill_verified_daemon(socket_dir, name)
         except Exception:
-            _bt.logger.debug("reserved supervisor stop failed for %s", task_id, exc_info=True)
+            _bt.logger.debug("reserved attached-daemon detach failed for %s", task_id, exc_info=True)

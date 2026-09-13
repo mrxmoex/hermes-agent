@@ -194,6 +194,26 @@ def _launched_by_session(chromium_pid: int) -> Optional[str]:
     return None
 
 
+def shared_chromium_owner_session(user_data_dir: Optional[str] = None) -> Optional[str]:
+    """``AGENT_BROWSER_SESSION`` that spawned Chromium on this profile, or ``None``.
+
+    ``None`` means the instance is dock/launcher-owned (or down). Tree-killing
+    an agent-browser daemon is then leftover-CDP cleanup, not a Browser kill.
+    When this equals a session's ``session_name``, that daemon *is* the parent
+    of the page the human is typing into and must stay reserved.
+    """
+    if user_data_dir is None:
+        user_data_dir = str(profile_dir())
+    try:
+        target = os.readlink(os.path.join(user_data_dir, "SingletonLock"))
+    except OSError:
+        return None
+    _host, _, pid_text = target.rpartition("-")
+    if not pid_text.isdigit() or not _pid_alive(int(pid_text)):
+        return None
+    return _launched_by_session(int(pid_text))
+
+
 def _pid_alive(pid: int) -> bool:
     import psutil
     return psutil.pid_exists(pid)

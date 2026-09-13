@@ -1158,6 +1158,11 @@ def stop_local_browser_recordings(home: Optional[str] = None) -> None:
         if info and not _session._is_shared_bot_desktop_session(info):
             continue
         _maybe_stop_recording(tid)
+    try:
+        from tools.browser_tool_supervisor_lease import stop_reserved_supervisors
+        stop_reserved_supervisors(home=home)
+    except Exception:
+        logger.debug("reserved supervisor sweep from recording stop failed", exc_info=True)
 
 
 def _install_recording_lease_hook() -> None:

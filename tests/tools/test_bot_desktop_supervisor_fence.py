@@ -788,3 +788,82 @@ def test_get_or_start_does_not_stop_a_sibling_leftover(monkeypatch, tmp_path):
         reset_hermes_home_override(token_launch)
         SUPERVISOR_REGISTRY._by_task.clear()
         SUPERVISOR_REGISTRY._by_task.update(saved)
+
+
+def test_stop_reserved_kills_attach_only_daemon_not_dock_chromium(monkeypatch):
+    """A --cdp attach to launcher-owned Chrome can die; the session row stays."""
+    import tools.bot_desktop.browser as bdb
+    from tools import browser_tool as bt
+    from tools.browser_tool_supervisor_lease import stop_reserved_supervisors
+
+    killed = []
+    monkeypatch.setattr(bdb, "shared_chromium_owner_session", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "tools.browser_tool_lifecycle._kill_verified_daemon",
+        lambda socket_dir, name: killed.append((socket_dir, name)) or True,
+    )
+    saved = bt._active_sessions.copy()
+    try:
+        bt._active_sessions.clear()
+        bt._active_sessions["review"] = {
+            "session_name": "h_review", "features": {"local": True},
+        }
+        lease.acquire("human-viewer")
+        stop_reserved_supervisors()
+        assert [name for _dir, name in killed] == ["h_review"]
+        assert bt._active_sessions["review"]["session_name"] == "h_review"
+    finally:
+        bt._active_sessions.clear()
+        bt._active_sessions.update(saved)
+
+
+def test_stop_reserved_does_not_kill_daemon_that_spawned_dock_chromium(monkeypatch):
+    """Tree-killing the parent daemon would kill the Browser the human is using."""
+    import tools.bot_desktop.browser as bdb
+    from tools import browser_tool as bt
+    from tools.browser_tool_supervisor_lease import stop_reserved_supervisors
+
+    killed = []
+    monkeypatch.setattr(bdb, "shared_chromium_owner_session", lambda *a, **k: "h_review")
+    monkeypatch.setattr(
+        "tools.browser_tool_lifecycle._kill_verified_daemon",
+        lambda socket_dir, name: killed.append(name) or True,
+    )
+    saved = bt._active_sessions.copy()
+    try:
+        bt._active_sessions.clear()
+        bt._active_sessions["review"] = {
+            "session_name": "h_review", "features": {"local": True},
+        }
+        lease.acquire("human-viewer")
+        stop_reserved_supervisors()
+        assert killed == []
+        assert "review" in bt._active_sessions
+    finally:
+        bt._active_sessions.clear()
+        bt._active_sessions.update(saved)
+
+
+def test_stop_reserved_does_not_kill_unrelated_cloud_daemon(monkeypatch):
+    """A Browserbase / other-Chrome session is not this screen's leftover CDP."""
+    from tools import browser_tool as bt
+    from tools.browser_tool_supervisor_lease import stop_reserved_supervisors
+
+    killed = []
+    monkeypatch.setattr(
+        "tools.browser_tool_lifecycle._kill_verified_daemon",
+        lambda socket_dir, name: killed.append(name) or True,
+    )
+    saved = bt._active_sessions.copy()
+    try:
+        bt._active_sessions.clear()
+        bt._active_sessions["review"] = {
+            "session_name": "bb", "bb_session_id": "x",
+            "cdp_url": "wss://browserbase.example/cdp", "features": {},
+        }
+        lease.acquire("human-viewer")
+        stop_reserved_supervisors()
+        assert killed == []
+    finally:
+        bt._active_sessions.clear()
+        bt._active_sessions.update(saved)
