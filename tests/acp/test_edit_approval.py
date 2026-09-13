@@ -121,3 +121,93 @@ def test_workspace_auto_approval_allows_workspace_and_tmp_but_not_sensitive(tmp_
         "session",
         str(tmp_path),
     )
+    assert not should_auto_approve_edit(
+        EditProposal("write_file", str(tmp_path / "bot-desktop" / "lease.json"), None, "{}", {}),
+        "session",
+        str(tmp_path),
+    )
+
+
+def test_acp_edit_approval_does_not_read_bot_desktop_lease(tmp_path, monkeypatch):
+    """Diff prep ran before write_file. Without a file_safety gate the ACP
+    client received lease.json (raw viewer_id) even when the write was
+    later denied. Cross-process Take over stores that id on disk.
+    """
+    from acp_adapter.edit_approval import build_edit_proposal, maybe_require_edit_approval
+
+    root = tmp_path / ".hermes"
+    profile = root / "profiles" / "work"
+    profile.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(profile))
+
+    secret = '{"holder":"human","viewer_id":"ACP-LEAK-VIEWER","epoch":9}\n'
+    target = profile / "bot-desktop" / "lease.json"
+    target.parent.mkdir(parents=True)
+    target.write_text(secret, encoding="utf-8")
+
+    seen: list[str | None] = []
+
+    def spy(proposal):
+        seen.append(proposal.old_text)
+        return True
+
+    set_edit_approval_requester(spy)
+
+    blocked = maybe_require_edit_approval(
+        "write_file",
+        {"path": str(target), "content": '{"holder":"agent","epoch":10}\n'},
+    )
+    assert blocked is not None
+    assert "ACP-LEAK-VIEWER" not in blocked
+    assert seen == []
+
+    try:
+        build_edit_proposal(
+            "write_file",
+            {"path": str(target), "content": '{"holder":"agent"}\n'},
+        )
+        raise AssertionError("build_edit_proposal must not read a protected lease")
+    except PermissionError as exc:
+        assert "ACP-LEAK-VIEWER" not in str(exc)
+
+    result = json.loads(
+        handle_function_call(
+            "write_file",
+            {"path": str(target), "content": '{"holder":"agent","epoch":10}\n'},
+            task_id="acp-bot-desktop-lease",
+        )
+    )
+    raw = json.dumps(result)
+    assert "error" in result
+    assert "ACP-LEAK-VIEWER" not in raw
+    assert target.read_text(encoding="utf-8") == secret
+
+
+def test_acp_patch_does_not_read_bot_desktop_cookies(tmp_path, monkeypatch):
+    from acp_adapter.edit_approval import maybe_require_edit_approval
+
+    root = tmp_path / ".hermes"
+    profile = root / "profiles" / "work"
+    profile.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(profile))
+
+    cookies = profile / "bot-desktop" / "browser-profile" / "Default" / "Cookies"
+    cookies.parent.mkdir(parents=True)
+    cookies.write_text("STOLEN-COOKIE-JAR", encoding="utf-8")
+
+    seen: list[str | None] = []
+    set_edit_approval_requester(lambda proposal: seen.append(proposal.old_text) or False)
+
+    blocked = maybe_require_edit_approval(
+        "patch",
+        {
+            "mode": "replace",
+            "path": str(cookies),
+            "old_string": "STOLEN-COOKIE-JAR",
+            "new_string": "forged",
+        },
+    )
+    assert blocked is not None
+    assert "STOLEN-COOKIE-JAR" not in blocked
+    assert seen == []
+    assert cookies.read_text(encoding="utf-8") == "STOLEN-COOKIE-JAR"
