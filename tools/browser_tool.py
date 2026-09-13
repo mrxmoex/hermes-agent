@@ -1294,12 +1294,19 @@ def _capture_vision_screenshot(effective_task_id: str, annotate: bool, screensho
     if lp_prerouted and screenshot_path.exists():
         # Adopting the prerouted PNG skips ``_run_browser_command``. Re-apply
         # the lease bracket so a takeover after the preroute cannot deliver it.
+        # The PNG is temp Chrome on this screen — not the cached cloud / leftover
+        # ``/browser connect`` row ``_session_info_for_shared_browser_fence``
+        # would return (that skip used to deliver the frame).
         result = _session._bracket_bot_desktop_browser(
-            _session._session_info_for_shared_browser_fence(effective_task_id),
+            {"features": {"local": True}},
             lambda: _lp._annotate_lightpanda_fallback(
                 {"success": True, "data": {"path": str(screenshot_path)}}, _LP_VISION_FALLBACK_REASON
             ),
         )
+        if isinstance(result, dict) and result.get("code") == "human_has_control":
+            _session._discard_shared_browser_captures(
+                result={"data": {"path": str(screenshot_path)}},
+            )
     else:
         screenshot_args = (["--annotate"] if annotate else []) + ["--full", str(screenshot_path)]
         # A failed Lightpanda pre-route forces Chrome so _run_browser_command

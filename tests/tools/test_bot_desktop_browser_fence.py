@@ -875,6 +875,42 @@ def test_vision_preroute_remint_does_not_take_a_second_screenshot(monkeypatch, t
     assert "WHAT-THE-HUMAN-TYPED" not in json.dumps(result)
 
 
+def test_vision_preroute_adopt_is_fenced_when_cached_session_is_cloud(monkeypatch):
+    """The prerouted PNG is this screen; a cached cloud row used to skip the adopt bracket."""
+    from hermes_constants import get_hermes_home
+    from tools import browser_tool as browser
+
+    shots = get_hermes_home() / "cache" / "screenshots"
+    shots.mkdir(parents=True, exist_ok=True)
+    shot = shots / "HUMAN_PRIVATE_FRAME.png"
+    shot.write_bytes(b"\x89PNGHUMAN_PRIVATE_FRAME")
+    prior = browser._active_sessions.get("review")
+    browser._active_sessions["review"] = {
+        "session_name": "cloud", "cdp_url": "wss://cloud.example/devtools/browser/x",
+        "features": {"local": False},
+    }
+    monkeypatch.setattr(browser, "_is_camofox_mode", lambda: False)
+    monkeypatch.setattr(browser, "_blocked_private_page_content", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        "tools.browser_tool_vision._lightpanda_vision_preroute",
+        lambda *_a, **_k: (True, "chrome fallback", shot, None),
+    )
+    lease.acquire("human-viewer")
+    try:
+        raw = browser.browser_vision("what is on the page?", task_id="review")
+    finally:
+        if prior is None:
+            browser._active_sessions.pop("review", None)
+        else:
+            browser._active_sessions["review"] = prior
+    text = raw if isinstance(raw, str) else json.dumps(raw)
+    parsed = json.loads(text)
+    assert "HUMAN_PRIVATE_FRAME" not in text
+    assert parsed.get("code") == "human_has_control"
+    assert parsed.get("success") is not True
+    assert not shot.exists(), "reminted adopt left the prerouted PNG on disk"
+
+
 class _EvalSupervisor:
     def __init__(self, ran, result="WHAT-THE-HUMAN-TYPED"):
         self.ran = ran
