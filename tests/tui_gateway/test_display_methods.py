@@ -133,6 +133,7 @@ def test_observe_mints_the_viewer_id_and_status_never_discloses_the_holder(monke
         assert status["lease"]["viewer_hash"] == hashlib.sha256(holder.encode()).hexdigest()[:12]
         lease_events = [p for ev, p in broadcasts if ev == "display.lease"]
         assert lease_events and all(holder not in json.dumps(p) for p in lease_events)
+        assert all(isinstance(p.get("profile"), str) and p["profile"] for p in lease_events)
     finally:
         lease._reset_for_tests()
         server._reset_minted_for_tests()

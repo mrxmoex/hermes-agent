@@ -29,9 +29,10 @@ _runtime_marks: dict[str, tuple] = {}
 
 
 def _lease_event_payload(profile_key: str, lease) -> dict:
-    # Same shape and the same redaction (viewer_hash, never the raw id) as the in-process broadcast.
-    from tui_gateway.methods_display import _lease_view
-    return {"profile_key": profile_key, "lease": _lease_view(lease)}
+    # Same shape (profile name + redacted lease) as the in-process broadcast so a
+    # Desktop portal that has not yet received display.status can still match.
+    from tui_gateway.methods_display import _lease_event_payload as _named
+    return _named(profile_key, lease)
 
 
 def _seed_watched_profile_homes() -> None:

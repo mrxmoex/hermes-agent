@@ -12,7 +12,7 @@
 import { Codicon, host, useValue } from '@hermes/plugin-sdk'
 import type { RpcEvent } from '@hermes/plugin-sdk'
 import type { ProfileGroupRoute } from '@hermes/plugin-sdk'
-import { useEffect, useMemo } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 
 import { $lastRoster } from './data'
 import { useBots } from './i18n'
@@ -80,6 +80,11 @@ export function useScreenPortalState(bot: RosterRow) {
   const state = screenStateFor(all, bot)
   const status = state?.status ?? null
   const profileKey = status?.profile_key
+  const unnamedLeaseRefresh = useRef(false)
+
+  useEffect(() => {
+    unnamedLeaseRefresh.current = false
+  }, [bot])
 
   useEffect(() => {
     if (status || state?.unavailable) {
@@ -110,10 +115,26 @@ export function useScreenPortalState(bot: RosterRow) {
   useEffect(
     () =>
       host.onEvent('display.lease', (event: RpcEvent) => {
-        const payload = event.payload as { profile_key?: string; lease?: DisplayLease } | undefined
+        const payload = event.payload as { profile?: string; profile_key?: string; lease?: DisplayLease } | undefined
 
         if (payload?.lease && isEventForBotScreen(bot, event, profileKey)) {
           setScreenLease(bot, payload.lease)
+
+          return
+        }
+
+        // Older backends omit `profile` on the lease event. One refetch names
+        // this bot's home so the in-flight snapshot (and the next event) match.
+        // Named sibling events are ignored: one serve multiplexes many bots.
+        if (!profileKey && payload?.lease && !payload.profile && !unnamedLeaseRefresh.current) {
+          unnamedLeaseRefresh.current = true
+          void displayRequest<DisplayStatus>(bot, 'display.status')
+            .then(next => setScreenStatus(bot, next))
+            .catch((error: unknown) => {
+              if (isDisplayUnavailable(error)) {
+                setScreenUnavailable(bot)
+              }
+            })
         }
       }),
     [bot, profileKey]

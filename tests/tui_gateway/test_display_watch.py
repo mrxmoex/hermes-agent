@@ -71,6 +71,7 @@ def test_handoff_requested_in_another_process_is_broadcast(tmp_path, monkeypatch
     assert _wait_for(lambda: _lease_events(events, pending_handoff="probe")), events
     (payload,) = _lease_events(events, pending_handoff="probe")
     assert payload["profile_key"] == hermes_home_key(home)
+    assert isinstance(payload.get("profile"), str) and payload["profile"]
 
 
 def test_release_in_another_process_is_broadcast_and_local_transition_not_duplicated(tmp_path, monkeypatch):
@@ -146,6 +147,31 @@ def test_sibling_profile_handoff_is_watched_before_any_display_rpc(tmp_path, mon
     found = _lease_events(events, pending_handoff="sibling-ask")
     assert found, events
     assert found[0]["profile_key"] == hermes_home_key(sibling)
+    assert found[0]["profile"] == "bot-b"
+
+
+def test_lease_event_payload_names_the_profile_from_its_home(tmp_path, monkeypatch):
+    """The Desktop matches a lease event on payload.profile before display.status
+    has returned that home's path. The name must come from the home, not the
+    serve process's launch profile."""
+    from hermes_cli import profiles as profiles_mod
+    from hermes_constants import hermes_home_key
+    from tools.bot_desktop import lease
+    from tui_gateway.methods_display import _lease_event_payload
+
+    launch = tmp_path / "launch"
+    sibling = tmp_path / "coder"
+    launch.mkdir()
+    sibling.mkdir()
+    monkeypatch.setattr(
+        profiles_mod,
+        "profiles_to_serve",
+        lambda multiplex=True: [("default", launch), ("coder", sibling)],
+    )
+    payload = _lease_event_payload(hermes_home_key(sibling), lease.get(str(sibling)))
+    assert payload["profile"] == "coder"
+    assert payload["profile_key"] == hermes_home_key(sibling)
+    assert payload["lease"]["viewer_id"] is None
 
 
 def test_launcher_crash_without_unlinking_files_is_broadcast_as_stopped(tmp_path, monkeypatch):

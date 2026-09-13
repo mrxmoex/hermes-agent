@@ -108,6 +108,53 @@ it('applies lease events only from the owning host even when profile paths match
   view.unmount()
 })
 
+it('applies a named lease that arrives before display.status returns the profile key', async () => {
+  let finish!: (value: DisplayStatus) => void
+  vi.mocked(host.requestProfile).mockImplementation(
+    () =>
+      new Promise(resolve => {
+        finish = resolve
+      })
+  )
+  const view = renderHook(() => useScreenPortalState(botA))
+  const human = { ...status.lease, holder: 'human' as const, pending_handoff: '2fa', since: 2, epoch: 2 }
+
+  act(() =>
+    emitGatewayEvent({
+      type: 'display.lease',
+      connectionId: 'host-a',
+      payload: { profile: 'other', profile_key: status.profile_key, lease: human }
+    })
+  )
+  expect(view.result.current.lease).toBeNull()
+
+  act(() =>
+    emitGatewayEvent({
+      type: 'display.lease',
+      connectionId: 'host-b',
+      payload: { profile: 'default', profile_key: status.profile_key, lease: human }
+    })
+  )
+  expect(view.result.current.lease).toBeNull()
+
+  act(() =>
+    emitGatewayEvent({
+      type: 'display.lease',
+      connectionId: 'host-a',
+      payload: { profile: 'default', profile_key: status.profile_key, lease: human }
+    })
+  )
+  expect(view.result.current.lease?.holder).toBe('human')
+  expect(view.result.current.lease?.pending_handoff).toBe('2fa')
+
+  await act(async () => {
+    finish({ ...status, lease: { ...status.lease, epoch: 1 } })
+  })
+  expect(view.result.current.lease?.holder).toBe('human')
+  expect(view.result.current.lease?.pending_handoff).toBe('2fa')
+  view.unmount()
+})
+
 it('does not match a legacy profile group to a same-named remote bot', () => {
   const legacy: RosterRow = { name: 'default' }
   $lastRoster.set([botB, legacy])

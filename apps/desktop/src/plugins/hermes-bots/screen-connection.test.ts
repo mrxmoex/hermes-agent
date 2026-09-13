@@ -41,4 +41,20 @@ describe('isEventForBotScreen', () => {
     expect(isEventForBotScreen(bot, { payload: { profile_key: key }, type: 'display.lease' }, key)).toBe(true)
     expect(isEventForBotScreen(bot, { payload: { profile_key: '/other' }, type: 'display.lease' }, key)).toBe(false)
   })
+
+  it('matches by payload profile name when the home path is not known yet', () => {
+    routeMock.mockReturnValue({ connectionId: 'conn-a', profile: 'ops' })
+
+    const named = { connectionId: 'conn-a', payload: { profile: 'ops', profile_key: key }, type: 'display.lease' }
+    const sibling = { connectionId: 'conn-a', payload: { profile: 'other', profile_key: '/other' }, type: 'display.lease' }
+    const otherHost = { connectionId: 'conn-b', payload: { profile: 'ops', profile_key: key }, type: 'display.lease' }
+    const unnamed = { connectionId: 'conn-a', payload: { profile_key: key }, type: 'display.lease' }
+    const socketProfile = { connectionId: 'conn-a', profile: 'ops', payload: { profile_key: key }, type: 'display.lease' }
+
+    expect(isEventForBotScreen(bot, named, undefined)).toBe(true)
+    expect(isEventForBotScreen(bot, sibling, undefined)).toBe(false)
+    expect(isEventForBotScreen(bot, otherHost, undefined)).toBe(false)
+    expect(isEventForBotScreen(bot, unnamed, undefined)).toBe(false)
+    expect(isEventForBotScreen(bot, socketProfile, undefined)).toBe(false)
+  })
 })

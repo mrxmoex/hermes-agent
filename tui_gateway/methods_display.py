@@ -34,6 +34,47 @@ def _lease_view(lease) -> dict:
     return lease.public_view()
 
 
+def _profile_name_for_key(profile_key: str) -> str:
+    """Name the bot whose home is *profile_key*.
+
+    ``display.lease`` used to carry only the home path. The Desktop portal
+    cannot apply that event until ``display.status`` returns the same path, so a
+    gateway ``request_handoff`` that raced the one-shot status RPC was dropped
+    and "Bot needs you" stayed stale. The roster identity is the profile name;
+    put it on the event so the client can match before status lands. Never
+    infer the name from the serve process's launch home: one socket multiplexes
+    many profiles.
+    """
+    from pathlib import Path
+
+    from hermes_constants import hermes_home_key, reset_hermes_home_override, set_hermes_home_override
+
+    want = str(profile_key)
+    try:
+        from hermes_cli.profiles import profiles_to_serve
+        for name, home in profiles_to_serve(True):
+            if hermes_home_key(home) == want or str(Path(home)) == want:
+                return name
+    except Exception:
+        pass
+
+    token = set_hermes_home_override(profile_key)
+    try:
+        from tools.bot_desktop.runtime import _profile_name
+        return _profile_name()
+    finally:
+        reset_hermes_home_override(token)
+
+
+def _lease_event_payload(profile_key: str, lease) -> dict:
+    """Same redacted lease the in-process and file-watcher broadcasts must share."""
+    return {
+        "profile_key": profile_key,
+        "profile": _profile_name_for_key(profile_key),
+        "lease": _lease_view(lease),
+    }
+
+
 def _display_snapshot() -> dict:
     from hermes_constants import hermes_home_key
     from tools.bot_desktop import lease as _bd_lease, runtime as _bd_runtime
@@ -48,7 +89,7 @@ def _install_lease_listener() -> None:
     from tools.bot_desktop import lease as _bd_lease
 
     def _on_change(profile_key: str, lease) -> None:
-        _broadcast_global_event("display.lease", {"profile_key": profile_key, "lease": _lease_view(lease)})
+        _broadcast_global_event("display.lease", _lease_event_payload(profile_key, lease))
     _bd_lease.on_change(_on_change)
     _lease_listener_installed.set()  # only once the subscription exists, or a failed import would silence every client
 

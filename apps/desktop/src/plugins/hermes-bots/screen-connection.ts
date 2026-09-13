@@ -106,11 +106,20 @@ export function botScreenRoute(bot: RosterRow): PluginProfileRoute | string {
  * Does a `display.*` event belong to `bot`'s screen? Two hosts can share the same
  * `~/.hermes` path, so the profile key alone is ambiguous: the event must also have
  * arrived on the bot's registry connection (local/legacy events carry no tag).
+ *
+ * When `profileKey` is still unknown (the one-shot `display.status` is in flight)
+ * match on the event's own `payload.profile` — the roster name — plus connection.
+ * Never match on `connectionId` alone (one serve multiplexes many bots) and never
+ * on `event.profile` (that is the socket's launch profile, not the event subject).
  */
 export function isEventForBotScreen(bot: RosterRow, event: RpcEvent, profileKey: null | string | undefined): boolean {
-  const payload = event.payload as { profile_key?: string } | undefined
+  const payload = event.payload as { profile?: string; profile_key?: string } | undefined
 
-  if (!profileKey || payload?.profile_key !== profileKey) {
+  if (profileKey) {
+    if (payload?.profile_key !== profileKey) {
+      return false
+    }
+  } else if (!payload?.profile || payload.profile !== bot.name) {
     return false
   }
 
