@@ -104,22 +104,14 @@ def _cdp_swap_blocked_by_human() -> str | None:
     around the CDP override swap. That tree-kills the shared Chromium a
     human is mid-login in. Even after teardown defers the reserved jar,
     swapping the process CDP URL would launch or adopt another Chrome
-    against the same profile. Hand back first.
+    against the same profile. Hand back first. Same check as CLI
+    ``/browser connect``.
     """
     try:
-        from tools.bot_desktop import lease as _bd_lease
-    except ImportError:
-        return None
-    try:
-        if _bd_lease.human_holds():
-            return (
-                "A human holds the Bot Desktop. Hand back before connecting "
-                "or disconnecting another browser — the swap would force-kill "
-                "the Chromium they are using."
-            )
+        from tools.browser_tool_cdp import cdp_swap_blocked_by_human
+        return cdp_swap_blocked_by_human()
     except Exception:
         return None
-    return None
 
 
 def _browser_connect(rid, params: dict) -> dict:

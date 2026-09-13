@@ -1011,6 +1011,42 @@ def test_watch_once_persists_dock_port_before_devtools_miss(monkeypatch):
     assert _admit_resolved_cdp_for_attach(other) is True
 
 
+def test_set_process_cdp_override_persists_dock_port_before_devtools_miss(monkeypatch):
+    """TUI ``/browser connect`` probed the dock over HTTP and published
+    ``BROWSER_CDP_URL`` without stamping ``dock-cdp-port``. A later
+    DevTools miss then leftover-attached as another Chrome."""
+    import tools.bot_desktop.browser as bdb
+    from tools.bot_desktop.lease import HumanHasControl
+    from tools.browser_tool_cdp import set_process_cdp_override
+    from tools.browser_tool_session import (
+        _admit_resolved_cdp_for_attach,
+        _admit_shared_browser,
+        _cdp_url_is_bot_desktop_browser,
+        _last_dock_cdp_port,
+    )
+
+    dock = "ws://127.0.0.1:9333/devtools/browser/x"
+    other = "ws://127.0.0.1:9222/devtools/browser/x"
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: 9333)
+    _last_dock_cdp_port.clear()
+    assert bdb.last_known_dock_cdp_port() is None
+
+    set_process_cdp_override("http://127.0.0.1:9333")
+    assert bdb.last_known_dock_cdp_port() == 9333
+
+    _last_dock_cdp_port.clear()
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: None)
+    lease.acquire("human-viewer")
+    assert bdb.last_known_dock_cdp_port() == 9333
+    assert _cdp_url_is_bot_desktop_browser(dock) is True
+    assert _cdp_url_is_bot_desktop_browser(other) is False
+    with pytest.raises(HumanHasControl):
+        _admit_shared_browser(cdp_url=dock)
+    assert _admit_resolved_cdp_for_attach(dock) is False
+    assert _admit_shared_browser(cdp_url=other) is None
+    assert _admit_resolved_cdp_for_attach(other) is True
+
+
 def test_remember_dock_cdp_port_skips_rewrite_when_unchanged():
     """The 0.25s watch re-persists the same port; skip-if-same must not
     block the first write or a later different port."""

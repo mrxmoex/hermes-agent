@@ -54,6 +54,30 @@ _cdp_override_by_home: dict[str, str] = {}
 _cdp_override_env_home: Optional[str] = None
 
 
+_CDP_SWAP_BLOCKED = (
+    "A human holds the Bot Desktop. Hand back before connecting "
+    "or disconnecting another browser — the swap would force-kill "
+    "the Chromium they are using."
+)
+
+
+def cdp_swap_blocked_by_human() -> Optional[str]:
+    """Refuse ``/browser connect`` / disconnect while a human holds this screen.
+
+    TUI ``browser.manage`` already refused the swap. Interactive CLI
+    ``/browser connect`` wrote ``BROWSER_CDP_URL`` and minted a leftover
+    supervisor anyway. After a DevTools miss that leftover attach is
+    another Chrome (admit None) on the jar they are typing into.
+    """
+    try:
+        from tools.bot_desktop import lease as _bd_lease
+        if _bd_lease.human_holds():
+            return _CDP_SWAP_BLOCKED
+    except Exception:
+        return None
+    return None
+
+
 def set_process_cdp_override(url: str) -> None:
     """Publish a live ``/browser connect`` URL for the current Hermes home only."""
     from hermes_constants import hermes_home_key
@@ -63,6 +87,14 @@ def set_process_cdp_override(url: str) -> None:
     _cdp_override_by_home[key] = normalized
     _cdp_override_env_home = key
     os.environ["BROWSER_CDP_URL"] = normalized
+    # Connect probed the dock over HTTP/TCP. Stamp the live port now —
+    # a later DevTools miss must not treat that jar as another Chrome.
+    # Persist failure must not fail the connect.
+    try:
+        from tools.bot_desktop.browser import persist_live_dock_cdp_port
+        persist_live_dock_cdp_port()
+    except Exception:
+        pass
 
 
 def clear_process_cdp_override() -> None:
