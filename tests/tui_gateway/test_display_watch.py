@@ -46,6 +46,19 @@ def _lease_events(events, **want):
     return [p for ev, p in events if ev == "display.lease" and all(p["lease"].get(k) == v for k, v in want.items())]
 
 
+def _status_for(events, home: Path):
+    """``display.status`` payloads for *home* only.
+
+    The watcher now seeds every local profile home, and a process-wide
+    ``runtime.status`` mock flips the running bit on all of them. Counting
+    every broadcast would be a change-detector for how many profiles the
+    host has.
+    """
+    from hermes_constants import hermes_home_key
+    key = hermes_home_key(home)
+    return [p for ev, p in events if ev == "display.status" and p.get("profile_key") in (key, str(home))]
+
+
 def test_handoff_requested_in_another_process_is_broadcast(tmp_path, monkeypatch):
     import tui_gateway.server as server
     from hermes_constants import hermes_home_key
@@ -87,21 +100,24 @@ def test_screen_started_or_stopped_by_another_process_is_broadcast_as_status(tmp
 
     home = tmp_path / "home"
     (home / "bot-desktop").mkdir(parents=True)
+    from hermes_cli import profiles as profiles_mod
+    monkeypatch.setattr(profiles_mod, "profiles_to_serve", lambda multiplex=True: [("default", home)])
     events = _watching(server, home, monkeypatch)
     server._poll_runtime_files()  # seed
-    assert not [e for e in events if e[0] == "display.status"]
+    assert not _status_for(events, home)
 
     # what runtime.start() publishes from another process: launcher.pid then env
     (home / "bot-desktop" / "launcher.pid").write_text("424242 1.5")
     (home / "bot-desktop" / "env").write_text("DISPLAY=:77\n")
     server._poll_runtime_files()
-    statuses = [p for e, p in events if e == "display.status"]
+    statuses = _status_for(events, home)
     assert statuses and statuses[-1]["profile_key"] == str(home)
 
     (home / "bot-desktop" / "env").unlink()  # stop() from the other process
     server._poll_runtime_files()
-    assert len([e for e in events if e[0] == "display.status"]) == 2
-    assert [p for e, p in events if e == "display.status"][-1]["running"] is False
+    statuses = _status_for(events, home)
+    assert len(statuses) == 2
+    assert statuses[-1]["running"] is False
 
 
 def test_sibling_profile_handoff_is_watched_before_any_display_rpc(tmp_path, monkeypatch):
@@ -136,10 +152,12 @@ def test_launcher_crash_without_unlinking_files_is_broadcast_as_stopped(tmp_path
     """runtime.stop() unlinks env/pid; a crash leaves both. The portal only listens
     after the first status, so a dead launcher must still move the runtime mark."""
     import tui_gateway.server as server
+    from hermes_cli import profiles as profiles_mod
     from tools.bot_desktop import runtime
 
     home = tmp_path / "home"
     (home / "bot-desktop").mkdir(parents=True)
+    monkeypatch.setattr(profiles_mod, "profiles_to_serve", lambda multiplex=True: [("default", home)])
     events = _watching(server, home, monkeypatch)
     server._poll_runtime_files()
 
@@ -151,11 +169,11 @@ def test_launcher_crash_without_unlinking_files_is_broadcast_as_stopped(tmp_path
         install_command=None,
     ))
     server._poll_runtime_files()
-    assert [p for e, p in events if e == "display.status"][-1]["running"] is True
+    assert _status_for(events, home)[-1]["running"] is True
 
-    before = len([e for e in events if e[0] == "display.status"])
+    before = len(_status_for(events, home))
     server._poll_runtime_files()  # files unchanged, still alive: no re-broadcast
-    assert len([e for e in events if e[0] == "display.status"]) == before
+    assert len(_status_for(events, home)) == before
 
     monkeypatch.setattr(runtime, "status", lambda: runtime.DesktopStatus(
         profile="default", supported=True, installed=True, missing=[],
@@ -163,6 +181,6 @@ def test_launcher_crash_without_unlinking_files_is_broadcast_as_stopped(tmp_path
         install_command=None,
     ))
     server._poll_runtime_files()
-    statuses = [p for e, p in events if e == "display.status"]
+    statuses = _status_for(events, home)
     assert len(statuses) == before + 1
     assert statuses[-1]["running"] is False
