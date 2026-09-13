@@ -670,9 +670,11 @@ def test_browser_navigate_discards_open_payload_when_epoch_moves_after_open(monk
         lease.release("human-viewer")
 
     monkeypatch.setattr(browser, "_add_navigate_warnings", steal_after_open)
+    monkeypatch.setattr(browser, "_last_active_session_key", {})
     result = json.loads(browser.browser_navigate("https://example.com", task_id="review"))
     assert result.get("code") == "human_has_control"
     assert result.get("success") is not True
+    assert "review" not in browser._last_active_session_key
 
 
 def test_browser_navigate_discards_open_payload_when_epoch_moves_after_redirect_check(monkeypatch):
@@ -692,6 +694,73 @@ def test_browser_navigate_discards_open_payload_when_epoch_moves_after_redirect_
     result = json.loads(browser.browser_navigate("https://example.com", task_id="review"))
     assert result.get("code") == "human_has_control"
     assert result.get("success") is not True
+
+
+def test_browser_navigate_discards_ssrf_block_when_epoch_moves_during_blank(monkeypatch):
+    """about:blank on a blocked redirect is still the open's epoch.
+
+    The blank-on-SSRF window used to return ``Blocked: redirect landed on…``
+    even after a completed take-over / hand-back, and it retargeted follow-ups
+    onto that session. Same class as returning url/title after open.
+    """
+    browser, session = _wire(monkeypatch, [])
+    monkeypatch.setattr(session, "_get_session_info", lambda *a, **k: {
+        "session_name": "review", "cdp_url": None, "features": {"local": True}, "_first_nav": False})
+    monkeypatch.setattr(browser, "_last_active_session_key", {})
+
+    def run_cmd(_task, command, args=None, **_k):
+        if command == "open" and list(args or []) == ["about:blank"]:
+            lease.acquire("human-viewer")
+            lease.release("human-viewer")
+            return {"success": True, "data": {"url": "about:blank", "title": ""}}
+        return {"success": True, "data": {"url": "http://169.254.169.254/", "title": "IMDS"}}
+
+    monkeypatch.setattr(session, "_run_browser_command", run_cmd)
+    result = json.loads(browser.browser_navigate("https://example.com", task_id="review"))
+    assert result.get("code") == "human_has_control"
+    assert result.get("success") is not True
+    assert "redirect landed" not in (result.get("error") or "")
+    assert "review" not in browser._last_active_session_key
+
+
+def test_browser_navigate_propagates_human_has_control_from_ssrf_blank(monkeypatch):
+    """If about:blank itself was refused, do not rewrite it as an SSRF block."""
+    browser, session = _wire(monkeypatch, [])
+    monkeypatch.setattr(session, "_get_session_info", lambda *a, **k: {
+        "session_name": "review", "cdp_url": None, "features": {"local": True}, "_first_nav": False})
+    monkeypatch.setattr(browser, "_last_active_session_key", {})
+
+    def run_cmd(_task, command, args=None, **_k):
+        if command == "open" and list(args or []) == ["about:blank"]:
+            return {"success": False, "code": "human_has_control",
+                    "error": "A human has control of this bot's screen."}
+        return {"success": True, "data": {"url": "http://169.254.169.254/", "title": "IMDS"}}
+
+    monkeypatch.setattr(session, "_run_browser_command", run_cmd)
+    result = json.loads(browser.browser_navigate("https://example.com", task_id="review"))
+    assert result.get("code") == "human_has_control"
+    assert result.get("success") is not True
+    assert "redirect landed" not in (result.get("error") or "")
+    assert "review" not in browser._last_active_session_key
+
+
+def test_browser_navigate_does_not_retarget_on_blocked_metadata_redirect(monkeypatch):
+    """A blocked redirect is not a successful navigation — do not own the task."""
+    browser, session = _wire(monkeypatch, [])
+    monkeypatch.setattr(session, "_get_session_info", lambda *a, **k: {
+        "session_name": "review", "cdp_url": None, "features": {"local": True}, "_first_nav": False})
+    monkeypatch.setattr(browser, "_last_active_session_key", {})
+
+    def run_cmd(_task, command, args=None, **_k):
+        if command == "open" and list(args or []) == ["about:blank"]:
+            return {"success": True, "data": {"url": "about:blank", "title": ""}}
+        return {"success": True, "data": {"url": "http://169.254.169.254/", "title": "IMDS"}}
+
+    monkeypatch.setattr(session, "_run_browser_command", run_cmd)
+    result = json.loads(browser.browser_navigate("https://example.com", task_id="review"))
+    assert result.get("success") is False
+    assert "redirect landed on a cloud metadata endpoint" in (result.get("error") or "")
+    assert "review" not in browser._last_active_session_key
 
 
 @pytest.mark.parametrize("invoke", [

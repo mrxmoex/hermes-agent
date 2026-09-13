@@ -683,8 +683,13 @@ def _post_redirect_block(nav_session_key: str, url: str, final_url: str, auto_lo
         what = "a private/internal address"
     else:
         return None
-    _session._run_browser_command(nav_session_key, "open", ["about:blank"], timeout=10)
-    return json.dumps(_err(f"Blocked: redirect landed on {what}"))
+    blanked = _session._run_browser_command(nav_session_key, "open", ["about:blank"], timeout=10)
+    # about:blank is fenced on its own ticket. A take-over / hand-back must
+    # stay ``human_has_control`` — do not rewrite it as a successful SSRF block.
+    if blanked.get("code") == "human_has_control":
+        extra = {"code": blanked["code"]}
+        return _dumps(_err(blanked.get("error", _session._HUMAN_TOOK_OVER), **extra))
+    return _dumps(_err(f"Blocked: redirect landed on {what}"))
 
 
 def _snapshot_fields(snap_result: Dict[str, Any]) -> Dict[str, Any]:
@@ -778,9 +783,6 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     features = session_info.get("features") or {}
     if features.get("real_profile"):  # auditability: this ran on the user's real-profile copy-browser
         response["used_real_profile"] = True
-    # Only a successful, non-blocked navigation becomes the task owner: failed opens
-    # and blocked redirects must not retarget follow-up clicks to an irrelevant session.
-    _last_active_session_key[effective_task_id] = nav_session_key
     _lp._copy_fallback_warning(response, result)
     _add_navigate_warnings(response, title, session_info if is_first_nav else None)
     # Blank-on-SSRF and auto-snapshot remint unless they share this ticket.
@@ -790,11 +792,16 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     if moved:
         return moved
     blocked = _post_redirect_block(nav_session_key, url, final_url, auto_local_this_nav)
-    if blocked is not None:
-        return blocked
+    # Take-over during about:blank is the same epoch as open. Do not report a
+    # successful SSRF block (or retarget follow-ups) after a completed hand-over.
     moved = _lease_moved_json(admitted)
     if moved:
         return moved
+    if blocked is not None:
+        return blocked
+    # Only a successful, non-blocked navigation becomes the task owner: failed
+    # opens and blocked redirects must not retarget follow-up clicks.
+    _last_active_session_key[effective_task_id] = nav_session_key
     _attach_auto_snapshot(response, nav_session_key)
     moved = _lease_moved_json(admitted)
     if moved:
@@ -841,11 +848,11 @@ def browser_snapshot(
         return moved
 
     blocked = _blocked_private_page_content(effective_task_id)
-    if blocked is not None:
-        return blocked
     moved = _lease_moved_json(admitted)
     if moved:
         return moved
+    if blocked is not None:
+        return blocked
 
     response = {"success": True, **_snapshot_fields(result)}
     _lp._copy_fallback_warning(response, result)
