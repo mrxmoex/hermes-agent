@@ -60,6 +60,7 @@ vi.mock('./i18n', () => ({
       takeOver: 'Take over',
       reconnect: 'Reconnect',
       streamLost: 'Stream lost',
+      heroConnecting: 'Checking the screen…',
       stoppedTitle: 'Screen is off',
       stoppedBody: 'Start this bot’s desktop.',
       start: 'Start screen'
@@ -102,6 +103,7 @@ vi.mock('@novnc/novnc', () => ({
   }
 }))
 
+import { SCREEN_STATUS_RETRY_MS } from './screen-events'
 import { displayRequest } from './screen-connection'
 import { BotScreenPane } from './screen-pane'
 import { $screenState, setScreenStatus } from './screen-state'
@@ -168,7 +170,10 @@ beforeEach(() => {
   )
 })
 
-afterEach(() => vi.unstubAllGlobals())
+afterEach(() => {
+  vi.useRealTimers()
+  vi.unstubAllGlobals()
+})
 
 it('sends an intentional close before noVNC can send its statusless close on pane unmount', async () => {
   const view = render(<BotScreenPane bot={bot} />)
@@ -290,6 +295,38 @@ it('offers force hand-back on the stopped pane when a human lease survived the c
   await waitFor(() =>
     expect(vi.mocked(displayRequest)).toHaveBeenCalledWith(bot, 'display.lease.release', { force: true })
   )
+  view.unmount()
+})
+
+it('retries display.status after a transient failure instead of showing empty live chrome', async () => {
+  vi.useFakeTimers()
+  let statusCalls = 0
+  vi.mocked(displayRequest).mockImplementation(async (_bot, method) => {
+    if (method === 'display.status') {
+      statusCalls += 1
+
+      if (statusCalls === 1) {
+        throw new Error('502 Bad Gateway')
+      }
+
+      return { ...status }
+    }
+
+    return { ...status, ticket: 't', viewer_id: 'this-viewer' }
+  })
+
+  const view = render(<BotScreenPane bot={bot} />)
+  await act(async () => {})
+  expect(view.getByText('Checking the screen…')).toBeTruthy()
+  expect(view.queryByTitle('Reconnect')).toBeNull()
+  expect(sockets).toHaveLength(0)
+
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(SCREEN_STATUS_RETRY_MS)
+  })
+  await act(async () => {})
+  expect(sockets).toHaveLength(1)
+  expect(view.queryByText('Checking the screen…')).toBeNull()
   view.unmount()
 })
 

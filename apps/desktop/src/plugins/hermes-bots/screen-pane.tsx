@@ -15,7 +15,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { useBots } from './i18n'
 import { type DisplayLease, type DisplayObserveResult, displayRequest, type DisplayStatus, isDisplayUnavailable, leaseHeldBy, resolveScreenWsUrl, retainBotScreen, viewerHash } from './screen-connection'
-import { useOnGatewayOpen, useScreenBackendEvents } from './screen-events'
+import { useOnGatewayOpen, usePullScreenStatusUntilSettled, useScreenBackendEvents } from './screen-events'
 import { ScreenInstallCard } from './screen-install'
 import { $screenState, screenStateFor, setScreenLease, setScreenStatus, setScreenUnavailable, setScreenViewer } from './screen-state'
 import type { RosterRow } from './types'
@@ -79,9 +79,8 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
     }
   }, [bot])
 
-  useEffect(() => {
-    void refresh()
-  }, [refresh])
+  usePullScreenStatusUntilSettled(bot)
+  useScreenBackendEvents(bot)
 
   // Portal already resyncs on this edge. An open pane must too: after serve
   // restart / SSH / sleep-wake the RFB socket is dead and a warm cache lies.
@@ -91,8 +90,6 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
       void refresh()
     }, [refresh])
   )
-
-  useScreenBackendEvents(bot)
 
   const detach = useCallback((handBack = false) => {
     attachGeneration.current += 1
@@ -338,7 +335,21 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
     return <EmptyState description={t.screen.portalUnavailable} title={t.screen.unavailableTitle} />
   }
 
-  if (status && !status.supported) {
+  // Live chrome requires a settled status. A transient display.status failure
+  // used to fall through here (empty canvas, no error — the banner only
+  // renders when conn === 'error') and never retry.
+  if (!status) {
+    return (
+      <div className="grid min-h-48 place-items-center p-6 text-center">
+        <div className="flex flex-col items-center gap-2 text-xs text-muted-foreground">
+          <GlyphSpinner /> {t.screen.heroConnecting}
+          {error ? <div className="text-red-500">{error}</div> : null}
+        </div>
+      </div>
+    )
+  }
+
+  if (!status.supported) {
     return <EmptyState description={t.screen.unsupportedBody} title={t.screen.unsupportedTitle} />
   }
 
