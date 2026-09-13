@@ -971,6 +971,8 @@ def interrupt_reserved_browser_cli(home: Optional[str] = None) -> None:
 
 
 _NPX_LAUNCHERS = frozenset({"npx", "pnpx", "bunx"})
+_PACKAGE_EXEC_LAUNCHERS = frozenset({"npm", "pnpm", "yarn"})
+_PACKAGE_EXEC_SUBCOMMANDS = frozenset({"exec", "dlx"})
 _UVX_LAUNCHERS = frozenset({"uvx", "uv"})
 _NODE_LAUNCHERS = frozenset({"node", "nodejs", "iojs"})
 _ENV_LAUNCHERS = frozenset({"env"})
@@ -1087,6 +1089,66 @@ def _first_non_flag_tokens(tokens: List[str], skip: int = 1) -> List[str]:
     return out
 
 
+def _package_exec_parts(
+    tokens: List[str],
+) -> Optional[Tuple[List[str], List[str]]]:
+    """``npm|pnpm|yarn exec|dlx`` → ``(flag_packages, operands)``, else None.
+
+    ``npx`` / ``pnpx`` / ``bunx`` already unwrap. ``pnpm exec`` / ``npm exec``
+    / ``yarn dlx`` are the leftover writers those launchers miss. ``pnpm run``
+    / ``npm install`` / ``yarn add`` are not invocations. ``npm x`` is
+    ``npm exec``. ``--package`` / ``-p`` before a bare ``--`` are npm's
+    package pins, not the child's ``-p`` port.
+    """
+    if not tokens:
+        return None
+    name0 = _launcher_basename(tokens[0])
+    if name0 not in _PACKAGE_EXEC_LAUNCHERS:
+        return None
+    rest = _first_non_flag_tokens(tokens)
+    if not rest:
+        return None
+    sub = rest[0]
+    if name0 == "npm" and sub == "x":
+        pass
+    elif sub not in _PACKAGE_EXEC_SUBCOMMANDS:
+        return None
+    operands = rest[1:]
+    if operands and operands[0] == "--":
+        operands = operands[1:]
+    flag_pkgs: List[str] = []
+    i = 1
+    while i < len(tokens):
+        raw = str(tokens[i]) if tokens[i] is not None else ""
+        if raw == "--":
+            break
+        if raw in {"--package", "-p"} and i + 1 < len(tokens):
+            nxt = str(tokens[i + 1])
+            if not nxt.startswith("-"):
+                flag_pkgs.append(nxt)
+            i += 2
+            continue
+        if raw.startswith("--package="):
+            val = raw.split("=", 1)[1]
+            if val:
+                flag_pkgs.append(val)
+            i += 1
+            continue
+        i += 1
+    return (flag_pkgs, operands)
+
+
+def _invocation_via_package_exec(tokens: List[str], matches) -> Optional[bool]:
+    """None when argv is not npm/pnpm/yarn exec|dlx; else leftover-CLI match."""
+    parts = _package_exec_parts(tokens)
+    if parts is None:
+        return None
+    flag_pkgs, operands = parts
+    if any(matches([pkg]) for pkg in flag_pkgs):
+        return True
+    return bool(operands) and bool(matches(operands))
+
+
 def _is_agent_browser_invocation(tokens: List[str]) -> bool:
     """True when argv launches agent-browser (binary, npx, or shebang node).
 
@@ -1102,6 +1164,9 @@ def _is_agent_browser_invocation(tokens: List[str]) -> bool:
     name0 = _launcher_basename(tokens[0])
     if name0 in _ENV_LAUNCHERS:
         return _is_agent_browser_invocation(_env_command_tokens(tokens))
+    via = _invocation_via_package_exec(tokens, _is_agent_browser_invocation)
+    if via is not None:
+        return via
     if name0 in _NPX_LAUNCHERS:
         rest = _first_non_flag_tokens(tokens)
         return bool(rest) and _token_basename_is_agent_browser(rest[0])
@@ -1126,6 +1191,9 @@ def _is_browser_use_invocation(tokens: List[str]) -> bool:
     name0 = _launcher_basename(tokens[0])
     if name0 in _ENV_LAUNCHERS:
         return _is_browser_use_invocation(_env_command_tokens(tokens))
+    via = _invocation_via_package_exec(tokens, _is_browser_use_invocation)
+    if via is not None:
+        return via
     if _is_python_launcher(name0):
         rest = _first_non_flag_tokens(tokens)
         return bool(rest) and _token_basename_is(rest[0], "browser-use")
@@ -1178,6 +1246,9 @@ def _is_playwright_invocation(tokens: List[str]) -> bool:
     name0 = _launcher_basename(tokens[0])
     if name0 in _ENV_LAUNCHERS:
         return _is_playwright_invocation(_env_command_tokens(tokens))
+    via = _invocation_via_package_exec(tokens, _is_playwright_invocation)
+    if via is not None:
+        return via
     if name0 in _NPX_LAUNCHERS:
         rest = _first_non_flag_tokens(tokens)
         return bool(rest) and _token_basename_is(rest[0], "playwright")
@@ -1264,6 +1335,9 @@ def _is_chrome_remote_interface_invocation(tokens: List[str]) -> bool:
     name0 = _launcher_basename(tokens[0])
     if name0 in _ENV_LAUNCHERS:
         return _is_chrome_remote_interface_invocation(_env_command_tokens(tokens))
+    via = _invocation_via_package_exec(tokens, _is_chrome_remote_interface_invocation)
+    if via is not None:
+        return via
     if name0 in _NPX_LAUNCHERS:
         rest = _first_non_flag_tokens(tokens)
         return bool(rest) and _token_is_chrome_remote_interface(rest[0])
@@ -1286,6 +1360,9 @@ def _is_playwright_mcp_invocation(tokens: List[str]) -> bool:
     name0 = _launcher_basename(tokens[0])
     if name0 in _ENV_LAUNCHERS:
         return _is_playwright_mcp_invocation(_env_command_tokens(tokens))
+    via = _invocation_via_package_exec(tokens, _is_playwright_mcp_invocation)
+    if via is not None:
+        return via
     if name0 in _NPX_LAUNCHERS:
         rest = _first_non_flag_tokens(tokens)
         return bool(rest) and _token_is_playwright_mcp(rest[0])
@@ -1332,6 +1409,9 @@ def _is_chrome_devtools_mcp_invocation(tokens: List[str]) -> bool:
     name0 = _launcher_basename(tokens[0])
     if name0 in _ENV_LAUNCHERS:
         return _is_chrome_devtools_mcp_invocation(_env_command_tokens(tokens))
+    via = _invocation_via_package_exec(tokens, _is_chrome_devtools_mcp_invocation)
+    if via is not None:
+        return via
     if name0 in _NPX_LAUNCHERS:
         rest = _first_non_flag_tokens(tokens)
         return bool(rest) and _token_is_chrome_devtools_mcp(rest[0])

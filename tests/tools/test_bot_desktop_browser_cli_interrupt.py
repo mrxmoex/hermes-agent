@@ -315,6 +315,25 @@ def test_agent_browser_invocation_is_token_match_not_substring():
     assert not _is_chrome_devtools_mcp_invocation(["npx", "chrome-devtools"])
     assert not _is_chrome_devtools_mcp_invocation(
         ["/bin/bash", "-c", "npx chrome-devtools-mcp --browserUrl http://127.0.0.1:9333"])
+    assert _is_chrome_devtools_mcp_invocation(
+        ["pnpm", "exec", "chrome-devtools-mcp", "--browserUrl", "http://127.0.0.1:9333"])
+    assert _is_chrome_devtools_mcp_invocation(
+        ["npm", "exec", "--package=chrome-devtools-mcp", "--",
+         "--browserUrl", "http://127.0.0.1:9333"])
+    assert _is_playwright_invocation(
+        ["npm", "exec", "--", "playwright", "codegen"])
+    assert _is_playwright_mcp_invocation(
+        ["yarn", "dlx", "@playwright/mcp@latest"])
+    assert _is_chrome_remote_interface_invocation(
+        ["pnpm", "dlx", "chrome-remote-interface", "--port", "9333"])
+    assert _is_agent_browser_invocation(
+        ["npm", "x", "agent-browser", "fill"])
+    assert not _is_chrome_devtools_mcp_invocation(
+        ["pnpm", "run", "chrome-devtools-mcp"])
+    assert not _is_chrome_devtools_mcp_invocation(
+        ["npm", "install", "chrome-devtools-mcp"])
+    assert not _is_playwright_invocation(["yarn", "add", "playwright"])
+    assert not _is_chrome_devtools_mcp_invocation(["pnpm", "exec", "ruff"])
 
 
 def test_unregistered_cdp_dock_cli_killed_on_takeover():
@@ -818,6 +837,65 @@ def test_unregistered_chrome_devtools_mcp_dock_url_killed_on_takeover():
     assert auto.killed == 0
     assert other.killed == 0
     assert lan.killed == 0
+    assert bash_parent.killed == 0
+
+
+def test_unregistered_package_exec_dock_cli_killed_on_takeover():
+    """pnpm exec / npm exec / yarn dlx leftover writers missed npx matching."""
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    bdb.remember_dock_cdp_port(9333)
+    leftover = _FakeProc(
+        9300,
+        ["pnpm", "exec", "chrome-devtools-mcp",
+         "--browserUrl", "http://127.0.0.1:9333"],
+    )
+    npm_pkg = _FakeProc(
+        9301,
+        ["npm", "exec", "--package=chrome-devtools-mcp", "--",
+         "--browserUrl", "http://127.0.0.1:9333"],
+    )
+    yarn = _FakeProc(
+        9302,
+        ["yarn", "dlx", "@playwright/mcp",
+         "--cdp-endpoint", "http://127.0.0.1:9333"],
+    )
+    playwright = _FakeProc(
+        9303,
+        ["npm", "exec", "--", "playwright", "codegen",
+         "--cdp-endpoint", "http://127.0.0.1:9333"],
+    )
+    run_script = _FakeProc(
+        9304,
+        ["pnpm", "run", "chrome-devtools-mcp",
+         "--browserUrl", "http://127.0.0.1:9333"],
+    )
+    other = _FakeProc(
+        9305,
+        ["pnpm", "exec", "chrome-devtools-mcp",
+         "--browserUrl", "http://127.0.0.1:9222"],
+    )
+    install = _FakeProc(9306, ["npm", "install", "chrome-devtools-mcp"])
+    bash_parent = _FakeProc(
+        9307,
+        ["/bin/bash", "-c",
+         "pnpm exec chrome-devtools-mcp --browserUrl http://127.0.0.1:9333"],
+    )
+    lease.acquire("human")
+    n = interrupt_unregistered_dock_cli(
+        processes=[leftover, npm_pkg, yarn, playwright, run_script, other, install, bash_parent],
+        chromium_pid=9999,
+        owner_daemon_pid=9998,
+    )
+    assert n == 4
+    assert leftover.killed == 1
+    assert npm_pkg.killed == 1
+    assert yarn.killed == 1
+    assert playwright.killed == 1
+    assert run_script.killed == 0
+    assert other.killed == 0
+    assert install.killed == 0
     assert bash_parent.killed == 0
 
 
