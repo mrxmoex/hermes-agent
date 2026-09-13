@@ -1634,10 +1634,13 @@ _PWD_TOKEN = (
     r'|`' + _CWD_RESOLVE_CMD + r'`'
     r')'
 )
+# Unquoted ``~+`` / ``~+0`` / ``~00`` / ``~0`` are ``$PWD`` (``~+1`` is
+# DIRSTACK). Bash strips leading zeros (``~00`` == ``~0``). Put
+# ``~+0+`` before ``~+`` so ``~+0/`` is not consumed as ``~+`` + ``0/``.
 _PWD_WRITE_DEST = (
     r'(?:'
     r'(?:["\']?)' + _PWD_TOKEN + r'(?:["\']?)'
-    r'|~\+'
+    r'|~(?:\+0+|0+|\+)'
     r')'
     r'/'
     r'(?:["\']?)'
@@ -1649,13 +1652,28 @@ _PWD_WRITE_DEST = (
 # after ``cd``/``pushd``/``popd`` away from a session cwd that already
 # is the tree. Bash ``~-`` is ``$OLDPWD`` (unquoted only). A bare
 # ``$OLDPWD`` dest with no shell chdir is the *previous* directory —
-# not the screen — and stays unflagged.
+# not the screen — and stays unflagged. ``~-0`` is ``dirs -0`` (stack
+# bottom after ``pushd``), not OLDPWD — see ``_DIRSTACK_WRITE_DEST``.
 _OLDPWD_WRITE_DEST = (
     r'(?:'
     r'(?:["\']?)'
     r'(?:\$\{OLDPWD\}|\$OLDPWD\b)'
     r'(?:["\']?)'
     r'|~-'
+    r')'
+    r'/'
+    r'(?:["\']?)'
+    r'[^\s;&|<>"\']+'
+    r'(?:["\']?)'
+)
+# Bash ``~N`` / ``~+N`` / ``~-N`` are DIRSTACK (unquoted only). After
+# ``cd ~/.hermes/bot-desktop && pushd /tmp``, ``~1`` / ``~+1`` / ``~-0``
+# expand to the tree. ``cd`` does not update DIRSTACK — only
+# ``pushd``/``popd``. Quotes suppress tilde expansion.
+# Leading zeros: ``~01`` == ``~1``, ``~-00`` == ``~-0``.
+_DIRSTACK_WRITE_DEST = (
+    r'(?:'
+    r'~(?:\+0*[1-9][0-9]*|0*[1-9][0-9]*|-0*[0-9]+)'
     r')'
     r'/'
     r'(?:["\']?)'
@@ -1671,6 +1689,9 @@ _CHDIR_BOT_DESKTOP_RE = re.compile(
 # > $OLDPWD/lease.json`` is the finding-54 miss: OLDPWD becomes the tree
 # without a same-command chdir *into* it.
 _SHELL_CHDIR_RE = re.compile(r'\b(?:cd|pushd|popd)\b', _RE_FLAGS)
+# ``cd`` does not push DIRSTACK. ``~1`` / ``~-0`` only become the screen
+# after ``pushd``/``popd``.
+_DIRSTACK_MUTATE_RE = re.compile(r'\b(?:pushd|popd)\b', _RE_FLAGS)
 _BOT_DESKTOP_CWD_RE = re.compile(_HERMES_BOT_DESKTOP_PATH, _RE_FLAGS)
 
 
@@ -1701,6 +1722,7 @@ _RELATIVE_BOT_DESKTOP_WRITE_RE = _bot_desktop_cwd_write_re(
     rf'(?:{_RELATIVE_WRITE_DEST}|{_PWD_WRITE_DEST})'
 )
 _OLDPWD_BOT_DESKTOP_WRITE_RE = _bot_desktop_cwd_write_re(_OLDPWD_WRITE_DEST)
+_DIRSTACK_BOT_DESKTOP_WRITE_RE = _bot_desktop_cwd_write_re(_DIRSTACK_WRITE_DEST)
 _CHDIR_BOT_DESKTOP_WRITE_DESCRIPTION = "write into bot-desktop after chdir"
 
 
@@ -1744,10 +1766,19 @@ def _command_shell_chdirs(command: str) -> bool:
     return bool(_SHELL_CHDIR_RE.search(command))
 
 
-def _has_relative_bot_desktop_write(command: str, *, include_oldpwd: bool = False) -> bool:
+def _command_mutates_dirstack(command: str) -> bool:
+    """True when the command ``pushd``/``popd``s (updates DIRSTACK / ``~N``)."""
+    return bool(_DIRSTACK_MUTATE_RE.search(command))
+
+
+def _has_relative_bot_desktop_write(
+    command: str, *, include_oldpwd: bool = False, include_dirstack: bool = False,
+) -> bool:
     if _RELATIVE_BOT_DESKTOP_WRITE_RE.search(command):
         return True
-    return bool(include_oldpwd and _OLDPWD_BOT_DESKTOP_WRITE_RE.search(command))
+    if include_oldpwd and _OLDPWD_BOT_DESKTOP_WRITE_RE.search(command):
+        return True
+    return bool(include_dirstack and _DIRSTACK_BOT_DESKTOP_WRITE_RE.search(command))
 
 
 def detect_dangerous_command(command: str, *, cwd: Optional[str] = None) -> tuple:
@@ -1772,6 +1803,11 @@ def detect_dangerous_command(command: str, *, cwd: Optional[str] = None) -> tupl
     include_oldpwd = chdir_bot_desktop or (
         cwd_is_bot_desktop and _command_shell_chdirs(normalized_for_cwd)
     )
+    # ``~1`` / ``~+1`` / ``~-0`` are the screen only after ``pushd``/``popd``.
+    # ``cd`` updates ``$OLDPWD`` but leaves DIRSTACK alone.
+    include_dirstack = (chdir_bot_desktop or cwd_is_bot_desktop) and (
+        _command_mutates_dirstack(normalized_for_cwd)
+    )
     for command_variant in _command_detection_variants(command):
         # Case-preserved: dest-first short flags (`-t` vs `-T`, tar `-C` vs `-c`).
         for pattern_re, description in DEST_FIRST_SENSITIVE_PATTERNS_COMPILED:
@@ -1782,11 +1818,11 @@ def detect_dangerous_command(command: str, *, cwd: Optional[str] = None) -> tupl
             if pattern_re.search(command_lower):
                 return (True, description, description)
         if in_bot_desktop and _has_relative_bot_desktop_write(
-            command_variant, include_oldpwd=include_oldpwd
+            command_variant, include_oldpwd=include_oldpwd, include_dirstack=include_dirstack,
         ):
             return (True, _CHDIR_BOT_DESKTOP_WRITE_DESCRIPTION, _CHDIR_BOT_DESKTOP_WRITE_DESCRIPTION)
     if in_bot_desktop and _has_relative_bot_desktop_write(
-        normalized_for_cwd, include_oldpwd=include_oldpwd
+        normalized_for_cwd, include_oldpwd=include_oldpwd, include_dirstack=include_dirstack,
     ):
         return (True, _CHDIR_BOT_DESKTOP_WRITE_DESCRIPTION, _CHDIR_BOT_DESKTOP_WRITE_DESCRIPTION)
     normalized = _normalize_command_for_detection(command)
