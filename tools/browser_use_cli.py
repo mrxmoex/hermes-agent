@@ -19,6 +19,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from hermes_constants import get_hermes_home
 from tools.bot_desktop.lease import HumanHasControl
+from tools.bot_desktop.runtime import desktop_env, detach_from_desktop
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -141,7 +142,10 @@ def _blocked_url_in_code(code: str) -> Optional[str]:
 
 def _base_subprocess_env() -> dict:
     from tools.browser_tool import _build_browser_env
-    env = _build_browser_env()
+    env = detach_from_desktop(_build_browser_env())
+    # Default detached: this harness often drives another browser (cloud / user CDP /
+    # Browser Use native). ``browser_exec`` re-applies ``desktop_env`` only after the
+    # shared-browser fence admits this profile's dock Chromium.
     # The CLI runs under its own Python (uv tool / uvx); an inherited PYTHONPATH/PYTHONHOME
     # (Hermes's venv) wins over its site-packages → wrong-ABI C-extensions and a crash.
     # PYTHONPATH/PYTHONHOME inherited from the agent process point at Hermes's venv site-packages, and a
@@ -619,6 +623,12 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
             refuse.get("error") or "Human has control of this bot's screen.",
             code=refuse.get("code") or "human_has_control",
         )
+    # Predicted-cloud / user-CDP skip the fence (another browser) but ``_build_browser_env``
+    # still merged this profile's DISPLAY and dock Chromium pins. Re-attach only when
+    # we actually admitted the shared local browser; otherwise the CLI would discover
+    # the human's dock instance on that seat.
+    if admitted is not None:
+        env = desktop_env(env)
 
     def _lease_moved_error():
         discarded = _discard_if_lease_moved(admitted)

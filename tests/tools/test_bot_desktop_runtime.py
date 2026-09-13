@@ -82,6 +82,46 @@ def test_alloc_lock_is_not_a_fixed_name_in_world_writable_tmp(tmp_path, monkeypa
     assert runtime._alloc_lock_path() == override
 
 
+def test_detach_from_desktop_drops_published_seat_and_dock_pins(tmp_path, monkeypatch):
+    """Inverse of desktop_env: an unshared harness must not keep the dock Chromium's seat."""
+    exe = tmp_path / "chrome"
+    exe.write_text("#!/bin/sh\n", encoding="utf-8")
+    exe.chmod(0o755)
+    dock = tmp_path / "browser-profile"
+    monkeypatch.setattr(runtime, "published_env", lambda: {
+        "DISPLAY": ":37", "XAUTHORITY": "/tmp/xauth",
+    })
+    monkeypatch.setattr("tools.bot_desktop.browser.profile_dir", lambda: dock)
+    monkeypatch.setattr("tools.bot_desktop.browser.executable", lambda: str(exe))
+    out = runtime.detach_from_desktop({
+        "DISPLAY": ":37",
+        "XAUTHORITY": "/tmp/xauth",
+        "AGENT_BROWSER_PROFILE": str(dock),
+        "AGENT_BROWSER_EXECUTABLE_PATH": str(exe),
+        "KEEP": "yes",
+        "PATH": "/usr/bin",
+    })
+    assert "DISPLAY" not in out
+    assert "XAUTHORITY" not in out
+    assert "AGENT_BROWSER_PROFILE" not in out
+    assert "AGENT_BROWSER_EXECUTABLE_PATH" not in out
+    assert out["KEEP"] == "yes"
+
+
+def test_detach_from_desktop_leaves_a_different_seat_alone(monkeypatch):
+    monkeypatch.setattr(runtime, "published_env", lambda: {"DISPLAY": ":37"})
+    monkeypatch.setattr("tools.bot_desktop.browser.profile_dir", lambda: Path("/dock/profile"))
+    monkeypatch.setattr("tools.bot_desktop.browser.executable", lambda: "/dock/chrome")
+    out = runtime.detach_from_desktop({
+        "DISPLAY": ":0",
+        "AGENT_BROWSER_PROFILE": "/other/profile",
+        "AGENT_BROWSER_EXECUTABLE_PATH": "/usr/bin/chromium",
+    })
+    assert out["DISPLAY"] == ":0"
+    assert out["AGENT_BROWSER_PROFILE"] == "/other/profile"
+    assert out["AGENT_BROWSER_EXECUTABLE_PATH"] == "/usr/bin/chromium"
+
+
 def test_recorded_display_held_by_a_live_server_is_not_reused(tmp_path, monkeypatch):
     """After profile A stops, B may take A's number; A restarting must pick another rather than
     unlink B's socket and lock."""

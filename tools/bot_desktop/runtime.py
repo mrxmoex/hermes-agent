@@ -10,6 +10,8 @@ machine.
 
 The launcher is ``launcher.sh`` next to this module; :func:`desktop_env` is what cua-driver and headed
 Chromium spawns merge in so the agent acts on this profile's screen and nowhere else.
+:func:`detach_from_desktop` is the inverse: cloud / user-CDP / Browser Use native harnesses must
+drop that seat or they discover the dock Chromium the human is typing into.
 """
 
 from __future__ import annotations
@@ -229,6 +231,32 @@ def desktop_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
         env.pop("WAYLAND_DISPLAY", None)  # X11 desktop; a leaked Wayland socket flips GTK/Chromium backends
         from tools.bot_desktop.browser import env_for_agent
         env_for_agent(env)  # same binary + user-data-dir as the dock's Browser icon
+    return env
+
+
+def detach_from_desktop(base_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    """Drop this profile's published seat and dock-browser pins from ``base_env``.
+
+    ``desktop_env`` (and a gateway that inherited the launcher's env) merge DISPLAY /
+    XAUTHORITY and pin ``AGENT_BROWSER_*`` so headed *local* tools share the dock
+    Chromium. A cloud, user-CDP, or Browser Use native harness that still has those
+    values discovers that same Chromium — including while a human holds the lease,
+    because those backends skip the shared-browser fence on purpose (another browser).
+
+    Inverse of ``desktop_env``. Leaves a different seat (host ``:0``, a user pin that
+    is not the dock profile) alone. Idempotent when the desktop is down.
+    """
+    env = dict(os.environ if base_env is None else base_env)
+    published = published_env()
+    for key, value in published.items():
+        if env.get(key) == value:
+            env.pop(key, None)
+    from tools.bot_desktop.browser import executable, profile_dir
+    if env.get("AGENT_BROWSER_PROFILE") == str(profile_dir()):
+        env.pop("AGENT_BROWSER_PROFILE", None)
+    exe = executable()
+    if exe and env.get("AGENT_BROWSER_EXECUTABLE_PATH") == exe:
+        env.pop("AGENT_BROWSER_EXECUTABLE_PATH", None)
     return env
 
 

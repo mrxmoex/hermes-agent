@@ -820,6 +820,88 @@ def test_browser_exec_cloud_fallback_does_not_spawn_while_human_holds(monkeypatc
     assert result.get("code") == "human_has_control"
 
 
+def _bu_native_cloud():
+    class Cloud:
+        name = "browser-use"
+
+    return Cloud()
+
+
+def test_browser_exec_unshared_backend_does_not_inherit_bot_desktop_seat(monkeypatch, tmp_path):
+    """Predicted-cloud skips the lease fence (another browser) but the harness env still
+    inherited DISPLAY + the dock profile — the CLI then discovers the human's Chromium."""
+    captured: dict = {}
+    dock = tmp_path / "browser-profile"
+    exe = tmp_path / "chrome"
+    exe.write_text("#!/bin/sh\n", encoding="utf-8")
+    exe.chmod(0o755)
+    cloud = _bu_native_cloud()
+    monkeypatch.setattr(
+        "tools.browser_tool._build_browser_env",
+        lambda: {
+            "DISPLAY": ":37",
+            "XAUTHORITY": "/tmp/xauth",
+            "AGENT_BROWSER_PROFILE": str(dock),
+            "AGENT_BROWSER_EXECUTABLE_PATH": str(exe),
+            "PATH": "/usr/bin",
+        },
+    )
+    monkeypatch.setattr(runtime, "published_env", lambda: {
+        "DISPLAY": ":37", "XAUTHORITY": "/tmp/xauth",
+    })
+    monkeypatch.setattr("tools.bot_desktop.browser.profile_dir", lambda: dock)
+    monkeypatch.setattr("tools.bot_desktop.browser.executable", lambda: str(exe))
+    monkeypatch.setattr(session_mod._cdp, "_get_cdp_override_raw", lambda: "")
+    monkeypatch.setattr(session_mod._cloud, "_get_cloud_provider", lambda: cloud)
+    monkeypatch.setattr("tools.browser_tool_cloud._get_cloud_provider", lambda: cloud)
+    monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "")
+    monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override_raw", lambda: "")
+    monkeypatch.setattr(bu_cli, "_use_gateway", lambda *_a, **_k: False)
+    monkeypatch.setattr(bu_cli, "_find_cli", lambda: ["/usr/bin/browser-use"])
+
+    def capture(_cmd, _code, env, _timeout):
+        captured.update(env)
+        return subprocess.CompletedProcess(["browser-use"], 0, "ok", "")
+
+    monkeypatch.setattr(bu_cli, "_run_cli_killing_process_group", capture)
+    lease.acquire("human-viewer")
+    result = json.loads(bu_cli.browser_exec("print(1)", task_id="cloud-task"))
+    assert result.get("success") is True, result
+    assert captured.get("DISPLAY") != ":37"
+    assert captured.get("AGENT_BROWSER_PROFILE") != str(dock)
+    assert captured.get("AGENT_BROWSER_EXECUTABLE_PATH") != str(exe)
+
+
+def test_browser_exec_shared_backend_keeps_bot_desktop_seat_when_agent_holds(monkeypatch):
+    """Once the fence admits the dock Chromium, the harness must still land on that DISPLAY."""
+    captured: dict = {}
+    monkeypatch.setattr(
+        "tools.browser_tool._build_browser_env",
+        lambda: {"DISPLAY": ":37", "PATH": "/usr/bin"},
+    )
+    monkeypatch.setattr(session_mod._cdp, "_get_cdp_override_raw", lambda: "")
+    monkeypatch.setattr(session_mod._cloud, "_get_cloud_provider", lambda: None)
+    monkeypatch.setattr("tools.browser_tool_cloud._get_cloud_provider", lambda: None)
+    monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "")
+    monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override_raw", lambda: "")
+    monkeypatch.setattr(bu_cli, "_find_cli", lambda: ["/usr/bin/browser-use"])
+
+    def route(env, _session, _task_id, _local):
+        env["BU_CDP_WS"] = "ws://127.0.0.1:9222"
+        return None
+
+    monkeypatch.setattr(bu_cli, "_route_backend", route)
+
+    def capture(_cmd, _code, env, _timeout):
+        captured.update(env)
+        return subprocess.CompletedProcess(["browser-use"], 0, "ok", "")
+
+    monkeypatch.setattr(bu_cli, "_run_cli_killing_process_group", capture)
+    result = json.loads(bu_cli.browser_exec("print(1)", task_id="local-task"))
+    assert result.get("success") is True, result
+    assert captured.get("DISPLAY") == ":37"
+
+
 def test_local_sidecar_is_predicted_shared_even_with_cloud_provider(monkeypatch):
     monkeypatch.setattr(session_mod._cloud, "_get_cloud_provider", lambda: object())
     monkeypatch.setattr(session_mod._cdp, "_get_cdp_override_raw", lambda: "http://127.0.0.1:9222")
