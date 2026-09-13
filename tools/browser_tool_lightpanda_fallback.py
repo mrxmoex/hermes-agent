@@ -172,22 +172,30 @@ def _run_chrome_fallback_command(task_id: str, command: str, args: List[str], ti
         proc = _session._popen_agent_browser(base_args + [cmd] + cmd_args, browser_env, task_socket_dir, cmd)
         stdout_path = os.path.join(task_socket_dir, f"_stdout_{cmd}")
         stderr_path = os.path.join(task_socket_dir, f"_stderr_{cmd}")
+        # Throwaway Chrome can singleton-join the dock jar (see AGENT_BROWSER_PROFILE
+        # pin above). Leftover navigate/fill after Take over is leftover write.
+        dock_home = _session._dock_cli_home(task_id, {"features": {"local": True}})
+        if dock_home:
+            _session.register_inflight_dock_cli(proc, dock_home)
         try:
-            proc.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
-            return {"success": False, "error": f"Chrome fallback '{cmd}' timed out"}
-        try:
-            with open(stdout_path, encoding="utf-8") as f:
-                stdout = f.read().strip()
-            if stdout:
-                return json.loads(stdout.split("\n")[-1])
-        except Exception as exc:
-            _bt.logger.debug("Chrome fallback tmp cmd '%s' error: %s", cmd, exc)
+            try:
+                proc.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+                return {"success": False, "error": f"Chrome fallback '{cmd}' timed out"}
+            try:
+                with open(stdout_path, encoding="utf-8") as f:
+                    stdout = f.read().strip()
+                if stdout:
+                    return json.loads(stdout.split("\n")[-1])
+            except Exception as exc:
+                _bt.logger.debug("Chrome fallback tmp cmd '%s' error: %s", cmd, exc)
+            return {"success": False, "error": f"Chrome fallback '{cmd}' failed"}
         finally:
+            if dock_home:
+                _session.unregister_inflight_dock_cli(proc)
             _session._unlink_command_output_files(stdout_path, stderr_path)
-        return {"success": False, "error": f"Chrome fallback '{cmd}' failed"}
 
     try:
         # 3. Navigate Chrome to the same URL, then 4. run the requested command.

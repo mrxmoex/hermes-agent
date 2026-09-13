@@ -174,6 +174,9 @@ def stop_reserved_supervisors(home: Optional[str] = None) -> None:
 
     Also detaches attach-only agent-browser daemons (CDP clients that did
     not spawn the dock Chromium). Daemons that own the shared Chromium stay.
+
+    Also kills leftover agent-browser / browser_exec CLI writers aimed at
+    the dock — waiting those out is leftover keystrokes in the human's field.
     """
     install_supervisor_lease_hook()
     try:
@@ -221,6 +224,11 @@ def stop_reserved_supervisors(home: Optional[str] = None) -> None:
     except Exception:
         pass
     _detach_reserved_attached_daemons(home=home)
+    try:
+        from tools.browser_tool_session import interrupt_reserved_browser_cli
+        interrupt_reserved_browser_cli(home=home)
+    except Exception:
+        pass
 
 
 def _detach_reserved_attached_daemons(home: Optional[str] = None) -> None:

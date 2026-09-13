@@ -9,9 +9,10 @@ import logging
 import os
 import shutil
 import subprocess
+import threading
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from hermes_cli._subprocess_compat import windows_hide_flags
 from tools.browser_tool_origin import origin as _bt
@@ -561,26 +562,34 @@ def _spawn_and_collect(
     stdout_path = os.path.join(task_socket_dir, f"_stdout_{command}")
     stderr_path = os.path.join(task_socket_dir, f"_stderr_{command}")
     proc = _popen_agent_browser(cmd_parts, browser_env, task_socket_dir, command)
+    dock_home = _dock_cli_home(task_id, session_info)
+    if dock_home:
+        # PID-only: this CLI shares Hermes' process group. Do not killpg.
+        register_inflight_dock_cli(proc, dock_home)
 
     try:
-        proc.wait(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait()
-        stdout, stderr = _read_command_output_files(stdout_path, stderr_path)
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            stdout, stderr = _read_command_output_files(stdout_path, stderr_path)
+            _unlink_command_output_files(stdout_path, stderr_path)
+            _handle_browser_command_timeout(task_id, session_info, task_socket_dir)
+            if stderr and stderr.strip():
+                _bt.logger.warning("browser '%s' stderr after timeout: %s", command, stderr.strip()[:500])
+            _bt.logger.warning("browser '%s' timed out after %ds (task=%s, socket_dir=%s)",
+                           command, timeout, task_id, task_socket_dir)
+            return {"success": False, "error": _format_browser_timeout_error(command, timeout, stdout, stderr)}
+        with open(stdout_path, "r", encoding="utf-8") as f:
+            stdout = f.read()
+        with open(stderr_path, "r", encoding="utf-8") as f:
+            stderr = f.read()
         _unlink_command_output_files(stdout_path, stderr_path)
-        _handle_browser_command_timeout(task_id, session_info, task_socket_dir)
-        if stderr and stderr.strip():
-            _bt.logger.warning("browser '%s' stderr after timeout: %s", command, stderr.strip()[:500])
-        _bt.logger.warning("browser '%s' timed out after %ds (task=%s, socket_dir=%s)",
-                       command, timeout, task_id, task_socket_dir)
-        return {"success": False, "error": _format_browser_timeout_error(command, timeout, stdout, stderr)}
-    with open(stdout_path, "r", encoding="utf-8") as f:
-        stdout = f.read()
-    with open(stderr_path, "r", encoding="utf-8") as f:
-        stderr = f.read()
-    _unlink_command_output_files(stdout_path, stderr_path)
-    return _interpret_browser_command_output(command, stdout, stderr, proc.returncode)
+        return _interpret_browser_command_output(command, stdout, stderr, proc.returncode)
+    finally:
+        if dock_home:
+            unregister_inflight_dock_cli(proc)
 
 
 def _run_browser_command(
@@ -681,11 +690,108 @@ _last_dock_cdp_port: Dict[str, int] = {}
 
 def _reset_dock_port_memory_for_tests() -> None:
     _last_dock_cdp_port.clear()
+    _reset_inflight_dock_cli_for_tests()
     try:
         from tools.bot_desktop import browser as _bd_browser
         _bd_browser._dock_port_path().unlink(missing_ok=True)
     except OSError:
         pass
+
+
+_inflight_dock_cli_lock = threading.Lock()
+_inflight_dock_cli: list[dict] = []
+
+
+def _dock_cli_home(task_id: str, session_info: Dict[str, Any]) -> Optional[str]:
+    """HERMES_HOME of a leftover CLI aimed at this profile's dock Chromium, else None."""
+    if not _shares_bot_desktop_browser(session_info):
+        return None
+    owner = _bt._session_owner_homes.get(task_id)
+    if owner:
+        return str(owner)
+    from hermes_constants import get_hermes_home
+    return str(get_hermes_home())
+
+
+def register_inflight_dock_cli(
+    proc,
+    home: Optional[str] = None,
+    kill: Optional[Callable] = None,
+) -> None:
+    """Track a leftover writer so Take over can drop it without waiting it out.
+
+    Agent-browser CLI is in Hermes' process group — ``kill`` must be PID-only
+    (default ``Popen.kill``). browser_exec uses ``start_new_session`` so its
+    killer may ``killpg`` that group; dock Chromium is not in it.
+    """
+    from hermes_constants import hermes_home_key
+    from tools.browser_tool_supervisor_lease import install_supervisor_lease_hook
+
+    install_supervisor_lease_hook()
+    owner = str(home) if home else ""
+    with _inflight_dock_cli_lock:
+        _inflight_dock_cli.append({
+            "proc": proc,
+            "home": owner or None,
+            "home_key": hermes_home_key(owner or None),
+            "kill": kill,
+        })
+
+
+def unregister_inflight_dock_cli(proc) -> None:
+    with _inflight_dock_cli_lock:
+        _inflight_dock_cli[:] = [e for e in _inflight_dock_cli if e.get("proc") is not proc]
+
+
+def _reset_inflight_dock_cli_for_tests() -> None:
+    with _inflight_dock_cli_lock:
+        _inflight_dock_cli.clear()
+
+
+def interrupt_reserved_browser_cli(home: Optional[str] = None) -> None:
+    """Kill leftover agent-browser / browser_exec writers aimed at a human-held dock.
+
+    ``_run_browser_command`` and ``browser_exec`` only discard the result after
+    the CLI finishes — leftover ``fill`` / Playwright ``Input.dispatchKeyEvent``
+    still land in the field the human is typing into. Same class as leftover
+    CDP ``ws.send`` and leftover ``computer_use`` ``type_text``.
+    """
+    from hermes_constants import hermes_home_key, reset_hermes_home_override, set_hermes_home_override
+    from tools.bot_desktop import lease as _bd_lease
+
+    want = hermes_home_key(home) if home is not None else None
+    victims: list[dict] = []
+    with _inflight_dock_cli_lock:
+        kept: list[dict] = []
+        for entry in _inflight_dock_cli:
+            owner_key = entry.get("home_key") or hermes_home_key()
+            if want is not None and owner_key != want:
+                kept.append(entry)
+                continue
+            owner = entry.get("home")
+            token = None
+            try:
+                if owner:
+                    token = set_hermes_home_override(owner)
+                held = _bd_lease.human_holds()
+            finally:
+                if token is not None:
+                    reset_hermes_home_override(token)
+            if not held:
+                kept.append(entry)
+                continue
+            victims.append(entry)
+        _inflight_dock_cli[:] = kept
+    for entry in victims:
+        proc = entry.get("proc")
+        killer = entry.get("kill")
+        try:
+            if callable(killer):
+                killer(proc)
+            elif proc is not None and getattr(proc, "poll", lambda: None)() is None:
+                proc.kill()
+        except Exception:
+            _bt.logger.debug("reserved browser CLI interrupt failed", exc_info=True)
 
 
 def _cdp_url_is_bot_desktop_browser(cdp_url: str) -> bool:

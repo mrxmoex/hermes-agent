@@ -578,26 +578,39 @@ def _kill_cli_process_group(proc) -> None:
         os.killpg(proc.pid, signal.SIGKILL)  # windows-footgun: ok — POSIX only, the nt branch returned above
 
 
-def _run_cli_killing_process_group(cmd, code, env, timeout):
+def _run_cli_killing_process_group(cmd, code, env, timeout, dock_home=None):
     """Run the CLI in its own process group and kill the whole group on timeout.
 
     ``subprocess.run`` only kills the direct child on ``TimeoutExpired``; a grandchild that
     inherited the stdout/stderr pipes (browser_harness daemon / Chrome helper) is orphaned
     still holding them, and on Windows ``run()``'s unbounded post-kill ``communicate()`` then
     blocks on pipe EOF forever — so the tool call, plus its activity heartbeat, wedges (#106244).
+
+    ``dock_home`` marks a leftover writer aimed at this profile's Bot Desktop
+    Chromium. Take over kills that process group immediately — waiting the CLI
+    out leaves Playwright keystrokes in the field the human is typing into.
+    Dock Chromium is not in this group (attached via CDP / agent-browser).
     """
     proc = subprocess.Popen(
         cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=True, encoding="utf-8", errors="replace", env=env, **_group_popen_kwargs(),
     )
+    if dock_home:
+        from tools.browser_tool_session import register_inflight_dock_cli, unregister_inflight_dock_cli
+        register_inflight_dock_cli(proc, dock_home, kill=_kill_cli_process_group)
     try:
-        stdout, stderr = proc.communicate(input=code, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        _kill_cli_process_group(proc)
-        with contextlib.suppress(subprocess.TimeoutExpired):
-            proc.communicate(timeout=_POST_KILL_DRAIN_S)
-        raise
-    return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+        try:
+            stdout, stderr = proc.communicate(input=code, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            _kill_cli_process_group(proc)
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                proc.communicate(timeout=_POST_KILL_DRAIN_S)
+            raise
+        return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+    finally:
+        if dock_home:
+            from tools.browser_tool_session import unregister_inflight_dock_cli
+            unregister_inflight_dock_cli(proc)
 
 
 def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT_S,
@@ -661,8 +674,9 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
 
     timeout = _clamp_timeout(timeout_s)
     started = time.time()
+    dock_home = getattr(admitted, "_hermes_home", None) if admitted is not None else None
     try:
-        proc = _run_cli_killing_process_group(cmd, code, env, timeout)
+        proc = _run_cli_killing_process_group(cmd, code, env, timeout, dock_home=dock_home)
     except subprocess.TimeoutExpired:
         return tool_error(f"browser-use exec timed out after {timeout}s. The daemon may still be working; retry "
                           f"with a larger timeout_s (max {_MAX_TIMEOUT_S}), or split the work into several calls that "
