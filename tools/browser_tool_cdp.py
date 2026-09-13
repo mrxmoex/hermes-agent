@@ -108,13 +108,15 @@ def _ensure_cdp_supervisor(task_id: str) -> None:
     """Start a CDP supervisor for ``task_id`` if an endpoint is reachable.
 
     Idempotent (``get_or_start`` skips an existing ``(task_id, cdp_url)`` and restarts on URL change), so safe on
-    every navigate / ``/browser connect``. URL precedence: the CDP override when it
-    is the same endpoint as this session, then the session's own ``cdp_url``
-    (cloud providers, e.g. Browserbase).     A leftover ``/browser connect`` on
-    this screen must not steal a cloud / foreign session's supervisor,
-    and must not ``/json/version``-probe that leftover before identity.
-    Swallows all errors — a failed attach must not break the session;
-    snapshots just lack ``pending_dialogs`` / ``frame_tree``.
+    every navigate / ``/browser connect``.     URL precedence: the CDP override when leftover belongs to this
+    session (same endpoint, or a local ``--session`` that would
+    ``--cdp``-attach that leftover dock port), then the session's own
+    ``cdp_url`` (cloud providers, e.g. Browserbase). A leftover
+    ``/browser connect`` on this screen must not steal a cloud / foreign
+    session's supervisor, must not ``/json/version``-probe leftover
+    before identity, and must not attach leftover RP to a throwaway
+    ``--session``. Swallows all errors — a failed attach must not break
+    the session; snapshots just lack ``pending_dialogs`` / ``frame_tree``.
     """
     _bt = _origin()
     # A cached cloud session skips the outer fence. Preferring the leftover
@@ -124,13 +126,13 @@ def _ensure_cdp_supervisor(task_id: str) -> None:
     # snapshot/eval mixed this screen into another browser's result.
     try:
         from tools.browser_tool_session import (
-            _cdp_endpoints_match,
             _shared_cdp_override_held_by_human,
+            _supervisor_belongs_to_session,
         )
         skip_override = _shared_cdp_override_held_by_human()
     except Exception:
         skip_override = False
-        _cdp_endpoints_match = None  # type: ignore[assignment]
+        _supervisor_belongs_to_session = None  # type: ignore[assignment]
     leftover_raw = "" if skip_override else (_get_cdp_override_raw() or "")
     with _bt._cleanup_lock:
         session_info = _bt._active_sessions.get(task_id, {})
@@ -138,19 +140,24 @@ def _ensure_cdp_supervisor(task_id: str) -> None:
     leftover = ""
     if leftover_raw:
         # Match on the configured URL first. ``_get_cdp_override`` HTTP
-        # ``/json/version``-probes leftover Chrome; a cached cloud / foreign
-        # session used to do that DevTools read, then discard the URL.
-        if session_cdp:
-            try:
-                same = bool(
-                    _cdp_endpoints_match
-                    and _cdp_endpoints_match(leftover_raw, session_cdp)
+        # ``/json/version``-probes leftover Chrome. A leftover supervisor
+        # belongs only when this session talks that endpoint — leftover
+        # ``/browser connect`` to this profile's real-profile Chrome is
+        # not a throwaway ``--session``. The empty-cdp ``else`` used to
+        # resolve leftover unconditionally (operator-connect attach) and
+        # opened leftover RP while the CLI launched packaged Chromium.
+        belongs = False
+        try:
+            belongs = bool(
+                _supervisor_belongs_to_session
+                and _supervisor_belongs_to_session(
+                    type("_Leftover", (), {"cdp_url": leftover_raw})(),
+                    session_info,
                 )
-            except Exception:
-                same = False
-            if same:
-                leftover = _resolve_cdp_override(leftover_raw)
-        else:
+            )
+        except Exception:
+            belongs = False
+        if belongs:
             leftover = _resolve_cdp_override(leftover_raw)
     cdp_url = leftover or (_resolve_cdp_override(session_cdp) if session_cdp else "")
     if not cdp_url:

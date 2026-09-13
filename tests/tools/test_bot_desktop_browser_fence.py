@@ -3015,6 +3015,102 @@ def test_ensure_supervisor_keeps_leftover_when_session_is_that_endpoint(monkeypa
     assert started == [_DOCK_CDP]
 
 
+def test_ensure_supervisor_does_not_discover_leftover_rp_on_throwaway_session(monkeypatch):
+    """Leftover ``/browser connect`` to this profile's RP is not a throwaway ``--session``."""
+    from tools import browser_tool as browser
+    from tools import browser_tool_cdp as cdp
+
+    prior = browser._active_sessions.get("review")
+    prior_cache = browser._real_profile_cdp_cache.get("cdp")
+    browser._active_sessions["review"] = {
+        "session_name": "review", "cdp_url": None, "features": {"local": True},
+    }
+    browser._real_profile_cdp_cache["cdp"] = "http://127.0.0.1:9334"
+    monkeypatch.setattr(cdp, "_get_cdp_override_raw", lambda: "127.0.0.1:9334")
+    monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", _is_dock_cdp)
+    monkeypatch.setattr("tools.bot_desktop.browser.running_instance_cdp_port", lambda *_a, **_k: 45555)
+    probed: list = []
+
+    def probe(*_a, **_k):
+        probed.append("get")
+        raise AssertionError("leftover real-profile Chrome must not be probed for a throwaway session")
+
+    started: list = []
+    monkeypatch.setattr("requests.get", probe)
+    monkeypatch.setattr(
+        "tools.browser_supervisor.SUPERVISOR_REGISTRY",
+        type("R", (), {"get_or_start": staticmethod(lambda **kw: started.append(kw.get("cdp_url")))})(),
+    )
+    try:
+        cdp._ensure_cdp_supervisor("review")
+    finally:
+        if prior is None:
+            browser._active_sessions.pop("review", None)
+        else:
+            browser._active_sessions["review"] = prior
+        if prior_cache is None:
+            browser._real_profile_cdp_cache.pop("cdp", None)
+        else:
+            browser._real_profile_cdp_cache["cdp"] = prior_cache
+    assert probed == [], f"throwaway --session probed leftover real-profile Chrome: {probed}"
+    assert started == [], f"leftover real-profile supervisor attached to a throwaway session: {started}"
+
+
+def test_ensure_supervisor_does_not_attach_leftover_dock_without_cdp_attach(monkeypatch):
+    """Leftover dock attach must not run while a local ``--session`` launches throwaway Chromium."""
+    from tools import browser_tool as browser
+    from tools import browser_tool_cdp as cdp
+
+    prior = browser._active_sessions.get("review")
+    browser._active_sessions["review"] = {
+        "session_name": "review", "cdp_url": None, "features": {"local": True},
+    }
+    monkeypatch.setattr(cdp, "_get_cdp_override_raw", lambda: _DOCK_CDP)
+    monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", _is_dock_cdp)
+    monkeypatch.setattr("tools.bot_desktop.browser.running_instance_cdp_port", lambda *_a, **_k: None)
+    started: list = []
+    monkeypatch.setattr(
+        "tools.browser_supervisor.SUPERVISOR_REGISTRY",
+        type("R", (), {"get_or_start": staticmethod(lambda **kw: started.append(kw.get("cdp_url")))})(),
+    )
+    try:
+        cdp._ensure_cdp_supervisor("review")
+    finally:
+        if prior is None:
+            browser._active_sessions.pop("review", None)
+        else:
+            browser._active_sessions["review"] = prior
+    assert started == [], f"leftover dock supervisor attached without a --cdp attach port: {started}"
+
+
+def test_ensure_supervisor_attaches_leftover_dock_when_local_session_would_cdp_attach(monkeypatch):
+    """Same-browser leftover connect still attaches when ``--session`` would ``--cdp`` the dock."""
+    from tools import browser_tool as browser
+    from tools import browser_tool_cdp as cdp
+
+    prior = browser._active_sessions.get("review")
+    browser._active_sessions["review"] = {
+        "session_name": "review", "cdp_url": None, "features": {"local": True},
+    }
+    monkeypatch.setattr(cdp, "_get_cdp_override", lambda: _DOCK_CDP)
+    monkeypatch.setattr(cdp, "_get_cdp_override_raw", lambda: _DOCK_CDP)
+    monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", _is_dock_cdp)
+    monkeypatch.setattr("tools.bot_desktop.browser.running_instance_cdp_port", lambda *_a, **_k: 45555)
+    started: list = []
+    monkeypatch.setattr(
+        "tools.browser_supervisor.SUPERVISOR_REGISTRY",
+        type("R", (), {"get_or_start": staticmethod(lambda **kw: started.append(kw.get("cdp_url")))})(),
+    )
+    try:
+        cdp._ensure_cdp_supervisor("review")
+    finally:
+        if prior is None:
+            browser._active_sessions.pop("review", None)
+        else:
+            browser._active_sessions["review"] = prior
+    assert started == [_DOCK_CDP]
+
+
 def test_snapshot_does_not_merge_leftover_dock_dialogs_into_a_cloud_tree(monkeypatch):
     """CLI snapshot talks the cached cloud session; leftover connect can keep
     a dock supervisor on the same task_id. Those dialogs are this screen."""
