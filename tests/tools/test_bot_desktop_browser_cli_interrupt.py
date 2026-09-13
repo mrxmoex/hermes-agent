@@ -298,6 +298,15 @@ def test_agent_browser_invocation_is_token_match_not_substring():
     assert not _is_playwright_mcp_invocation(["/usr/bin/mcp"])
     assert not _is_playwright_mcp_invocation(
         ["/bin/bash", "-c", "npx @playwright/mcp --cdp-endpoint http://127.0.0.1:9333"])
+    from tools.browser_tool_session import _is_chrome_remote_interface_invocation
+    assert _is_chrome_remote_interface_invocation(
+        ["npx", "chrome-remote-interface", "--port", "9333", "inspect"])
+    assert _is_chrome_remote_interface_invocation(
+        ["node", "/home/x/node_modules/chrome-remote-interface/bin/client.js"])
+    assert not _is_chrome_remote_interface_invocation(
+        ["node", "/tmp/cdp-debug.js"])
+    assert not _is_chrome_remote_interface_invocation(
+        ["/bin/bash", "-c", "npx chrome-remote-interface --port 9333 inspect"])
 
 
 def test_unregistered_cdp_dock_cli_killed_on_takeover():
@@ -662,28 +671,82 @@ def test_unregistered_playwright_mcp_dock_cdp_killed_on_takeover():
         9004,
         ["npx", "@playwright/mcp", "--cdp-endpoint", "http://127.0.0.1:9222"],
     )
-    playwright_cli = _FakeProc(
-        9005,
-        ["node", "/home/x/node_modules/playwright/cli.js",
-         "--cdp-endpoint", "http://127.0.0.1:9333"],
-    )
     bash_parent = _FakeProc(
-        9006,
+        9005,
         ["/bin/bash", "-c", "npx @playwright/mcp --cdp-endpoint http://127.0.0.1:9333"],
     )
     lease.acquire("human")
     n = interrupt_unregistered_dock_cli(
-        processes=[leftover, shebang, via_env, no_cdp, other, playwright_cli, bash_parent],
+        processes=[leftover, shebang, via_env, no_cdp, other, bash_parent],
         chromium_pid=9999,
         owner_daemon_pid=9998,
     )
-    assert n == 4
+    assert n == 3
     assert leftover.killed == 1
     assert shebang.killed == 1
     assert via_env.killed == 1
     assert no_cdp.killed == 0
     assert other.killed == 0
-    assert playwright_cli.killed == 1
+    assert bash_parent.killed == 0
+
+
+def test_unregistered_chrome_remote_interface_dock_port_killed_on_takeover():
+    """terminal() chrome-remote-interface --port <dock> is leftover action.
+
+    The bundled node-inspect skill teaches a require() script whose argv is
+    not token-matchable. The CRI CLI is.
+    """
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    bdb.remember_dock_cdp_port(9333)
+    leftover = _FakeProc(
+        9100,
+        ["npx", "chrome-remote-interface", "--port", "9333", "inspect"],
+    )
+    short = _FakeProc(
+        9101,
+        ["chrome-remote-interface", "-p", "9333", "inspect"],
+    )
+    shebang = _FakeProc(
+        9102,
+        ["node", "/home/x/node_modules/chrome-remote-interface/bin/client.js",
+         "--port=9333", "inspect"],
+    )
+    via_ws = _FakeProc(
+        9103,
+        ["chrome-remote-interface", "inspect", "--web-socket",
+         "ws://127.0.0.1:9333/devtools/page/1"],
+    )
+    no_port = _FakeProc(9104, ["npx", "chrome-remote-interface", "inspect"])
+    other = _FakeProc(
+        9105,
+        ["npx", "chrome-remote-interface", "--port", "9222", "inspect"],
+    )
+    lan = _FakeProc(
+        9106,
+        ["chrome-remote-interface", "--host", "10.0.0.5", "--port", "9333", "inspect"],
+    )
+    script = _FakeProc(9107, ["node", "/tmp/cdp-debug.js"])
+    bash_parent = _FakeProc(
+        9108,
+        ["/bin/bash", "-c", "npx chrome-remote-interface --port 9333 inspect"],
+    )
+    lease.acquire("human")
+    n = interrupt_unregistered_dock_cli(
+        processes=[leftover, short, shebang, via_ws, no_port, other, lan, script, bash_parent],
+        chromium_pid=9999,
+        owner_daemon_pid=9998,
+    )
+    assert n == 4
+    assert leftover.killed == 1
+    assert short.killed == 1
+    assert shebang.killed == 1
+    assert via_ws.killed == 1
+    assert no_port.killed == 0
+    assert other.killed == 0
+    assert lan.killed == 0
+    assert script.killed == 0
     assert bash_parent.killed == 0
 
 
