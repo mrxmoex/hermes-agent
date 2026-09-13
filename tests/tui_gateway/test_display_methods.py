@@ -37,6 +37,49 @@ def test_install_worker_keeps_the_requested_profile_scope(tmp_path, monkeypatch)
     assert seen["home"] == str(named)
 
 
+def test_install_sudo_card_ignores_a_client_session_id(tmp_path, monkeypatch):
+    """A client-supplied session_id used to be the sudo card's target, so
+    Install on one pane could put the host password prompt in another
+    window's chat. The card is connection-scoped; session_id is ignored.
+    """
+    from hermes_constants import hermes_home_key
+    from tools.bot_desktop import install, runtime
+    import tui_gateway.server as server
+
+    named = tmp_path / "profiles" / "named"
+    named.mkdir(parents=True)
+    monkeypatch.setattr(server, "_profile_home", lambda name: str(named) if name == "named" else None)
+    monkeypatch.setattr(runtime, "is_supported_host", lambda: True)
+    monkeypatch.setattr(runtime, "install_command", lambda: "sudo apt-get install -y x")
+    blocked = []
+    done = threading.Event()
+
+    def fake_block(event, sid, payload, timeout=300):
+        blocked.append((event, sid, dict(payload)))
+        return ""
+
+    def fake_install(*, ask_password, on_line, timeout_seconds=900.0, claimed=False):
+        ask_password()
+        done.set()
+        return 0
+
+    monkeypatch.setattr(server, "_block", fake_block)
+    monkeypatch.setattr(install, "install_packages", fake_install)
+    monkeypatch.setattr(server, "_broadcast_global_event", lambda *a, **k: None)
+    resp = server.handle_request({
+        "jsonrpc": "2.0", "id": 1, "method": "display.install",
+        "params": {"profile": "named", "session_id": "other-chat"},
+    })
+    assert resp["result"]["started"], resp
+    assert done.wait(5)
+    assert blocked, "install never asked for the sudo password"
+    event, sid, payload = blocked[0]
+    assert event == "display.install.sudo.request"
+    assert sid == ""
+    assert payload.get("profile_key") == hermes_home_key(named)
+    assert "other-chat" not in json.dumps(blocked)
+
+
 @pytest.fixture
 def _fresh_lease():
     from tools.bot_desktop import lease
