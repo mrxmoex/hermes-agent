@@ -137,7 +137,7 @@ def _ensure_supervisor(task_id: str):
 
     res = _run_browser_command(_last_session_key(task_id), "get", ["cdp-url"])
     # Independently-fenced get remints; do not rewrite as "no supervisor".
-    if res.get("code") == "human_has_control":
+    if (res or {}).get("code") == "human_has_control":
         return res
     cdp_url = str(((res or {}).get("data") or {}).get("cdpUrl") or "") if (res or {}).get("success") else ""
     if not cdp_url:

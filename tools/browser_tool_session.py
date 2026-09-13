@@ -652,6 +652,36 @@ def _predicted_local_shared_browser(task_id: str) -> bool:
     return True
 
 
+def _supervisor_cdp_url(task_id: str) -> str:
+    """Live supervisor endpoint for ``task_id``, or empty. Does not start one."""
+    try:
+        from tools.browser_supervisor import SUPERVISOR_REGISTRY
+
+        supervisor = SUPERVISOR_REGISTRY.get(task_id)
+    except Exception:
+        return ""
+    if supervisor is None:
+        return ""
+    return str(getattr(supervisor, "cdp_url", "") or "")
+
+
+def _dock_supervisor_session_info(task_id: str) -> Dict[str, Any]:
+    """Session-info overlay when the live supervisor is this profile's dock Chromium.
+
+    Supervisor-only paths (eval / dialog / CDP) never call
+    ``_session_after_shared_fence``, so a predicted-cloud cache miss would
+    otherwise leave the dock unfenced. Foreign / cloud supervisors stay ``{}``.
+    """
+    cdp_url = _supervisor_cdp_url(task_id)
+    if not cdp_url:
+        return {}
+    from tools.bot_desktop.browser import cdp_url_is_running_instance
+
+    if cdp_url_is_running_instance(cdp_url):
+        return {"cdp_url": cdp_url}
+    return {}
+
+
 def _session_info_for_shared_browser_fence(task_id: str) -> Dict[str, Any]:
     """Session info for the lease bracket — never creates or recycles a session.
 
@@ -661,6 +691,10 @@ def _session_info_for_shared_browser_fence(task_id: str) -> Dict[str, Any]:
     local unless config already names a cloud / user-CDP backend. A failed
     cloud session can still fall back to local later — ``_run_browser_command``
     re-admits on that provenance.
+
+    A live supervisor on the dock Chromium wins over a predicted-cloud miss
+    (and over a cached non-shared label): evaluate / dialog / CDP talk that
+    endpoint directly and never re-admit.
     """
     from tools.bot_desktop import lease as _bd_lease, runtime as _bd_runtime
 
@@ -668,7 +702,12 @@ def _session_info_for_shared_browser_fence(task_id: str) -> Dict[str, Any]:
         return {}
     cached = _peek_active_session(task_id)
     if cached is not None:
-        return cached
+        if _shares_bot_desktop_browser(cached):
+            return cached
+        return _dock_supervisor_session_info(task_id) or cached
+    dock = _dock_supervisor_session_info(task_id)
+    if dock:
+        return dock
     if _predicted_local_shared_browser(task_id):
         return {"features": {"local": True}}
     return {}

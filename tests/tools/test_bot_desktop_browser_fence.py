@@ -1223,6 +1223,109 @@ def test_predicted_foreign_cdp_override_is_not_shared(monkeypatch):
     assert admitted is None
 
 
+def _install_supervisor(monkeypatch, cdp_url, task_id="cloud-task"):
+    supervisor = type("S", (), {"cdp_url": cdp_url})()
+    monkeypatch.setattr(
+        "tools.browser_supervisor.SUPERVISOR_REGISTRY",
+        type("R", (), {"get": staticmethod(lambda tid: supervisor if tid == task_id else None)})(),
+    )
+    return supervisor
+
+
+def _predict_cloud(monkeypatch):
+    monkeypatch.setattr(session_mod._cdp, "_get_cdp_override_raw", lambda: "")
+    monkeypatch.setattr(session_mod._cloud, "_get_cloud_provider", lambda: object())
+    monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", _is_dock_cdp)
+
+
+def test_dock_supervisor_is_shared_when_cloud_is_predicted(monkeypatch):
+    """Supervisor-only paths never re-admit; a dock supervisor is this screen even
+    when a configured cloud provider would make a *new* session another browser."""
+    _predict_cloud(monkeypatch)
+    _install_supervisor(monkeypatch, _DOCK_CDP)
+    assert session_mod._predicted_local_shared_browser("cloud-task") is False
+    lease.acquire("human-viewer")
+    _admitted, refuse = session_mod._shared_browser_fence("cloud-task")
+    assert refuse is not None
+    assert refuse.get("code") == "human_has_control"
+
+
+def test_foreign_supervisor_is_not_shared_when_cloud_is_predicted(monkeypatch):
+    """A leftover supervisor on the user's Chrome / a cloud CDP stays another browser."""
+    _predict_cloud(monkeypatch)
+    _install_supervisor(monkeypatch, _FOREIGN_CDP)
+    lease.acquire("human-viewer")
+    admitted, refuse = session_mod._shared_browser_fence("cloud-task")
+    assert refuse is None
+    assert admitted is None
+
+
+def test_dock_supervisor_wins_over_cached_cloud_label(monkeypatch):
+    """Cache can still say cloud while evaluate/dialog talk the dock supervisor."""
+    from tools import browser_tool as browser
+
+    _predict_cloud(monkeypatch)
+    _install_supervisor(monkeypatch, _DOCK_CDP, task_id="review")
+    prior = dict(browser._active_sessions)
+    browser._active_sessions["review"] = {
+        "session_name": "cloud_1", "cdp_url": "wss://browserbase.example/s",
+        "features": {"cloud": True},
+    }
+    try:
+        lease.acquire("human-viewer")
+        _admitted, refuse = session_mod._shared_browser_fence("review")
+        assert refuse is not None
+        assert refuse.get("code") == "human_has_control"
+    finally:
+        browser._active_sessions.clear()
+        browser._active_sessions.update(prior)
+
+
+def test_browser_eval_supervisor_fenced_when_cloud_is_predicted(monkeypatch):
+    """``_eval_supervisor_fast_path`` never re-admits; predicted cloud must not
+    fail-open a dock supervisor while the human holds."""
+    from tools import browser_dialog_tool as dialog
+    from tools import browser_vault_tool as vault
+
+    ran: list = []
+
+    class _Sup:
+        cdp_url = _DOCK_CDP
+
+        def evaluate_runtime(self, expr):
+            ran.append(("eval", expr))
+            return {"ok": True, "result": "WHAT-THE-HUMAN-TYPED"}
+
+        def respond_to_dialog(self, **_k):
+            ran.append("dialog")
+            return {"ok": True, "dialog": {}}
+
+    _predict_cloud(monkeypatch)
+    monkeypatch.setattr(
+        "tools.browser_supervisor.SUPERVISOR_REGISTRY",
+        type("R", (), {"get": staticmethod(lambda _tid: _Sup())})(),
+    )
+    monkeypatch.setattr(dialog, "SUPERVISOR_REGISTRY",
+                        type("R", (), {"get": staticmethod(lambda _tid: _Sup())})())
+    from tools import browser_tool as browser
+    monkeypatch.setattr(browser, "_is_camofox_mode", lambda: False)
+    monkeypatch.setattr(browser._eval_policy, "_eval_ssrf_guard_active", lambda *_a: False)
+    lease.acquire("human-viewer")
+
+    eval_result = json.loads(browser._browser_eval("document.body.innerText", task_id="review"))
+    assert ("eval", "document.body.innerText") not in ran
+    assert eval_result.get("code") == "human_has_control"
+
+    dialog_result = json.loads(dialog.browser_dialog(action="accept", task_id="review"))
+    assert "dialog" not in ran
+    assert dialog_result.get("code") == "human_has_control"
+
+    vault_result = vault._eval_js("review", "window.location.href")
+    assert ("eval", "window.location.href") not in ran
+    assert vault_result.get("code") == "human_has_control"
+    assert "WHAT-THE-HUMAN-TYPED" not in json.dumps(vault_result)
+
+
 def test_cdp_override_session_is_fenced_when_url_is_dock(monkeypatch):
     """Session label is ``cdp_override``; identity is the dock port."""
     commands: list = []
