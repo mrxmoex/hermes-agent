@@ -1625,9 +1625,11 @@ _PWD_WRITE_DEST = (
     r'[^\s;&|<>"\']+'
     r'(?:["\']?)'
 )
-# `$OLDPWD/…` is the screen only after a same-command chdir *into* it
-# (`cd ~/.hermes/bot-desktop && cd /tmp && > $OLDPWD/lease.json`). Session
-# cwd in the tree does not make OLDPWD the screen.
+# `$OLDPWD/…` is the screen after a same-command chdir *into* it
+# (`cd ~/.hermes/bot-desktop && cd /tmp && > $OLDPWD/lease.json`), or
+# after ``cd``/``pushd``/``popd`` away from a session cwd that already
+# is the tree. A bare ``$OLDPWD`` dest with no shell chdir is the
+# *previous* directory — not the screen — and stays unflagged.
 _OLDPWD_WRITE_DEST = (
     r'(?:["\']?)'
     r'(?:\$\{OLDPWD\}|\$OLDPWD\b)'
@@ -1641,6 +1643,11 @@ _CHDIR_BOT_DESKTOP_RE = re.compile(
     rf'(?:(?:\bcd\b|\bpushd\b)\s+|\benv\b[^\n]*\s(?:-C|--chdir)[=\s]*)["\']?{_HERMES_BOT_DESKTOP_PATH}',
     _RE_FLAGS,
 )
+# Same-shell ``cd``/``pushd``/``popd`` (not ``env -C``) updates ``$OLDPWD``
+# for later words. Session cwd in the screen plus ``cd /tmp &&
+# > $OLDPWD/lease.json`` is the finding-54 miss: OLDPWD becomes the tree
+# without a same-command chdir *into* it.
+_SHELL_CHDIR_RE = re.compile(r'\b(?:cd|pushd|popd)\b', _RE_FLAGS)
 _BOT_DESKTOP_CWD_RE = re.compile(_HERMES_BOT_DESKTOP_PATH, _RE_FLAGS)
 
 
@@ -1709,6 +1716,11 @@ def _command_chdirs_into_bot_desktop(command: str) -> bool:
     return bool(_CHDIR_BOT_DESKTOP_RE.search(command))
 
 
+def _command_shell_chdirs(command: str) -> bool:
+    """True when the command ``cd``/``pushd``/``popd``s (updates ``$OLDPWD``)."""
+    return bool(_SHELL_CHDIR_RE.search(command))
+
+
 def _has_relative_bot_desktop_write(command: str, *, include_oldpwd: bool = False) -> bool:
     if _RELATIVE_BOT_DESKTOP_WRITE_RE.search(command):
         return True
@@ -1727,10 +1739,16 @@ def detect_dangerous_command(command: str, *, cwd: Optional[str] = None) -> tupl
         return (True, _PARSER_LIMIT_DESCRIPTION, _PARSER_LIMIT_DESCRIPTION)
     if _is_verification_artifact_cleanup(command):
         return (False, None, None)
-    chdir_bot_desktop = _command_chdirs_into_bot_desktop(
-        _normalize_command_for_detection(command)
+    normalized_for_cwd = _normalize_command_for_detection(command)
+    chdir_bot_desktop = _command_chdirs_into_bot_desktop(normalized_for_cwd)
+    cwd_is_bot_desktop = _cwd_is_hermes_bot_desktop(cwd)
+    in_bot_desktop = cwd_is_bot_desktop or chdir_bot_desktop
+    # ``$OLDPWD`` is the screen after a same-command chdir *into* it, or
+    # after ``cd``/``pushd`` away from a session cwd that already is it.
+    # ``env -C`` does not update the parent shell's OLDPWD.
+    include_oldpwd = chdir_bot_desktop or (
+        cwd_is_bot_desktop and _command_shell_chdirs(normalized_for_cwd)
     )
-    in_bot_desktop = _cwd_is_hermes_bot_desktop(cwd) or chdir_bot_desktop
     for command_variant in _command_detection_variants(command):
         # Case-preserved: dest-first short flags (`-t` vs `-T`, tar `-C` vs `-c`).
         for pattern_re, description in DEST_FIRST_SENSITIVE_PATTERNS_COMPILED:
@@ -1741,11 +1759,11 @@ def detect_dangerous_command(command: str, *, cwd: Optional[str] = None) -> tupl
             if pattern_re.search(command_lower):
                 return (True, description, description)
         if in_bot_desktop and _has_relative_bot_desktop_write(
-            command_variant, include_oldpwd=chdir_bot_desktop
+            command_variant, include_oldpwd=include_oldpwd
         ):
             return (True, _CHDIR_BOT_DESKTOP_WRITE_DESCRIPTION, _CHDIR_BOT_DESKTOP_WRITE_DESCRIPTION)
     if in_bot_desktop and _has_relative_bot_desktop_write(
-        _normalize_command_for_detection(command), include_oldpwd=chdir_bot_desktop
+        normalized_for_cwd, include_oldpwd=include_oldpwd
     ):
         return (True, _CHDIR_BOT_DESKTOP_WRITE_DESCRIPTION, _CHDIR_BOT_DESKTOP_WRITE_DESCRIPTION)
     normalized = _normalize_command_for_detection(command)
