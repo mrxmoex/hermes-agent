@@ -14,7 +14,6 @@ Bodies are rebound onto server.py's globals (method_ctx.bind_module) and referen
 """
 
 import logging
-import secrets
 import threading
 import weakref
 
@@ -141,6 +140,8 @@ def _mint_viewer_id(requested: str) -> str:
     mine = _caller_minted_ids()
     if requested in mine:
         return requested
+    # Inline: bind_module rebinds this body onto server.py's globals, which do not import secrets.
+    import secrets
     viewer_id = secrets.token_urlsafe(16)
     mine.add(viewer_id)
     return viewer_id
