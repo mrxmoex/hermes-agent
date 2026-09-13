@@ -314,14 +314,47 @@ def _paths_same_user_data_dir(left: str, right: str) -> bool:
         return os.path.normpath(left) == os.path.normpath(right)
 
 
+def _ip_is_unspecified_listen(ip: str) -> bool:
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    mapped = getattr(addr, "ipv4_mapped", None)
+    if mapped is not None:
+        return bool(mapped.is_unspecified)
+    return bool(addr.is_unspecified)
+
+
+def _unique_recoverable_listen_port(targets: Set[Tuple[str, int]]) -> Optional[int]:
+    """Unique listen, or the one specific loopback when extras are unspecified.
+
+    Chromium often keeps DevTools on ``127.0.0.1`` / ``::1`` plus a
+    ``0.0.0.0`` / ``::`` sibling. Treating that pair as "multiple" misses
+    leftover identity. Several *specific* loopbacks stay unknown — do not
+    guess. No HTTP.
+    """
+    ports = {port for _ip, port in targets}
+    if len(ports) == 1:
+        return next(iter(ports))
+    specific = {
+        port for ip, port in targets
+        if not _ip_is_unspecified_listen(ip)
+    }
+    if len(specific) == 1:
+        return next(iter(specific))
+    return None
+
+
 def _recover_cdp_port_from_singleton(user_data_dir: str, pid: int) -> Optional[int]:
     """Port of the still-alive jar when ``DevToolsActivePort`` is gone.
 
     Persist sites can miss a human-first dock. ``SingletonLock`` still names
     this profile's Chromium. Recover only that pid's explicit DevTools port,
-    or a *unique* loopback listen. Multiple listens stay unknown — do not
-    stamp an arbitrary port. Cmdline must name this ``user_data_dir`` so a
-    recycled pid is not trusted. No HTTP (tab list is leftover observation).
+    or a *unique* loopback listen. Multiple specific loopbacks stay unknown
+    — do not stamp an arbitrary port. An unspecified extra
+    (``0.0.0.0`` / ``::``) next to one specific loopback is not ambiguity.
+    Cmdline must name this ``user_data_dir`` so a recycled pid is not
+    trusted. No HTTP (tab list is leftover observation).
     """
     tokens = _chromium_cmdline_tokens(pid)
     listed = _user_data_dir_from_cmdline(tokens)
@@ -333,7 +366,17 @@ def _recover_cdp_port_from_singleton(user_data_dir: str, pid: int) -> Optional[i
     listens = _loopback_listen_ports_for_pid(pid)
     if len(listens) == 1:
         return next(iter(listens))
-    return None
+    targets = {
+        (ip, port)
+        for ip, port in _loopback_listen_targets_for_pid(pid)
+        if port in listens
+    }
+    # Ports/targets must agree. A ports-only mock with extra members must
+    # not be refined by this process's real sockets (would stamp a test
+    # listener as "unique loopback").
+    if {port for _ip, port in targets} != listens:
+        return None
+    return _unique_recoverable_listen_port(targets)
 
 
 def running_instance_cdp_port(user_data_dir: str, *, exclude_session: Optional[str] = None) -> Optional[int]:
@@ -366,15 +409,15 @@ def running_instance_cdp_port(user_data_dir: str, *, exclude_session: Optional[s
         port_line = ""
     if port_line.isdigit():
         port = int(port_line)
-        # Port file has no address. Chromium defaults to 127.0.0.1; the
-        # IPv4 squat / IPv6-only launch path binds [::1] only.
-        hosts = ("127.0.0.1", "::1")
     else:
         recovered = _recover_cdp_port_from_singleton(user_data_dir, pid)
         if recovered is None:
             return None
         port = recovered
-        hosts = _listen_connect_hosts(pid, port)
+    # Port file has no address. Probe this pid's listen family so a
+    # ::1-only dock is not stamped as a sibling on 127.0.0.1:same
+    # (finding 81's recover path; the file path used to IPv4-first).
+    hosts = _listen_connect_hosts(pid, port)
     if not _cdp_port_reachable(port, hosts):
         return None
     try:

@@ -289,6 +289,81 @@ def test_running_instance_does_not_stamp_ipv4_squat_for_ipv6_listen(tmp_path, mo
             pass
 
 
+def test_devtools_file_does_not_stamp_ipv4_squat_for_ipv6_listen(tmp_path, monkeypatch):
+    """DevToolsActivePort still used 127.0.0.1 first (finding 81 only fixed recover)."""
+    v6 = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+    v6.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+    v6.bind(("::1", 0))
+    v6.listen(1)
+    port = v6.getsockname()[1]
+    v4 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    v4.bind(("127.0.0.1", port))
+    v4.listen(1)
+    (tmp_path / "DevToolsActivePort").write_text(
+        f"{port}\n/devtools/browser/abc\n", encoding="utf-8")
+    os.symlink(f"host-{os.getpid()}", tmp_path / "SingletonLock")
+    monkeypatch.setattr(browser, "_loopback_listen_targets_for_pid", lambda pid: {("::1", port)})
+    try:
+        assert browser.running_instance_cdp_port(str(tmp_path)) == port
+        v6.close()
+        assert browser.running_instance_cdp_port(str(tmp_path)) is None
+    finally:
+        v4.close()
+        try:
+            v6.close()
+        except OSError:
+            pass
+
+
+def test_unique_recoverable_listen_drops_unspecified_extra():
+    """127.0.0.1 DevTools + 0.0.0.0 sibling is the dock, not ambiguity."""
+    assert browser._unique_recoverable_listen_port({("127.0.0.1", 9333)}) == 9333
+    assert browser._unique_recoverable_listen_port({
+        ("127.0.0.1", 9333), ("0.0.0.0", 5555),
+    }) == 9333
+    assert browser._unique_recoverable_listen_port({
+        ("::1", 9333), ("::", 5555),
+    }) == 9333
+    assert browser._unique_recoverable_listen_port({
+        ("127.0.0.1", 9333), ("::1", 9444),
+    }) is None
+    assert browser._unique_recoverable_listen_port({
+        ("0.0.0.0", 9333), ("0.0.0.0", 5555),
+    }) is None
+
+
+def test_running_instance_recovers_specific_loopback_when_unspecified_extra(
+    tmp_path, monkeypatch,
+):
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+    os.symlink(f"host-{os.getpid()}", tmp_path / "SingletonLock")
+    monkeypatch.setattr(
+        browser,
+        "_chromium_cmdline_tokens",
+        lambda pid: ["chrome", f"--user-data-dir={tmp_path}", "--remote-debugging-port=0"],
+    )
+    monkeypatch.setattr(browser, "_loopback_listen_ports_for_pid", lambda pid: {port, 5555})
+    monkeypatch.setattr(
+        browser,
+        "_loopback_listen_targets_for_pid",
+        lambda pid: {("127.0.0.1", port), ("0.0.0.0", 5555)},
+    )
+    try:
+        assert browser.running_instance_cdp_port(str(tmp_path)) == port
+        monkeypatch.setattr(
+            browser,
+            "_loopback_listen_targets_for_pid",
+            lambda pid: {("127.0.0.1", port), ("::1", port + 1)},
+        )
+        monkeypatch.setattr(browser, "_loopback_listen_ports_for_pid", lambda pid: {port, port + 1})
+        assert browser.running_instance_cdp_port(str(tmp_path)) is None
+    finally:
+        listener.close()
+
+
 def test_running_instance_recovers_explicit_cmdline_port(tmp_path, monkeypatch):
     listener = socket.socket()
     listener.bind(("127.0.0.1", 0))
