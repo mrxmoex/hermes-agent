@@ -1205,6 +1205,28 @@ def _invocation_via_bun_x(tokens: List[str], matches) -> Optional[bool]:
     return bool(operands) and bool(matches(operands))
 
 
+def _leftover_flag_tokens(tokens: List[str]) -> List[str]:
+    """Argv the leftover CLI itself sees.
+
+    ``npm exec --package=foo -- --browserUrl <dock>`` puts the child's
+    flags after npm's ``--``. Stopping ``_flag_value`` at the first
+    ``--`` then missed the dock aim. Peel corepack / npm|pnpm|yarn
+    exec|dlx / bun x the same way the invocation matchers do. A later
+    ``--`` on the child (lighthouse yargs) still ends flag parse.
+    """
+    if not tokens:
+        return []
+    peeled = _corepack_command_tokens(tokens)
+    work = peeled or [str(t) if t is not None else "" for t in tokens]
+    parts = _package_exec_parts(work)
+    if parts is not None:
+        return parts[1]
+    bun = _bun_x_operands(work)
+    if bun is not None:
+        return bun
+    return work
+
+
 def _is_agent_browser_invocation(tokens: List[str]) -> bool:
     """True when argv launches agent-browser (binary, npx, or shebang node).
 
@@ -1370,6 +1392,7 @@ def _flag_value(tokens: List[str], keys: Tuple[str, ...]) -> Optional[str]:
     value. ``--cdp`` does not eat ``--cdp-endpoint`` (prefix is
     ``key=``).
     """
+    tokens = _leftover_flag_tokens(tokens)
     found: Optional[str] = None
     i = 0
     n = len(tokens)
