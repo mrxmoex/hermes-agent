@@ -1633,6 +1633,12 @@ def _cdp_url_is_bot_desktop_browser(cdp_url: str) -> bool:
     session with no ``local`` flag. If that URL is the dock (or agent-launched)
     instance on ``bot-desktop/browser-profile``, it is the same cookie jar a
     human types into — not "another browser".
+
+    Unique-listen recover stays unknown when Chromium has several *specific*
+    loopbacks. Persist can also miss (restart, worker, human ``lease.json``
+    already on disk). The operator override still names the DevTools port —
+    consult the same lock-pid + cmdline + listen guard persist uses. Do not
+    treat every configured loopback as the dock.
     """
     want = _loopback_cdp_port(cdp_url)
     if want is None:
@@ -1650,7 +1656,17 @@ def _cdp_url_is_bot_desktop_browser(cdp_url: str) -> bool:
         remembered = _bd_browser.last_known_dock_cdp_port()
         if remembered is not None:
             _last_dock_cdp_port[key] = remembered
-    return remembered is not None and remembered == want
+    if remembered is not None and remembered == want:
+        return True
+    try:
+        configured = _bd_browser._configured_listen_port_for_this_jar()
+    except Exception:
+        configured = None
+    if configured is not None and configured == want:
+        _last_dock_cdp_port[key] = configured
+        _bd_browser.remember_dock_cdp_port(configured)
+        return True
+    return False
 
 
 _LEASE_MOVED_ERROR = (

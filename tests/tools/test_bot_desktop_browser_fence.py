@@ -1598,6 +1598,84 @@ def test_missing_devtools_recover_still_skips_http_while_human_holds(monkeypatch
         listener.close()
 
 
+def test_configured_listen_identifies_dock_when_recover_and_persist_miss(monkeypatch, tmp_path):
+    """Finding 86: persist never ran and unique-listen recover is still
+    ambiguous. The operator override names a port this jar listens on —
+    leftover identity must treat that URL as the dock, not another Chrome
+    (admit None → HTTP /json/version while a human holds). 9222 stays
+    unknown. A config pointing at another Chrome must not become the dock.
+    """
+    import os
+    import socket
+
+    import tools.bot_desktop.browser as bdb
+    from tools.bot_desktop.lease import HumanHasControl
+    from tools.browser_tool_cdp import _resolve_cdp_override
+    from tools.browser_tool_session import (
+        _admit_resolved_cdp_for_attach,
+        _admit_shared_browser,
+        _cdp_url_is_bot_desktop_browser,
+        _last_dock_cdp_port,
+    )
+
+    profile = tmp_path / "browser-profile"
+    profile.mkdir()
+    os.symlink(f"host-{os.getpid()}", profile / "SingletonLock")
+    monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path)
+    monkeypatch.setattr(bdb, "profile_dir", lambda: profile)
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: None)
+    monkeypatch.setattr(
+        bdb,
+        "_chromium_cmdline_tokens",
+        lambda pid: ["chrome", f"--user-data-dir={profile}"],
+    )
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+    monkeypatch.setattr(bdb, "_loopback_listen_ports_for_pid", lambda pid: {port, port + 1})
+    monkeypatch.setattr(
+        bdb,
+        "_loopback_listen_targets_for_pid",
+        lambda pid: {("127.0.0.1", port), ("::1", port + 1)},
+    )
+    monkeypatch.setattr(
+        bdb, "_configured_cdp_override_url", lambda: f"http://127.0.0.1:{port}",
+    )
+    dock = f"http://127.0.0.1:{port}"
+    other = "http://127.0.0.1:9222"
+    probed = []
+    try:
+        _last_dock_cdp_port.clear()
+        assert bdb.last_known_dock_cdp_port() is None
+        assert _cdp_url_is_bot_desktop_browser(dock) is True
+        assert _cdp_url_is_bot_desktop_browser(other) is False
+        assert bdb.last_known_dock_cdp_port() == port
+        lease.acquire("human-viewer")
+        monkeypatch.setattr(
+            "requests.get",
+            lambda *a, **k: probed.append(a[0]) or (_ for _ in ()).throw(AssertionError("probed dock")),
+        )
+        assert _resolve_cdp_override(dock) == dock
+        assert probed == []
+        with pytest.raises(HumanHasControl):
+            _admit_shared_browser(cdp_url=dock)
+        assert _admit_resolved_cdp_for_attach(dock) is False
+        assert _admit_shared_browser(cdp_url=other) is None
+        assert _admit_resolved_cdp_for_attach(other) is True
+
+        _last_dock_cdp_port.clear()
+        (tmp_path / "dock-cdp-port").unlink(missing_ok=True)
+        monkeypatch.setattr(
+            bdb, "_configured_cdp_override_url", lambda: "http://127.0.0.1:9222",
+        )
+        assert _cdp_url_is_bot_desktop_browser(other) is False
+        assert _cdp_url_is_bot_desktop_browser(dock) is False
+        assert bdb.last_known_dock_cdp_port() is None
+    finally:
+        listener.close()
+
+
 def test_vault_ensure_does_not_probe_raw_dock_url_while_human_holds(monkeypatch):
     """Session admit can be a no-op while ``get cdp-url`` names the dock."""
     import tools.bot_desktop.browser as bdb
