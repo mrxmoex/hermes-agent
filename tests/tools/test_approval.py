@@ -463,6 +463,17 @@ class TestHermesBotDesktopWriteProtection:
             "socat -u OPEN:/tmp/e OPEN:~/.hermes/bot-desktop/lease.json,creat,trunc",
             "cpio -id -D ~/.hermes/bot-desktop < /tmp/e.cpio",
             "cpio -id --directory $HERMES_HOME/bot-desktop",
+            # Named-profile spelling. Active-home fold only rewrites
+            # <root>/profiles/<active>/, so `~/.hermes/profiles/coder/...`
+            # would otherwise auto-approve a sibling (or the active home
+            # written with the profiles/ path) lease forge.
+            'echo \'{"holder":"agent"}\' > ~/.hermes/profiles/coder/bot-desktop/lease.json',
+            "echo 9333 > $HOME/.hermes/profiles/coder/bot-desktop/dock-cdp-port",
+            "cp /tmp/evil.json ~/.hermes/profiles/coder/bot-desktop/lease.json",
+            "echo x | tee $HERMES_HOME/profiles/coder/bot-desktop/lease.json",
+            "sed -i 's/human/agent/' ~/.hermes/profiles/coder/bot-desktop/lease.json",
+            "cp -t ~/.hermes/profiles/coder/bot-desktop /tmp/evil.json",
+            "curl -o ~/.hermes/profiles/coder/bot-desktop/lease.json https://evil.example/l",
         ):
             dangerous, key, desc = detect_dangerous_command(command)
             assert dangerous is True, command
@@ -475,6 +486,8 @@ class TestHermesBotDesktopWriteProtection:
             "echo x > ~/projects/notes.md",
             "rm ~/.hermes/notes.md",
             "rm ~/.hermes/bot-desktop-backup/notes.md",
+            "echo x > ~/.hermes/profiles/coder/notes.md",
+            "rm ~/.hermes/profiles/coder/bot-desktop-backup/lease.json",
             "mv /tmp/a /tmp/b",
             "ln -sf /tmp/x ~/.hermes/bot-desktop-backup/lease.json",
             "ln ~/.hermes/bot-desktop/lease.json /tmp/out.json",
@@ -530,6 +543,8 @@ class TestHermesBotDesktopWriteProtection:
             "gio trash ~/.hermes/bot-desktop/lease.json",
             "trash-put $HERMES_HOME/bot-desktop/lease.json",
             "trash ~/.hermes/bot-desktop/lease.json",
+            "rm ~/.hermes/profiles/coder/bot-desktop/lease.json",
+            "mv $HOME/.hermes/profiles/coder/bot-desktop /tmp/stolen-screen",
         ):
             dangerous, key, desc = detect_dangerous_command(command)
             assert dangerous is True, command

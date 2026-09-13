@@ -355,3 +355,44 @@ def test_profile_mode_blocks_root_and_profile_bot_desktop(tmp_path, monkeypatch)
 
     assert "Bot Desktop" in (get_read_block_error(str(profile_cookies)) or "")
     assert "Bot Desktop" in (get_read_block_error(str(root_cookies)) or "")
+
+
+def test_sibling_profile_bot_desktop_is_blocked(tmp_path, monkeypatch):
+    """A named profile's screen is still the screen when another home is active.
+
+    ``_hermes_dirs()`` is only (active, root). Without a sibling match,
+    ``write_file`` / ``read_file`` of ``<root>/profiles/other/bot-desktop/lease.json``
+    forges that bot's holder and fail-opens leftover CDP.
+    """
+    import agent.file_safety as fs
+    from agent.file_safety import get_read_block_error, get_write_denied_error
+
+    root = tmp_path / "hermes"
+    active = root / "profiles" / "coder"
+    sibling = root / "profiles" / "other"
+    active.mkdir(parents=True)
+    lease = sibling / "bot-desktop" / "lease.json"
+    lease.parent.mkdir(parents=True)
+    lease.write_text('{"holder":"human","epoch":3}\n', encoding="utf-8")
+    monkeypatch.setattr(fs, "_hermes_home_path", lambda: active)
+    monkeypatch.setattr(fs, "_hermes_root_path", lambda: root)
+
+    assert "Bot Desktop" in (get_read_block_error(str(lease)) or "")
+    assert get_write_denied_error(str(lease)) is not None
+    assert "Bot Desktop" in (get_read_block_error(str(sibling / "bot-desktop")) or "")
+
+
+def test_default_home_cannot_forge_named_profile_bot_desktop(tmp_path, monkeypatch):
+    """Default-profile turns must not rewrite a named profile's lease."""
+    import agent.file_safety as fs
+    from agent.file_safety import get_read_block_error, is_write_denied
+
+    root = tmp_path / "hermes"
+    named = root / "profiles" / "coder" / "bot-desktop" / "dock-cdp-port"
+    named.parent.mkdir(parents=True)
+    named.write_text("9333\n", encoding="utf-8")
+    monkeypatch.setattr(fs, "_hermes_home_path", lambda: root)
+    monkeypatch.setattr(fs, "_hermes_root_path", lambda: root)
+
+    assert "Bot Desktop" in (get_read_block_error(str(named)) or "")
+    assert is_write_denied(str(named)) is True

@@ -38,8 +38,39 @@ def _hermes_dirs() -> list[Path]:
 
     Both are checked so credential stores at <root>/... stay guarded when
     running under a profile (HERMES_HOME = <root>/profiles/<name>).
+    Sibling named homes (``<root>/profiles/<other>``) are not listed here —
+    Bot Screen paths cover them via ``_is_hermes_bot_desktop_path``.
     """
     return list(dict.fromkeys(_resolve_each((_hermes_home_path(), _hermes_root_path()))))
+
+
+def _is_hermes_bot_desktop_path(resolved: str | Path) -> bool:
+    """True when *resolved* sits in a profile's Bot Screen tree.
+
+    Screens live at ``<home>/bot-desktop`` per profile: the default home
+    (``<root>/bot-desktop``) and every named home
+    (``<root>/profiles/<name>/bot-desktop``). ``_hermes_dirs()`` only
+    yields the active home and the root, so a sibling profile's jar
+    would otherwise be readable and writable — forging that profile's
+    ``lease.json`` / ``dock-cdp-port``. A project folder named
+    ``bot-desktop`` outside the Hermes root is not the screen.
+    """
+    try:
+        target = Path(os.path.realpath(str(resolved)))
+    except Exception:
+        return False
+    for base in _hermes_dirs():
+        with suppress(Exception):
+            if _is_under(target, Path(os.path.realpath(str(base / "bot-desktop")))):
+                return True
+    with suppress(Exception):
+        root = Path(os.path.realpath(str(_hermes_root_path())))
+        parts = target.relative_to(root).parts
+        if parts and parts[0] == "bot-desktop":
+            return True
+        if len(parts) >= 3 and parts[0] == "profiles" and parts[2] == "bot-desktop":
+            return True
+    return False
 
 
 def _resolve_each(paths) -> list[Path]:
@@ -158,6 +189,11 @@ def _classify_write_denial(path: str) -> Optional[str]:
                 if _is_under(resolved, os.path.realpath(os.path.join(str(base), sub))):
                     return "credential"
 
+    # Sibling named profiles are outside _hermes_dirs(); their screen is
+    # still a live lease + cookie jar (same class as the active home).
+    if _is_hermes_bot_desktop_path(resolved):
+        return "credential"
+
     safe_roots = get_safe_write_roots()
     if safe_roots and not any(_is_under(resolved, root) for root in safe_roots):
         return "safe_root"
@@ -263,6 +299,11 @@ def get_read_block_error(path: str) -> Optional[str]:
                     break
             if reason:
                 break
+        if reason is None and _is_hermes_bot_desktop_path(resolved):
+            for subdir, dir_msg, file_msg in _READ_DENIED_DIRS:
+                if subdir == "bot-desktop":
+                    reason = (dir_msg if resolved.name == "bot-desktop" else file_msg) + _DID_SUFFIX
+                    break
         if reason is None and resolved.name.lower() in _BLOCKED_PROJECT_ENV_BASENAMES:
             reason = (
                 "is a secret-bearing environment file and cannot be read to prevent credential "

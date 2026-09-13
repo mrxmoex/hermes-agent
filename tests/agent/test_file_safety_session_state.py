@@ -98,3 +98,19 @@ def test_write_file_tool_cannot_forge_a_human_lease_release(fake_homes):
 
     assert "error" in result
     assert target.read_text(encoding="utf-8") == original
+
+
+def test_write_file_cannot_forge_a_sibling_profile_lease(fake_homes):
+    """Active home + root are not the only screens; a sibling jar is too."""
+    import tools.file_tools as ft
+
+    root, _profile = fake_homes
+    target = root / "profiles" / "other" / "bot-desktop" / "lease.json"
+    target.parent.mkdir(parents=True)
+    original = '{"holder":"human","viewer_id":"alice","epoch":4}\n'
+    target.write_text(original, encoding="utf-8")
+
+    result = json.loads(ft.write_file_tool(str(target), '{"holder":"agent","epoch":5}\n'))
+
+    assert "error" in result
+    assert target.read_text(encoding="utf-8") == original

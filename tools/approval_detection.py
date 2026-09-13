@@ -30,8 +30,17 @@ _HERMES_CONFIG_PATH = (
 # write_file already denies it; without this, `echo … > lease.json` / sed -i
 # forges holder=agent (or fail-opens leftover CDP) under auto-approve. Same
 # credential-style pairing as #14639 — not a lease-gated terminal fence.
+# Optional profiles/<name>/ covers the named-home spelling
+# `~/.hermes/profiles/coder/bot-desktop` — `_rewrite_resolved_hermes_home`
+# only folds the *active* home, so a sibling (or the active home written
+# with the profiles/ path) would otherwise auto-approve.
+_HERMES_PROFILE_INFIX = r'(?:profiles/[^/\s"\']+/)?'
 _HERMES_BOT_DESKTOP_PATH = (
-    r'(?:~\/\.hermes/|(?:\$home|\$\{home\})/\.hermes/|(?:\$hermes_home|\$\{hermes_home\})/)'
+    r'(?:'
+    r'~\/\.hermes/' + _HERMES_PROFILE_INFIX +
+    r'|(?:\$home|\$\{home\})/\.hermes/' + _HERMES_PROFILE_INFIX +
+    r'|(?:\$hermes_home|\$\{hermes_home\})/' + _HERMES_PROFILE_INFIX +
+    r')'
     # `/` for a file inside the tree; whitespace/quote/EOS so `mv ~/.hermes/bot-desktop /tmp`
     # (directory as SOURCE) still matches. Do not use `\b` — that would fire on
     # a project folder named bot-desktop-backup.
