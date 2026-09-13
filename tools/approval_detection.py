@@ -1615,11 +1615,30 @@ def _is_shell_token_spliced_gateway_lifecycle(command: str) -> bool:
 _RELATIVE_WRITE_DEST = r'(?:["\']?)(?!(?:/|~|\$))(?:\./)?[A-Za-z0-9._][^\s;&|<>"\']*'
 # `$PWD/…` / `$(pwd)/…` expand to that cwd but start with `$`, so the
 # exclusion above lets `cd ~/.hermes/bot-desktop && echo … > $PWD/lease.json`
-# auto-approve. Require a path component — `> $PWD` writes a directory.
+# auto-approve. Bash ``~+`` is ``$PWD`` (unquoted only — quotes suppress
+# tilde expansion). ``$(pwd -P)`` / ``$(realpath .)`` / ``$(readlink -f .)``
+# are the same cwd. Require a path component — `> $PWD` writes a directory.
+_PWD_CMD = r'(?:(?:builtin|command)\s+)?pwd(?:\s+-[PL]+)*'
+_CWD_RESOLVE_CMD = (
+    r'(?:'
+    r'realpath(?:\s+-[esP]+)?\s+\.'
+    r'|readlink\s+(?:-[fe]+|--canonicalize(?:-existing|-missing)?)\s+\.'
+    r')'
+)
+_PWD_TOKEN = (
+    r'(?:'
+    r'\$\{PWD\}|\$PWD\b'
+    r'|\$\(\s*' + _PWD_CMD + r'\s*\)'
+    r'|`' + _PWD_CMD + r'`'
+    r'|\$\(\s*' + _CWD_RESOLVE_CMD + r'\s*\)'
+    r'|`' + _CWD_RESOLVE_CMD + r'`'
+    r')'
+)
 _PWD_WRITE_DEST = (
-    r'(?:["\']?)'
-    r'(?:\$\{PWD\}|\$PWD\b|\$\(\s*pwd\s*\)|`pwd`)'
-    r'(?:["\']?)'
+    r'(?:'
+    r'(?:["\']?)' + _PWD_TOKEN + r'(?:["\']?)'
+    r'|~\+'
+    r')'
     r'/'
     r'(?:["\']?)'
     r'[^\s;&|<>"\']+'
@@ -1628,12 +1647,16 @@ _PWD_WRITE_DEST = (
 # `$OLDPWD/…` is the screen after a same-command chdir *into* it
 # (`cd ~/.hermes/bot-desktop && cd /tmp && > $OLDPWD/lease.json`), or
 # after ``cd``/``pushd``/``popd`` away from a session cwd that already
-# is the tree. A bare ``$OLDPWD`` dest with no shell chdir is the
-# *previous* directory — not the screen — and stays unflagged.
+# is the tree. Bash ``~-`` is ``$OLDPWD`` (unquoted only). A bare
+# ``$OLDPWD`` dest with no shell chdir is the *previous* directory —
+# not the screen — and stays unflagged.
 _OLDPWD_WRITE_DEST = (
+    r'(?:'
     r'(?:["\']?)'
     r'(?:\$\{OLDPWD\}|\$OLDPWD\b)'
     r'(?:["\']?)'
+    r'|~-'
+    r')'
     r'/'
     r'(?:["\']?)'
     r'[^\s;&|<>"\']+'
