@@ -15,6 +15,7 @@ from typing import Any, Dict, Optional
 
 from tools.registry import registry, tool_error
 from tools.browser_extension_router import routed_browser_handler
+from tools.browser_tool_session import _discard_if_lease_moved, _shared_browser_fence
 
 logger = logging.getLogger(__name__)
 
@@ -207,7 +208,24 @@ async def _cdp_call(ws_url: str, method: str, params: Dict[str, Any], target_id:
 
 def _browser_cdp_via_supervisor(task_id: str, frame_id: str, method: str, params: Optional[Dict[str, Any]],
                                 timeout: float) -> str:
-    """Route a CDP call through the live supervisor session for an OOPIF frame."""
+    """Route a CDP call through the live supervisor session for an OOPIF frame.
+
+    The supervisor WebSocket is the same Chromium ``browser_eval`` / ``browser_dialog``
+    already fence: a human on the Bot Desktop must not be observed or driven here.
+    User-CDP / cloud supervisors are another browser and stay unfenced.
+    """
+    admitted, refuse = _shared_browser_fence(task_id)
+    if refuse:
+        return json.dumps(refuse)
+    result = _browser_cdp_via_supervisor_unfenced(task_id, frame_id, method, params, timeout)
+    stole = _discard_if_lease_moved(admitted)
+    return json.dumps(stole) if stole else result
+
+
+def _browser_cdp_via_supervisor_unfenced(
+    task_id: str, frame_id: str, method: str, params: Optional[Dict[str, Any]], timeout: float,
+) -> str:
+    """Supervisor CDP after the shared-browser lease has been admitted (or does not apply)."""
     try:
         from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
     except Exception as exc:  # pragma: no cover — defensive

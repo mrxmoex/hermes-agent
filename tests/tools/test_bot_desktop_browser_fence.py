@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 import pytest
 
+from tools import browser_cdp_tool
 from tools import browser_tool_session as session_mod
 from tools import browser_use_cli as bu_cli
 from tools.bot_desktop import lease, runtime
@@ -941,6 +942,136 @@ def test_janitor_does_not_reap_shared_browser_while_human_holds(monkeypatch):
         browser._active_sessions.update(prior_sessions)
         browser._session_last_activity.clear()
         browser._session_last_activity.update(prior_activity)
+
+
+def test_browser_cdp_supervisor_is_fenced_while_human_controls(monkeypatch):
+    """Supervisor CDP (frame_id) talks to the same Chromium as browser_eval."""
+    ran: list = []
+    monkeypatch.setattr(
+        browser_cdp_tool, "_browser_cdp_via_supervisor_unfenced",
+        lambda *a, **k: ran.append("cdp") or json.dumps({
+            "success": True, "result": {"secret": "WHAT-THE-HUMAN-TYPED"},
+        }),
+    )
+    monkeypatch.setattr(browser_cdp_tool, "_browser_cdp_private_guard", lambda **_k: None)
+    lease.acquire("human-viewer")
+    result = json.loads(browser_cdp_tool.browser_cdp(
+        method="Runtime.evaluate", params={"expression": "1"},
+        frame_id="oopif", task_id="review",
+    ))
+    assert ran == [], f"human holds the lease, yet supervisor CDP ran: {ran}"
+    assert result.get("code") == "human_has_control"
+
+
+def test_browser_cdp_supervisor_result_crossing_a_takeover_is_discarded(monkeypatch):
+    def run(*_a, **_k):
+        lease.acquire("human-viewer")
+        lease.release("human-viewer")
+        return json.dumps({"success": True, "result": {"secret": "WHAT-THE-HUMAN-TYPED"}})
+
+    monkeypatch.setattr(browser_cdp_tool, "_browser_cdp_via_supervisor_unfenced", run)
+    monkeypatch.setattr(browser_cdp_tool, "_browser_cdp_private_guard", lambda **_k: None)
+    result = json.loads(browser_cdp_tool.browser_cdp(
+        method="Page.captureScreenshot", frame_id="oopif", task_id="review",
+    ))
+    assert "WHAT-THE-HUMAN-TYPED" not in json.dumps(result)
+    assert result.get("code") == "human_has_control"
+
+
+def test_timeout_does_not_teardown_shared_browser_while_human_holds(monkeypatch, tmp_path):
+    """In-flight timeout recovery is the same class as the janitor: no tree-kill."""
+    from tools import browser_tool as browser
+
+    session = {"session_name": "review", "cdp_url": None, "features": {"local": True}}
+    prior = dict(browser._active_sessions)
+    prior_suspect = dict(browser._suspect_browser_sessions)
+    browser._active_sessions.clear()
+    browser._suspect_browser_sessions.clear()
+    browser._active_sessions["review"] = session
+    killed: list = []
+    monkeypatch.setattr("agent.deadline.kill_process_tree", lambda pid, **_k: killed.append(pid))
+    monkeypatch.setattr("tools.browser_tool_cdp._stop_cdp_supervisor", lambda tid: killed.append(f"stop:{tid}"))
+    socket_dir = tmp_path / "sock"
+    socket_dir.mkdir()
+    (socket_dir / "review.pid").write_text("12345", encoding="utf-8")
+    lease.acquire("human-viewer")
+    try:
+        session_mod._handle_browser_command_timeout("review", session, str(socket_dir))
+        assert killed == [], f"shared browser was torn down on timeout: {killed}"
+        assert browser._active_sessions["review"] is session
+        assert "review" not in browser._suspect_browser_sessions
+        assert (socket_dir / "review.pid").exists()
+    finally:
+        browser._active_sessions.clear()
+        browser._active_sessions.update(prior)
+        browser._suspect_browser_sessions.clear()
+        browser._suspect_browser_sessions.update(prior_suspect)
+
+
+def test_timeout_real_profile_cdp_session_is_not_discarded_while_human_holds(monkeypatch, tmp_path):
+    """Real-profile has a loopback cdp_url; the timeout path used to discard immediately."""
+    from tools import browser_tool as browser
+
+    session = {
+        "session_name": "rp_1", "cdp_url": "ws://127.0.0.1:9222/devtools/browser/x",
+        "features": {"local": True, "real_profile": True},
+    }
+    prior = dict(browser._active_sessions)
+    browser._active_sessions.clear()
+    browser._active_sessions["review"] = session
+    stopped: list = []
+    monkeypatch.setattr("tools.browser_tool_cdp._stop_cdp_supervisor", lambda tid: stopped.append(tid))
+    lease.acquire("human-viewer")
+    try:
+        session_mod._handle_browser_command_timeout("review", session, str(tmp_path))
+        assert stopped == [], f"supervisor was stopped while human holds: {stopped}"
+        assert browser._active_sessions["review"] is session
+    finally:
+        browser._active_sessions.clear()
+        browser._active_sessions.update(prior)
+
+
+def test_timeout_still_discards_another_browser_while_human_holds(monkeypatch, tmp_path):
+    """Cloud / user-CDP timeout recovery must not freeze because this screen is held."""
+    from tools import browser_tool as browser
+
+    session = {"session_name": "cloud", "cdp_url": "wss://cloud.example/cdp", "features": {"local": False}}
+    prior = dict(browser._active_sessions)
+    browser._active_sessions.clear()
+    browser._active_sessions["cloud-task"] = session
+    stopped: list = []
+    monkeypatch.setattr("tools.browser_tool_cdp._stop_cdp_supervisor", lambda tid: stopped.append(tid))
+    lease.acquire("human-viewer")
+    try:
+        session_mod._handle_browser_command_timeout("cloud-task", session, str(tmp_path))
+        assert stopped == ["cloud-task"]
+        assert browser._active_sessions["cloud-task"] is not session
+    finally:
+        browser._active_sessions.clear()
+        browser._active_sessions.update(prior)
+
+
+def test_ensure_healthy_does_not_replace_shared_session_while_human_holds():
+    """A deferred cleanup is not a miss — do not mint a second Chromium on the seat."""
+    from tools import browser_tool as browser
+
+    session = {"session_name": "review", "cdp_url": None, "features": {"local": True}}
+    prior = dict(browser._active_sessions)
+    prior_suspect = dict(browser._suspect_browser_sessions)
+    browser._active_sessions.clear()
+    browser._suspect_browser_sessions.clear()
+    browser._active_sessions["review"] = session
+    browser._suspect_browser_sessions["review"] = "timed out"
+    lease.acquire("human-viewer")
+    try:
+        assert browser._BrowserSessionBackend("review").ensure_healthy() is True
+        assert browser._active_sessions["review"] is session
+        assert browser._suspect_browser_sessions["review"] == "timed out"
+    finally:
+        browser._active_sessions.clear()
+        browser._active_sessions.update(prior)
+        browser._suspect_browser_sessions.clear()
+        browser._suspect_browser_sessions.update(prior_suspect)
 
 
 def test_platform_default_human_lease_does_not_fence_this_profile(monkeypatch, tmp_path):

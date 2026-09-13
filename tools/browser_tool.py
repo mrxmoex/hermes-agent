@@ -410,6 +410,18 @@ class _BrowserSessionBackend:
         reason = _suspect_browser_sessions.pop(self._session_key, None)
         if reason is None:
             return True
+        with _cleanup_lock:
+            held = _active_sessions.get(self._session_key)
+        if _session._defer_shared_browser_teardown(held):
+            # Deferred teardown is not a miss: do not mint a replacement Chromium
+            # on the screen the human is typing into. Keep the suspect flag so
+            # the next use after hand-back still recycles.
+            _suspect_browser_sessions[self._session_key] = reason
+            logger.info(
+                "Deferring suspect recycle of %s: a human holds the bot's screen (%s)",
+                self._session_key, reason,
+            )
+            return True
         logger.info("Recycling suspect browser session %s before reuse (%s)", self._session_key, reason)
         try:
             _lifecycle._cleanup_single_browser_session(self._session_key)

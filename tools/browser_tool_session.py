@@ -329,6 +329,11 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, Any]:
 
 def _discard_timed_out_browser_session(task_id: str, session_info: Dict[str, Any], task_socket_dir: str) -> None:
     """Drop a stuck client generation without losing cloud cleanup state."""
+    if _defer_shared_browser_teardown(session_info):
+        _bt.logger.warning(
+            "Skipping timed-out discard of %s: a human holds the shared browser", task_id,
+        )
+        return
     with _bt._cleanup_lock:
         if _bt._active_sessions.get(task_id) is not session_info:
             return
@@ -417,7 +422,18 @@ def _handle_browser_command_timeout(task_id: str, session_info: Dict[str, Any], 
     ``ensure_healthy`` → clean agent-browser ``close`` → fresh session. Tree-kill the daemon's process tree
     via ``agent.deadline.kill_process_tree`` and evict the cache entry now; the next browser call respawns
     from scratch. See #72206.
+
+    A human on the shared Chromium must not lose that browser because an agent
+    command timed out. Same class as the janitor defer: no tree-kill, no
+    suspect mark (``ensure_healthy`` would treat a deferred cleanup as a miss
+    and mint a second Chromium).
     """
+    if _defer_shared_browser_teardown(session_info):
+        _bt.logger.warning(
+            "browser command timed out for %s but a human holds the shared browser; "
+            "leaving the session in place", task_id,
+        )
+        return
     if session_info.get("bb_session_id") or session_info.get("cdp_url"):
         _discard_timed_out_browser_session(task_id, session_info, task_socket_dir)
         return
