@@ -2896,6 +2896,97 @@ def test_ensure_supervisor_does_not_steal_cloud_session_for_leftover_connect(mon
     assert started == [cloud]
 
 
+def test_ensure_supervisor_does_not_discover_leftover_while_agent_holds_cloud(monkeypatch):
+    """Agent-held leftover ``/browser connect`` is still another browser.
+
+    Human-hold tests skip leftover via ``_shared_cdp_override_held_by_human``.
+    Preferring ``_get_cdp_override`` first used to ``/json/version`` leftover
+    Chrome, then discard the URL because it was not the cloud session.
+    """
+    from tools import browser_tool as browser
+    from tools import browser_tool_cdp as cdp
+
+    token = _without_in_process_real_profile()
+    _live_real_profile_copy(monkeypatch)
+    cloud = "wss://cloud.example/devtools/browser/x"
+    prior = browser._active_sessions.get("review")
+    browser._active_sessions["review"] = {
+        "session_name": "cloud", "cdp_url": cloud, "features": {"local": False},
+    }
+    monkeypatch.setattr(cdp, "_get_cdp_override_raw", lambda: "127.0.0.1:9334")
+    probed: list = []
+
+    def probe(*_a, **_k):
+        probed.append("get")
+        raise AssertionError("leftover Chrome must not be probed for a cloud session")
+
+    started: list = []
+    monkeypatch.setattr("requests.get", probe)
+    monkeypatch.setattr(
+        "tools.browser_supervisor.SUPERVISOR_REGISTRY",
+        type("R", (), {"get_or_start": staticmethod(lambda **kw: started.append(kw.get("cdp_url")))})(),
+    )
+    try:
+        cdp._ensure_cdp_supervisor("review")
+    finally:
+        if prior is None:
+            browser._active_sessions.pop("review", None)
+        else:
+            browser._active_sessions["review"] = prior
+        _restore_in_process_real_profile(token)
+    assert probed == [], f"agent holds, yet leftover Chrome was probed: {probed}"
+    assert started == [cloud]
+
+
+def test_cloud_click_does_not_discover_leftover_while_agent_holds(monkeypatch):
+    """``_run_browser_command`` attaches a supervisor on every CDP session."""
+    from tools import browser_tool as browser
+    from tools import browser_tool_session as session
+
+    token = _without_in_process_real_profile()
+    _live_real_profile_copy(monkeypatch)
+    commands: list = []
+    cloud = "wss://cloud.example/devtools/browser/x"
+    info = {"session_name": "cloud", "cdp_url": cloud, "features": {"local": False}}
+    prior = browser._active_sessions.get("review")
+    browser._active_sessions["review"] = info
+    monkeypatch.setattr(browser, "_is_camofox_mode", lambda: False)
+    monkeypatch.setattr(browser, "_blocked_private_page_action", lambda *a: None)
+    monkeypatch.setattr(session, "_browser_command_preflight", lambda: {"browser_cmd": "agent-browser"})
+    monkeypatch.setattr(session, "_get_session_info", lambda *a: info)
+    monkeypatch.setattr(session._cdp, "_get_cdp_override_raw", lambda: "127.0.0.1:9334")
+    monkeypatch.setattr(session._cloud, "_get_browser_engine", lambda: "chrome")
+    monkeypatch.setattr(session._cloud, "_is_headed_mode", lambda: True)
+    probed: list = []
+
+    def probe(*_a, **_k):
+        probed.append("get")
+        raise AssertionError("leftover Chrome must not be probed for a cloud session")
+
+    monkeypatch.setattr("requests.get", probe)
+    monkeypatch.setattr(
+        "tools.browser_supervisor.SUPERVISOR_REGISTRY",
+        type("R", (), {"get_or_start": staticmethod(lambda **_k: None)})(),
+    )
+
+    def spawn(*args):
+        commands.append(args[2])
+        return {"success": True, "data": {}}
+
+    monkeypatch.setattr(session, "_spawn_and_collect", spawn)
+    try:
+        result = json.loads(browser.browser_click("e1", task_id="review"))
+    finally:
+        if prior is None:
+            browser._active_sessions.pop("review", None)
+        else:
+            browser._active_sessions["review"] = prior
+        _restore_in_process_real_profile(token)
+    assert probed == [], f"agent holds, yet leftover Chrome was probed: {probed}"
+    assert commands, f"cached cloud click was refused as leftover Chrome: {result}"
+    assert result.get("success") is True
+
+
 def test_ensure_supervisor_keeps_leftover_when_session_is_that_endpoint(monkeypatch):
     """Same-endpoint leftover connect is this session — attach it."""
     from tools import browser_tool as browser

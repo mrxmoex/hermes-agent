@@ -110,8 +110,9 @@ def _ensure_cdp_supervisor(task_id: str) -> None:
     Idempotent (``get_or_start`` skips an existing ``(task_id, cdp_url)`` and restarts on URL change), so safe on
     every navigate / ``/browser connect``. URL precedence: the CDP override when it
     is the same endpoint as this session, then the session's own ``cdp_url``
-    (cloud providers, e.g. Browserbase). A leftover ``/browser connect`` on
-    this screen must not steal a cloud / foreign session's supervisor.
+    (cloud providers, e.g. Browserbase).     A leftover ``/browser connect`` on
+    this screen must not steal a cloud / foreign session's supervisor,
+    and must not ``/json/version``-probe that leftover before identity.
     Swallows all errors — a failed attach must not break the session;
     snapshots just lack ``pending_dialogs`` / ``frame_tree``.
     """
@@ -130,16 +131,27 @@ def _ensure_cdp_supervisor(task_id: str) -> None:
     except Exception:
         skip_override = False
         _cdp_endpoints_match = None  # type: ignore[assignment]
-    leftover = "" if skip_override else (_get_cdp_override() or "")
+    leftover_raw = "" if skip_override else (_get_cdp_override_raw() or "")
     with _bt._cleanup_lock:
         session_info = _bt._active_sessions.get(task_id, {})
     session_cdp = str(session_info.get("cdp_url") or "")
-    if leftover and session_cdp and _cdp_endpoints_match is not None:
-        try:
-            if not _cdp_endpoints_match(leftover, session_cdp):
-                leftover = ""
-        except Exception:
-            leftover = ""
+    leftover = ""
+    if leftover_raw:
+        # Match on the configured URL first. ``_get_cdp_override`` HTTP
+        # ``/json/version``-probes leftover Chrome; a cached cloud / foreign
+        # session used to do that DevTools read, then discard the URL.
+        if session_cdp:
+            try:
+                same = bool(
+                    _cdp_endpoints_match
+                    and _cdp_endpoints_match(leftover_raw, session_cdp)
+                )
+            except Exception:
+                same = False
+            if same:
+                leftover = _resolve_cdp_override(leftover_raw)
+        else:
+            leftover = _resolve_cdp_override(leftover_raw)
     cdp_url = leftover or (_resolve_cdp_override(session_cdp) if session_cdp else "")
     if not cdp_url:
         return
