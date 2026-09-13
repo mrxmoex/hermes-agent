@@ -862,6 +862,30 @@ def _shares_bot_desktop_browser(session_info: Dict[str, Any]) -> bool:
     return isinstance(cdp_url, str) and cdp_url_is_running_instance(cdp_url)
 
 
+def _session_info_for_routed_cdp(cdp_url: str) -> Dict[str, Any]:
+    """Session identity for a CDP URL the wrapper already resolved.
+
+    Dock instance (endpoint identity) OR this profile's real-profile Chrome
+    (keyed ``hermes-real-profile``; a cache hit never writes ``_active_sessions``
+    under the caller key). Foreign / cloud URLs stay unshared. Do not consult
+    a leftover dock supervisor — that would fence the wrong browser.
+    """
+    info: Dict[str, Any] = {"cdp_url": cdp_url or ""}
+    if not cdp_url:
+        return info
+    if _shares_bot_desktop_browser(info):
+        return info
+    rp = _bt._active_sessions.get(_bt._REAL_PROFILE_SESSION) or {}
+    rp_cdp = str((_bt._real_profile_cdp_cache or {}).get("cdp") or rp.get("cdp_url") or "")
+    if rp_cdp and cdp_url == rp_cdp:
+        if rp and _shares_bot_desktop_browser(rp):
+            out = dict(rp)
+            out["cdp_url"] = cdp_url
+            return out
+        return {"cdp_url": cdp_url, "features": {"local": True, "real_profile": True}}
+    return info
+
+
 def _bot_desktop_attach_port(session_info: Dict[str, Any]) -> Optional[int]:
     """DevTools port of a human-started Chromium on the Bot Desktop's shared profile, else ``None``."""
     if not _shares_bot_desktop_browser(session_info):

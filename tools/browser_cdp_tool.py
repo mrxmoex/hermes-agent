@@ -15,11 +15,11 @@ from typing import Any, Dict, Optional
 
 from tools.registry import registry, tool_error
 from tools.browser_extension_router import routed_browser_handler
-from tools.bot_desktop.browser import cdp_url_is_running_instance
 from tools.browser_tool_session import (
     _admit_bot_desktop_browser,
     _discard_if_lease_moved,
     _non_nav_session_key,
+    _session_info_for_routed_cdp,
     _shared_browser_fence,
 )
 
@@ -318,12 +318,10 @@ def browser_cdp(method: str, params: Optional[Dict[str, Any]] = None, target_id:
         return blocked
 
     # Stateless CDP is usually another browser (user Chrome on 9222, cloud).
-    # Fence only when the endpoint IS this profile's live dock Chromium.
-    admitted = None
-    if cdp_url_is_running_instance(endpoint):
-        admitted, refuse = _admit_bot_desktop_browser({"cdp_url": endpoint})
-        if refuse:
-            return json.dumps(refuse)
+    # Fence when the endpoint IS this profile's live dock or real-profile Chrome.
+    admitted, refuse = _admit_bot_desktop_browser(_session_info_for_routed_cdp(endpoint))
+    if refuse:
+        return json.dumps(refuse)
 
     try:
         safe_timeout = float(timeout) if timeout else 30.0

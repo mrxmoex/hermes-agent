@@ -2245,6 +2245,79 @@ def test_browser_cdp_stateless_dock_result_crossing_a_takeover_is_discarded(monk
     assert result.get("code") == "human_has_control"
 
 
+def test_browser_cdp_stateless_real_profile_endpoint_is_fenced(monkeypatch):
+    """``/browser connect`` / ``browser.cdp_url`` can be the real-profile Chrome
+    on this DISPLAY. Dock-identity-only admit left that endpoint unfenced."""
+    from tools import browser_tool as browser
+
+    ran: list = []
+    rp_cdp = "http://127.0.0.1:9334"
+    browser._real_profile_cdp_cache["cdp"] = rp_cdp
+    monkeypatch.setattr(browser_cdp_tool, "_resolve_cdp_endpoint", lambda: rp_cdp)
+    monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", _is_dock_cdp)
+    monkeypatch.setattr(
+        browser_cdp_tool, "_run_async",
+        lambda *_a, **_k: ran.append("cdp") or {"secret": "WHAT-THE-HUMAN-TYPED"},
+    )
+    monkeypatch.setattr(browser_cdp_tool, "_browser_cdp_private_guard", lambda **_k: None)
+    lease.acquire("human-viewer")
+    try:
+        result = json.loads(browser_cdp_tool.browser_cdp(method="Target.getTargets", task_id="review"))
+    finally:
+        browser._real_profile_cdp_cache.pop("cdp", None)
+    assert ran == [], f"human holds the lease, yet real-profile CDP ran: {ran}"
+    assert result.get("code") == "human_has_control"
+
+
+def test_browser_cdp_stateless_real_profile_result_crossing_a_takeover_is_discarded(monkeypatch):
+    from tools import browser_tool as browser
+
+    rp_cdp = "http://127.0.0.1:9334"
+    browser._real_profile_cdp_cache["cdp"] = rp_cdp
+    monkeypatch.setattr(browser_cdp_tool, "_resolve_cdp_endpoint", lambda: rp_cdp)
+    monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", _is_dock_cdp)
+
+    def run(*_a, **_k):
+        lease.acquire("human-viewer")
+        lease.release("human-viewer")
+        return {"secret": "WHAT-THE-HUMAN-TYPED"}
+
+    monkeypatch.setattr(browser_cdp_tool, "_run_async", run)
+    monkeypatch.setattr(browser_cdp_tool, "_browser_cdp_private_guard", lambda **_k: None)
+    try:
+        result = json.loads(browser_cdp_tool.browser_cdp(
+            method="Page.captureScreenshot", task_id="review",
+        ))
+    finally:
+        browser._real_profile_cdp_cache.pop("cdp", None)
+    assert "WHAT-THE-HUMAN-TYPED" not in json.dumps(result)
+    assert result.get("code") == "human_has_control"
+
+
+def test_browser_cdp_stale_real_profile_cache_does_not_fence_foreign_endpoint(monkeypatch):
+    """A leftover real-profile cache must not fence user Chrome / cloud CDP."""
+    from tools import browser_tool as browser
+
+    ran: list = []
+    browser._real_profile_cdp_cache["cdp"] = "http://127.0.0.1:9334"
+    monkeypatch.setattr(browser_cdp_tool, "_resolve_cdp_endpoint", lambda: _FOREIGN_CDP)
+    monkeypatch.setattr("tools.bot_desktop.browser.cdp_url_is_running_instance", lambda url, **k: False)
+
+    async def fake_call(*_a, **_k):
+        ran.append("cdp")
+        return {"targetInfos": []}
+
+    monkeypatch.setattr(browser_cdp_tool, "_cdp_call", fake_call)
+    monkeypatch.setattr(browser_cdp_tool, "_browser_cdp_private_guard", lambda **_k: None)
+    lease.acquire("human-viewer")
+    try:
+        result = json.loads(browser_cdp_tool.browser_cdp(method="Target.getTargets", task_id="review"))
+    finally:
+        browser._real_profile_cdp_cache.pop("cdp", None)
+    assert ran == ["cdp"], f"foreign CDP was refused by a stale real-profile cache: {result}"
+    assert result.get("success") is True
+
+
 def test_timeout_does_not_teardown_shared_browser_while_human_holds(monkeypatch, tmp_path):
     """In-flight timeout recovery is the same class as the janitor: no tree-kill."""
     from tools import browser_tool as browser

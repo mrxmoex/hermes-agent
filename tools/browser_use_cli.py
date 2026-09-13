@@ -541,8 +541,8 @@ def _routed_shared_browser_info(env: dict, task_id: Optional[str], session: str)
     hit never writes ``_active_sessions``) — match that CDP next. Do not overlay
     a leftover dock supervisor onto a cloud route.
     """
-    from tools.browser_tool import _REAL_PROFILE_SESSION, _active_sessions, _real_profile_cdp_cache
-    from tools.browser_tool_session import _shares_bot_desktop_browser
+    from tools.browser_tool import _active_sessions
+    from tools.browser_tool_session import _session_info_for_routed_cdp, _shares_bot_desktop_browser
 
     routed_cdp = env.get("BU_CDP_WS") or env.get("BU_CDP_URL") or ""
     cached = _active_sessions.get(_backend_cache_key(task_id, session)) or {}
@@ -551,16 +551,7 @@ def _routed_shared_browser_info(env: dict, task_id: Optional[str], session: str)
         if routed_cdp:
             info["cdp_url"] = routed_cdp
         return info
-    # Process-global singleton — only admit when this route actually landed on it.
-    rp = _active_sessions.get(_REAL_PROFILE_SESSION) or {}
-    rp_cdp = str(_real_profile_cdp_cache.get("cdp") or rp.get("cdp_url") or "")
-    if routed_cdp and rp_cdp and routed_cdp == rp_cdp:
-        if rp and _shares_bot_desktop_browser(rp):
-            info = dict(rp)
-            info["cdp_url"] = routed_cdp
-            return info
-        return {"cdp_url": routed_cdp, "features": {"local": True, "real_profile": True}}
-    return {"cdp_url": routed_cdp}
+    return _session_info_for_routed_cdp(routed_cdp)
 
 
 def _group_popen_kwargs() -> dict:
