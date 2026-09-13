@@ -739,8 +739,12 @@ def _supervisor_belongs_to_session(supervisor, session_info: Dict[str, Any]) -> 
     """
     if supervisor is None:
         return False
-    sup_cdp = str(getattr(supervisor, "cdp_url", "") or "")
-    sess_cdp = str((session_info or {}).get("cdp_url") or "")
+    sup_cdp = getattr(supervisor, "cdp_url", "") or ""
+    if not isinstance(sup_cdp, str):
+        sup_cdp = ""
+    sess_cdp = (session_info or {}).get("cdp_url") or ""
+    if not isinstance(sess_cdp, str):
+        sess_cdp = ""
     if not sess_cdp and not sup_cdp:
         return True
     if sup_cdp and sess_cdp:
