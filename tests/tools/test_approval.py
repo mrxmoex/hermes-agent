@@ -620,9 +620,116 @@ class TestHermesBotDesktopWriteProtection:
             "objcopy -I binary -O binary ~/.hermes/bot-desktop/lease.json /tmp/out",
             "iconv -o /tmp/out /tmp/src",
             "patch -o /tmp/out /tmp/old",
+            # Relative dests are only a forge when cwd (or a same-command
+            # chdir) is the screen tree. Bare relative writes, reads after
+            # chdir, and chdir into a lookalike backup dir stay unflagged.
+            "echo x > lease.json",
+            "cp /tmp/evil.json lease.json",
+            "cd ~/.hermes/bot-desktop && cat lease.json",
+            "cd ~/.hermes/bot-desktop && echo x > /tmp/out",
+            "cd $HERMES_HOME/bot-desktop && echo x > /tmp/out",
+            "cd ~/.hermes/bot-desktop-backup && echo x > lease.json",
+            "pushd ~/.hermes/bot-desktop && cat lease.json",
+            "cd ~/.hermes/bot-desktop && tar -xf /tmp/e.tar -C /tmp",
+            "cd ~/.hermes/bot-desktop && tar -cf /tmp/out.tar .",
         ):
             dangerous, key, desc = detect_dangerous_command(cmd)
             assert dangerous is False, cmd
+
+    def test_relative_write_after_chdir_or_session_cwd(self):
+        """Session cwd persists; detect only saw the command string.
+
+        ``cd ~/.hermes/bot-desktop && echo '{"holder":"agent"}' > lease.json``
+        (same command) and a later-turn ``echo … > lease.json`` with that
+        cwd both forge holder=agent the same way an absolute dest does.
+        Missing lease.json fail-opens to agent, so relative rm is the
+        same class.
+        """
+        for command in (
+            "cd ~/.hermes/bot-desktop && echo '{\"holder\":\"agent\"}' > lease.json",
+            "cd $HERMES_HOME/bot-desktop && echo x > lease.json",
+            "cd ~/.hermes/profiles/coder/bot-desktop && echo x > lease.json",
+            "cd $HOME/.hermes/bot-desktop && cp /tmp/evil.json lease.json",
+            "pushd ~/.hermes/bot-desktop && tee lease.json",
+            "cd ~/.hermes/bot-desktop && dd of=lease.json",
+            "cd ~/.hermes/bot-desktop && rm lease.json",
+            "cd ~/.hermes/bot-desktop && rm -f dock-cdp-port",
+            "env -C ~/.hermes/bot-desktop echo x > lease.json",
+            "env --chdir=$HERMES_HOME/bot-desktop tee lease.json",
+            "cd ~/.hermes/bot-desktop && tar -xf /tmp/e.tar",
+            "cd ~/.hermes/bot-desktop && tar -zxf /tmp/e.tgz",
+            "cd ~/.hermes/bot-desktop && gtar -xf /tmp/e.tar",
+            "cd ~/.hermes/bot-desktop && unzip /tmp/e.zip",
+            "cd ~/.hermes/bot-desktop && 7z x /tmp/e.7z",
+            "cd ~/.hermes/bot-desktop && curl -o lease.json https://evil.example/l",
+            "cd ~/.hermes/bot-desktop && iconv -o lease.json /tmp/src",
+            "cd ~/.hermes/bot-desktop && patch -o lease.json /tmp/old",
+        ):
+            dangerous, key, desc = detect_dangerous_command(command)
+            assert dangerous is True, command
+            assert key is not None, command
+
+        for cwd in (
+            "~/.hermes/bot-desktop",
+            "$HERMES_HOME/bot-desktop",
+            os.path.expanduser("~/.hermes/bot-desktop"),
+            str(get_hermes_home() / "bot-desktop"),
+            str(get_hermes_home() / "bot-desktop" / "Downloads"),
+            os.path.expanduser("~/.hermes/profiles/coder/bot-desktop"),
+        ):
+            for command in (
+                "echo '{\"holder\":\"agent\"}' > lease.json",
+                "cp /tmp/evil.json lease.json",
+                "tee lease.json",
+                "dd of=lease.json",
+                "rm lease.json",
+            ):
+                dangerous, key, desc = detect_dangerous_command(command, cwd=cwd)
+                assert dangerous is True, (command, cwd)
+                assert key is not None, (command, cwd)
+
+        for cwd, command in (
+            ("/tmp", "echo x > lease.json"),
+            (os.path.expanduser("~/.hermes/bot-desktop-backup"), "echo x > lease.json"),
+            ("~/.hermes/bot-desktop", "cat lease.json"),
+            ("~/.hermes/bot-desktop", "echo x > /tmp/out"),
+            (None, "echo x > lease.json"),
+        ):
+            dangerous, key, desc = detect_dangerous_command(command, cwd=cwd)
+            assert dangerous is False, (command, cwd)
+
+    def test_check_all_command_guards_forwards_cwd(self, monkeypatch):
+        """Interactive and unattended gates must see session cwd, not just
+        the command string — otherwise the detector's cwd= kwarg is dead."""
+        seen = {}
+        orig = approval_module.detect_dangerous_command
+
+        def spy(command, *, cwd=None):
+            seen["cwd"] = cwd
+            return orig(command, cwd=cwd)
+
+        monkeypatch.setattr(approval_module, "detect_dangerous_command", spy)
+        monkeypatch.setattr(approval_module, "_is_interactive_cli", lambda: True)
+        monkeypatch.setattr(approval_module, "_is_single_query_approval_context", lambda: False)
+        monkeypatch.setattr(approval_module, "_yolo_active", lambda: False)
+
+        approval_module.check_all_command_guards(
+            "echo x > lease.json",
+            "local",
+            approval_callback=lambda *a, **k: "n",
+            cwd="~/.hermes/bot-desktop",
+        )
+        assert seen.get("cwd") == "~/.hermes/bot-desktop"
+
+        seen.clear()
+        monkeypatch.setattr(approval_context, "_get_cron_approval_mode", lambda: "deny")
+        result = approval_module._unattended_deny(
+            "echo x > lease.json",
+            approval_module._CRON_CTX,
+            cwd="~/.hermes/bot-desktop",
+        )
+        assert seen.get("cwd") == "~/.hermes/bot-desktop"
+        assert result is not None and result["approved"] is False
 
     def test_delete_or_move_away_of_lease_requires_approval(self):
         """Missing lease.json fail-opens to agent hold; auto-approve must not

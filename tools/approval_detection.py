@@ -11,6 +11,7 @@ import re
 import shlex
 import tempfile
 import unicodedata
+from typing import Optional
 
 logger = logging.getLogger("tools.approval")
 
@@ -1608,12 +1609,72 @@ def _is_shell_token_spliced_gateway_lifecycle(command: str) -> bool:
     return contains_gateway_lifecycle_command(command)
 
 
-def detect_dangerous_command(command: str) -> tuple:
-    """Check dangerous patterns -> (is_dangerous, pattern_key, description)."""
+# Relative dest after `cd ~/.hermes/bot-desktop` (or a persisted session
+# cwd there). Absolute / `~` / `$HOME` dests already hit the prefix
+# patterns; `> lease.json` does not.
+_RELATIVE_WRITE_DEST = r'(?:["\']?)(?!(?:/|~|\$))(?:\./)?[A-Za-z0-9._][^\s;&|<>"\']*'
+_CHDIR_BOT_DESKTOP_RE = re.compile(
+    rf'(?:(?:\bcd\b|\bpushd\b)\s+|\benv\b[^\n]*\s(?:-C|--chdir)[=\s]*)["\']?{_HERMES_BOT_DESKTOP_PATH}',
+    _RE_FLAGS,
+)
+_BOT_DESKTOP_CWD_RE = re.compile(_HERMES_BOT_DESKTOP_PATH, _RE_FLAGS)
+_RELATIVE_BOT_DESKTOP_WRITE_RE = re.compile(
+    r'(?:'
+    r'>>?\s*' + _RELATIVE_WRITE_DEST +
+    r'|\btee\b(?:\s+-[^\s]+)*\s+' + _RELATIVE_WRITE_DEST +
+    r'|\b(?:gdd|dd)\b[^\n]*\bof=' + _RELATIVE_WRITE_DEST +
+    r'|\b(?:g?cp|g?mv|g?install|g?ln|rsync|scp|objcopy|sponge)\b[^\n]*\s'
+    + _RELATIVE_WRITE_DEST + r'(?:\s*(?:&&|\|\||;).*)?$'
+    r'|\b(?:curl|wget|iconv|patch|aria2c)\b[^\n]*\s'
+    r'(?:(?-i:-o|-O|-P|-d)|--output|--output-dir|--output-document|'
+    r'--directory-prefix|--dir)[=\s]*' + _RELATIVE_WRITE_DEST +
+    r'|\b(?:g?rm|unlink|shred|trash(?:-put)?)\b[^\n]*\s' + _RELATIVE_WRITE_DEST +
+    r'|\bgio\s+trash\b[^\n]*\s' + _RELATIVE_WRITE_DEST +
+    r'|\b(?:(?:bsd|g)?tar)\b(?![^\n]*\s(?:-C|--directory)[=\s]*[/~$])'
+    r'[^\n]*\s' + _DEST_FIRST_TAR_EXTRACT + r'\b'
+    r'|\b(?:unzip)\b(?![^\n]*\s(?-i:-d)[=\s]*[/~$])'
+    r'|\b(?:7z|7za|7zr|7zz)\b(?=[^\n]*\s(?:x|e)\b)(?![^\n]*(?-i:-o)[/~$])'
+    r')',
+    _RE_FLAGS,
+)
+_CHDIR_BOT_DESKTOP_WRITE_DESCRIPTION = "write into bot-desktop after chdir"
+
+
+def _cwd_is_hermes_bot_desktop(cwd: Optional[str]) -> bool:
+    """True when *cwd* is this (or a sibling named) profile's screen tree."""
+    if not cwd or not isinstance(cwd, str):
+        return False
+    folded = _rewrite_resolved_user_home(
+        _rewrite_resolved_hermes_home(os.path.expanduser(cwd.rstrip("/\\")) + "/")
+    )
+    return bool(_BOT_DESKTOP_CWD_RE.search(folded))
+
+
+def _command_chdirs_into_bot_desktop(command: str) -> bool:
+    return bool(_CHDIR_BOT_DESKTOP_RE.search(command))
+
+
+def _has_relative_bot_desktop_write(command: str) -> bool:
+    return bool(_RELATIVE_BOT_DESKTOP_WRITE_RE.search(command))
+
+
+def detect_dangerous_command(command: str, *, cwd: Optional[str] = None) -> tuple:
+    """Check dangerous patterns -> (is_dangerous, pattern_key, description).
+
+    ``cwd`` is the command's resolved working directory (session ``cd`` /
+    per-call ``workdir``). Relative writes after ``cd ~/.hermes/bot-desktop``
+    (same command or a later turn that inherited that cwd) forge
+    ``lease.json`` the same way an absolute dest does.
+    """
     if _command_parser_limit_exceeded(command):
         return (True, _PARSER_LIMIT_DESCRIPTION, _PARSER_LIMIT_DESCRIPTION)
     if _is_verification_artifact_cleanup(command):
         return (False, None, None)
+    in_bot_desktop = _cwd_is_hermes_bot_desktop(cwd)
+    if not in_bot_desktop:
+        in_bot_desktop = _command_chdirs_into_bot_desktop(
+            _normalize_command_for_detection(command)
+        )
     for command_variant in _command_detection_variants(command):
         # Case-preserved: dest-first short flags (`-t` vs `-T`, tar `-C` vs `-c`).
         for pattern_re, description in DEST_FIRST_SENSITIVE_PATTERNS_COMPILED:
@@ -1623,6 +1684,12 @@ def detect_dangerous_command(command: str) -> tuple:
         for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
             if pattern_re.search(command_lower):
                 return (True, description, description)
+        if in_bot_desktop and _has_relative_bot_desktop_write(command_variant):
+            return (True, _CHDIR_BOT_DESKTOP_WRITE_DESCRIPTION, _CHDIR_BOT_DESKTOP_WRITE_DESCRIPTION)
+    if in_bot_desktop and _has_relative_bot_desktop_write(
+        _normalize_command_for_detection(command)
+    ):
+        return (True, _CHDIR_BOT_DESKTOP_WRITE_DESCRIPTION, _CHDIR_BOT_DESKTOP_WRITE_DESCRIPTION)
     normalized = _normalize_command_for_detection(command)
     for description, _ in _execution_flag_findings(normalized):
         return (True, description, description)
