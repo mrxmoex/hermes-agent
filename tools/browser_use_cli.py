@@ -619,6 +619,7 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
         env["BU_NAME"] = session
     # Late import: browser_tool_session → lightpanda fallback → this module.
     from tools.browser_tool_session import (
+        _admit_bot_desktop_browser,
         _discard_if_lease_moved,
         _discard_shared_browser_captures,
         _shared_browser_fence,
@@ -651,6 +652,19 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
         route_err = _route_backend(env, session, task_id, bool(local))
     except HumanHasControl as e:
         return tool_error(str(e), code="human_has_control")
+    # Same class as ``_session_after_shared_fence``: a predicted-cloud skip
+    # plus a successful dock / local resolve used to leave ``admitted=None``,
+    # so the harness's direct CDP traffic had no ticket to discard against.
+    if admitted is None:
+        routed_cdp = env.get("BU_CDP_WS") or env.get("BU_CDP_URL") or ""
+        admitted, refuse = _admit_bot_desktop_browser({"cdp_url": routed_cdp})
+        if refuse:
+            return tool_error(
+                refuse.get("error") or "Human has control of this bot's screen.",
+                code=refuse.get("code") or "human_has_control",
+            )
+        if admitted is not None:
+            env = desktop_env(env)
     moved = _lease_moved_error()
     if moved:
         return moved
