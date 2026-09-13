@@ -33,9 +33,16 @@ from typing import Any, Dict, Optional
 
 from tools.browser_tool_session import (
     _bracket_bot_desktop_browser,
+    _discard_if_lease_moved,
     _session_info_for_shared_browser_fence,
     _shared_browser_fence,
 )
+
+
+def _json_if_lease_moved(admitted) -> Optional[str]:
+    """JSON refuse when the shared-browser epoch moved since ``admitted``."""
+    stole = _discard_if_lease_moved(admitted)
+    return json.dumps(stole) if stole else None
 
 logger = logging.getLogger(__name__)
 
@@ -137,7 +144,7 @@ def _eval_js_secret(task_id: str, expression: str) -> Dict[str, Any]:
     When no supervisor session is available the caller gets a typed refusal
     (``error_type='supervisor_required'``) and nothing is written.
     """
-    _, refuse = _shared_browser_fence(task_id)
+    admitted, refuse = _shared_browser_fence(task_id)
     if refuse:
         return refuse
     try:
@@ -145,6 +152,10 @@ def _eval_js_secret(task_id: str, expression: str) -> Dict[str, Any]:
     except Exception as exc:
         logger.debug("vault fill: supervisor unavailable (%s)", exc)
         supervisor = None
+
+    stole = _discard_if_lease_moved(admitted)
+    if stole:
+        return stole
 
     if supervisor is None:
         return {
@@ -159,19 +170,18 @@ def _eval_js_secret(task_id: str, expression: str) -> Dict[str, Any]:
             ),
         }
 
-    def _run():
-        sup = supervisor.evaluate_runtime(expression)
-        if sup.get("ok"):
-            return {"success": True, "result": sup.get("result")}
-        return {
+    sup = supervisor.evaluate_runtime(expression)
+    if sup.get("ok"):
+        result = {"success": True, "result": sup.get("result")}
+    else:
+        result = {
             "success": False,
             "error_type": "supervisor_required"
             if "supervisor" in str(sup.get("error") or "").lower()
             else "eval_failed",
             "error": str(sup.get("error") or "eval failed"),
         }
-
-    return _bracket_bot_desktop_browser(_session_info_for_shared_browser_fence(task_id), _run)
+    return _discard_if_lease_moved(admitted) or result
 
 
 def _parse_json_result(raw: Any) -> Any:
@@ -306,13 +316,16 @@ def browser_vault_save_login(label: str = "", task_id: Optional[str] = None) -> 
     from agent.vault_store import get_vault_store
 
     effective_task_id = task_id or "default"
-    _, refuse = _shared_browser_fence(effective_task_id)
+    admitted, refuse = _shared_browser_fence(effective_task_id)
     if refuse:
         return json.dumps(refuse)
     # The supervisor's default page session is whatever tab it attached to first (on Browser Use that is
     # the daemon's blank tab); the login form lives in the tab with a password field, so focus that one.
     _focus_bound_origin(effective_task_id, "", "login")
     origin = _current_page_origin(effective_task_id)
+    moved = _json_if_lease_moved(admitted)
+    if moved:
+        return moved
     if not origin:
         return json.dumps({"success": False, "error": "Open the site's login page first; the login is saved for that page's origin."})
     prompt = get_save_login_prompt_callback()
@@ -335,6 +348,9 @@ def browser_vault_save_login(label: str = "", task_id: Optional[str] = None) -> 
         return json.dumps({"success": False, "error_type": "save_failed", "error": str(exc)[:200]})
     finally:
         answer.clear()
+    moved = _json_if_lease_moved(admitted)
+    if moved:
+        return moved
     filled = json.loads(browser_vault_fill(meta.id, task_id=effective_task_id))
     return json.dumps({"success": True, "handle": meta.id, "origin": origin, "identifier": identifier,
                        "identifier_type": id_type, "fill": filled,
@@ -357,17 +373,23 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
     from agent.vault_login_classifier import LoginControl, build_fill_js, build_inspection_js, build_otp_fills, classify_otp_controls
 
     effective_task_id = task_id or "default"
-    _, refuse = _shared_browser_fence(effective_task_id)
+    admitted, refuse = _shared_browser_fence(effective_task_id)
     if refuse:
         return json.dumps(refuse)
     _focus_bound_origin(effective_task_id, "", "otp")
     origin = _current_page_origin(effective_task_id)
+    moved = _json_if_lease_moved(admitted)
+    if moved:
+        return moved
     if not origin:
         return json.dumps({"success": False, "error": "No page with a code field is open."})
     site = origin.split("://", 1)[-1]
 
     nonce = secrets.token_hex(8)
     inspect = _eval_js(effective_task_id, build_inspection_js(nonce))
+    moved = _json_if_lease_moved(admitted)
+    if moved:
+        return moved
     raw_controls = _parse_json_result(inspect.get("result")) if inspect.get("success") else None
     if isinstance(raw_controls, str):
         raw_controls = _parse_json_result(raw_controls)
@@ -400,8 +422,15 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
 
     register_vault_redaction_value(code)
     fills = build_otp_fills(otp_controls, code)
+    moved = _json_if_lease_moved(admitted)
+    if moved:
+        del code
+        return moved
     result = _eval_js_secret(effective_task_id, build_fill_js(fills, expected_origin=origin, nonce=nonce))
     del code
+    moved = _json_if_lease_moved(admitted)
+    if moved:
+        return moved
     if not result.get("success"):
         return json.dumps({"success": False, "error": str(result.get("error") or "fill failed")[:200]})
     parsed = _parse_json_result(result.get("result"))
@@ -466,13 +495,16 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
         return json.dumps({"success": False, "error_type": "payment_declined",
                            "error": "The user did not confirm filling this payment card. Do not retry; ask them instead."})
 
-    _, refuse = _shared_browser_fence(effective_task_id)
+    admitted, refuse = _shared_browser_fence(effective_task_id)
     if refuse:
         return json.dumps(refuse)
 
     # ── Origin binding pre-check (cheap early exit; the authoritative check
     # runs synchronously inside the fill script itself) ──────────────────────
     page_origin = _focus_bound_origin(effective_task_id, str(meta.origin), meta.kind) or _current_page_origin(effective_task_id)
+    moved = _json_if_lease_moved(admitted)
+    if moved:
+        return moved
     if not page_origin:
         return json.dumps(
             {"success": False, "error": "Could not determine the current page origin. Navigate to the login page first."}
@@ -493,6 +525,9 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
     # ── Inspect + classify page controls ────────────────────────────────────
     nonce = secrets.token_hex(8)  # binds this fill to THIS inspection's stamps
     inspect = _eval_js(effective_task_id, build_inspection_js(nonce))
+    moved = _json_if_lease_moved(admitted)
+    if moved:
+        return moved
     if not inspect.get("success"):
         return json.dumps(
             {"success": False, "error": f"Could not inspect page inputs: {inspect.get('error', 'eval failed')}"}
@@ -537,6 +572,9 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
     for value in (secret.values() if meta.kind == "payment" else [secret.get("password", "")]):
         register_vault_redaction_value(value)
 
+    moved = _json_if_lease_moved(admitted)
+    if moved:
+        return moved
     try:
         fill_result = _eval_js_secret(
             effective_task_id, build_fill_js(fills, expected_origin=str(meta.origin), nonce=nonce)
@@ -546,6 +584,9 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
         return json.dumps(
             {"success": False, "error": scrub_secret_from_text(str(exc), secret)}
         )
+    moved = _json_if_lease_moved(admitted)
+    if moved:
+        return moved
     if not fill_result.get("success"):
         err = scrub_secret_from_text(str(fill_result.get("error") or "fill failed"), secret)
         out = {"success": False, "error": err}

@@ -964,9 +964,19 @@ def browser_console(clear: bool = False, expression: Optional[str] = None, task_
     if blocked is not None:
         return blocked
 
+    admitted, refuse = _session._shared_browser_fence(effective_task_id)
+    if refuse:
+        return _dumps(refuse)
+
     clear_args = ["--clear"] if clear else []
     console_result = _session._run_browser_command(effective_task_id, "console", clear_args)
+    stole = _session._discard_if_lease_moved(admitted)
+    if stole or console_result.get("code") == "human_has_control":
+        return _dumps(stole) if stole else _failed_response(console_result, "Failed to read console")
     errors_result = _session._run_browser_command(effective_task_id, "errors", clear_args)
+    stole = _session._discard_if_lease_moved(admitted)
+    if stole or errors_result.get("code") == "human_has_control":
+        return _dumps(stole) if stole else _failed_response(errors_result, "Failed to read JS errors")
 
     messages = [
         {"type": msg.get("type", "log"), "text": _snapshot._redact_browser_output(msg.get("text", "")), "source": "console"}

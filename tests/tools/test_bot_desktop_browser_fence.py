@@ -389,3 +389,98 @@ def test_snapshot_supervisor_merge_is_fenced_while_human_controls(monkeypatch):
     parsed = json.loads(text)
     assert "WHAT-THE-HUMAN-TYPED" not in text
     assert parsed.get("code") == "human_has_control"
+
+
+def test_vault_fill_does_not_inject_after_inspect_crossed_a_takeover(monkeypatch, tmp_path):
+    """Inspect + fill are one ownership epoch: a completed takeover must not write."""
+    from agent.vault_store import VaultStore
+    from tools import browser_vault_tool as vault
+
+    store = VaultStore(base_dir=tmp_path / "vault")
+    meta = store.add_item(
+        kind="login",
+        label="Example login",
+        origin="https://example.com",
+        secret={
+            "identifier_type": "email",
+            "identifier": "user@example.com",
+            "password": "s3cret-pw",
+            "origin": "https://example.com",
+        },
+    )
+    monkeypatch.setattr(session_mod, "_get_session_info", lambda *a, **k: {
+        "session_name": "review", "cdp_url": None, "features": {"local": True}})
+    monkeypatch.setattr("agent.vault_store.get_vault_store", lambda: store)
+    monkeypatch.setattr(vault, "_focus_bound_origin", lambda *a, **k: "https://example.com")
+
+    injected: list = []
+    controls = [
+        {"autocomplete": "email", "formIndex": 0, "index": 0, "label": "", "name": "email", "type": "email"},
+        {"autocomplete": "current-password", "formIndex": 0, "index": 1, "label": "", "name": "pw", "type": "password"},
+    ]
+
+    def fake_eval(_task, expression):
+        if "location.href" in expression:
+            return {"success": True, "result": "https://example.com/login"}
+        lease.acquire("human-viewer")
+        lease.release("human-viewer")
+        return {"success": True, "result": json.dumps(controls)}
+
+    def fake_secret(_task, expression):
+        injected.append(expression)
+        return {"success": True, "result": json.dumps({"filled": 1})}
+
+    monkeypatch.setattr(vault, "_eval_js", fake_eval)
+    monkeypatch.setattr(vault, "_eval_js_secret", fake_secret)
+    result = json.loads(vault.browser_vault_fill(meta.id, task_id="review"))
+    assert injected == [], f"password was injected after a completed takeover: {injected}"
+    assert result.get("code") == "human_has_control"
+
+
+def test_vault_secret_eval_does_not_inject_after_attach_crossed_a_takeover(monkeypatch):
+    """``_ensure_supervisor`` (get cdp-url) and the secret eval are one epoch."""
+    from tools import browser_vault_tool as vault
+
+    monkeypatch.setattr(session_mod, "_get_session_info", lambda *a, **k: {
+        "session_name": "review", "cdp_url": None, "features": {"local": True}})
+    ran: list = []
+
+    class _Sup:
+        def evaluate_runtime(self, expr):
+            ran.append(expr)
+            return {"ok": True, "result": "WHAT-THE-HUMAN-TYPED"}
+
+    def ensure(_tid):
+        lease.acquire("human-viewer")
+        lease.release("human-viewer")
+        return _Sup()
+
+    monkeypatch.setattr(vault, "_ensure_supervisor", ensure)
+    result = vault._eval_js_secret("review", "document.querySelector('input').value='s3cret-pw'")
+    assert ran == [], f"password JS ran after a completed takeover: {ran}"
+    assert result.get("code") == "human_has_control"
+    assert "WHAT-THE-HUMAN-TYPED" not in json.dumps(result)
+
+
+def test_browser_console_does_not_return_errors_from_a_later_epoch(monkeypatch):
+    """console + errors are one ownership epoch; a hand-back must not attach human-period errors."""
+    commands: list = []
+    browser, session = _wire(monkeypatch, commands)
+    calls = {"n": 0}
+
+    def run_cmd(_task, command, args=None, **_k):
+        calls["n"] += 1
+        if command == "console":
+            lease.acquire("human-viewer")
+            lease.release("human-viewer")
+            return {"success": True, "data": {"messages": []}}
+        return {"success": True, "data": {"errors": [{"message": "WHAT-THE-HUMAN-TYPED"}]}}
+
+    monkeypatch.setattr(session, "_run_browser_command", run_cmd)
+    monkeypatch.setattr(browser, "_blocked_private_page_content", lambda *_a: None)
+    raw = browser.browser_console(task_id="review")
+    text = raw if isinstance(raw, str) else json.dumps(raw)
+    parsed = json.loads(text)
+    assert "WHAT-THE-HUMAN-TYPED" not in text
+    assert parsed.get("code") == "human_has_control"
+    assert calls["n"] == 1, f"errors read ran after a completed takeover: {calls}"
