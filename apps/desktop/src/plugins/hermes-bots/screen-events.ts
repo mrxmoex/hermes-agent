@@ -33,15 +33,68 @@ export function resetScreenEventBufferForTests(): void {
   pending.clear()
 }
 
+export type PullScreenStatusResult = 'ok' | 'unavailable' | 'failed'
+
+/** Delay between transient `display.status` failures while a surface is still unsettled. */
+export const SCREEN_STATUS_RETRY_MS = 2000
+
 /** One `display.status` RPC into the per-bot cache. Offline stays as-is; method-not-found settles unavailable. */
-export async function pullScreenStatus(bot: RosterRow): Promise<void> {
+export async function pullScreenStatus(bot: RosterRow): Promise<PullScreenStatusResult> {
   try {
     setScreenStatus(bot, await displayRequest<DisplayStatus>(bot, 'display.status'))
+
+    return 'ok'
   } catch (error) {
     if (isDisplayUnavailable(error)) {
       setScreenUnavailable(bot)
+
+      return 'unavailable'
     }
+
+    return 'failed'
   }
+}
+
+/**
+ * Pull until the cache has a status or a method-not-found. A 502 / timeout
+ * used to leave the portal on `'unknown'` forever (the mount effect saw
+ * `status == null` and did not run again). Retry only while the gateway is up;
+ * reconnect is a separate rising edge (`useOnGatewayOpen`).
+ */
+export function usePullScreenStatusUntilSettled(bot: RosterRow): void {
+  const all = useValue($screenState)
+  const state = screenStateFor(all, bot)
+  const settled = Boolean(state?.status || state?.unavailable)
+  const gatewayUp = useValue(host.state.gateway) === 'open'
+
+  useEffect(() => {
+    if (settled || !gatewayUp) {
+      return
+    }
+
+    let cancelled = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+
+    const pull = () => {
+      void pullScreenStatus(bot).then(result => {
+        if (cancelled || result !== 'failed') {
+          return
+        }
+
+        timer = setTimeout(pull, SCREEN_STATUS_RETRY_MS)
+      })
+    }
+
+    pull()
+
+    return () => {
+      cancelled = true
+
+      if (timer !== undefined) {
+        clearTimeout(timer)
+      }
+    }
+  }, [bot, gatewayUp, settled])
 }
 
 /** Run `callback` when the gateway socket becomes `open` (SSH reconnect, sleep/wake). */

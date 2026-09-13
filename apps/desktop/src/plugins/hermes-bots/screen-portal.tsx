@@ -5,19 +5,19 @@
  * is live and who holds it, so the user knows before opening whether they
  * are about to watch, take over, install or start.
  *
- * Reads the same per-bot cache the pane paints (`$screenState`) and refreshes
- * it once on mount so a bot the user never opened still shows real state.
+ * Reads the same per-bot cache the pane paints (`$screenState`) and pulls
+ * `display.status` until the cache settles (retrying transient RPC failures).
  */
 
 import { Codicon, useValue } from '@hermes/plugin-sdk'
 import type { ProfileGroupRoute } from '@hermes/plugin-sdk'
-import { useCallback, useEffect, useMemo } from 'react'
+import { useCallback, useMemo } from 'react'
 
 import { $lastRoster } from './data'
 import { useBots } from './i18n'
 import { resolveBotConnectionRoute } from './routing'
 import { type DisplayLease, type DisplayStatus, leaseHeldBy, type ScreenViewer } from './screen-connection'
-import { pullScreenStatus, useOnGatewayOpen, useScreenBackendEvents } from './screen-events'
+import { pullScreenStatus, useOnGatewayOpen, usePullScreenStatusUntilSettled, useScreenBackendEvents } from './screen-events'
 import { openBotScreen } from './screen-open'
 import { $screenState, screenStateFor } from './screen-state'
 import type { BotMeta, RosterRow } from './types'
@@ -90,20 +90,13 @@ export function useScreenPortalState(bot: RosterRow) {
   const status = state?.status ?? null
 
   useScreenBackendEvents(bot)
+  usePullScreenStatusUntilSettled(bot)
 
   const resync = useCallback(() => {
     void pullScreenStatus(bot)
   }, [bot])
 
   useOnGatewayOpen(resync)
-
-  useEffect(() => {
-    if (status || state?.unavailable) {
-      return
-    }
-
-    void pullScreenStatus(bot)
-  }, [bot, state?.unavailable, status])
 
   return { status, lease: state?.lease ?? null, tone: portalTone(status, state?.lease ?? null, state?.viewer ?? null, state?.unavailable) }
 }

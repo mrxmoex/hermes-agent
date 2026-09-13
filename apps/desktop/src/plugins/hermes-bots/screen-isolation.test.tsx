@@ -55,6 +55,7 @@ import { emitGatewayEvent } from '../../contrib/events'
 
 import { $lastRoster } from './data'
 import type { DisplayStatus } from './screen-connection'
+import { SCREEN_STATUS_RETRY_MS } from './screen-events'
 import { ScreenHero } from './screen-hero'
 import { openBotScreen } from './screen-open'
 import { ProfileGroupScreenPortal, useScreenPortalState } from './screen-portal'
@@ -219,6 +220,43 @@ it('a sidebar group portal keeps its lease subscription across parent re-renders
   await act(async () => {})
   expect(vi.mocked(host.onEvent).mock.calls.length).toBe(subscriptions)
   view.unmount()
+})
+
+it('retries display.status after a transient failure until the cache settles', async () => {
+  vi.useFakeTimers()
+  vi.mocked(host.requestProfile)
+    .mockRejectedValueOnce(new Error('502 Bad Gateway'))
+    .mockResolvedValueOnce(status)
+
+  const hook = renderHook(() => useScreenPortalState(botA))
+  await act(async () => {})
+  expect(hook.result.current.status).toBeNull()
+  expect(hook.result.current.tone).toBe('unknown')
+  expect(vi.mocked(host.requestProfile)).toHaveBeenCalledTimes(1)
+
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(SCREEN_STATUS_RETRY_MS)
+  })
+  expect(hook.result.current.status?.running).toBe(true)
+  expect(hook.result.current.tone).toBe('live')
+  hook.unmount()
+})
+
+it('does not retry display.status after method-not-found', async () => {
+  vi.useFakeTimers()
+  vi.mocked(host.requestProfile).mockRejectedValue(
+    Object.assign(new Error('Method not found: display.status'), { code: -32601 })
+  )
+
+  const hook = renderHook(() => useScreenPortalState(botA))
+  await act(async () => {})
+  expect(hook.result.current.tone).toBe('unavailable')
+
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(SCREEN_STATUS_RETRY_MS * 2)
+  })
+  expect(vi.mocked(host.requestProfile)).toHaveBeenCalledTimes(1)
+  hook.unmount()
 })
 
 it('refetches display.status on gateway reconnect even when the cache is already warm', async () => {
