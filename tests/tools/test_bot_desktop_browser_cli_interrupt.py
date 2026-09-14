@@ -267,6 +267,16 @@ def test_agent_browser_invocation_is_token_match_not_substring():
         ["node", "/home/x/node_modules/agent-browser/dist/cli.js", "fill"])
     assert _is_agent_browser_invocation(
         ["/usr/bin/env", "node", "/usr/bin/agent-browser", "fill"])
+    # Official leftover connect daemon (finding 140). connect exits
+    # after spawning node …/agent-browser/dist/daemon.js with
+    # AGENT_BROWSER_CDP frozen. A random daemon.js is not.
+    _ab_daemon = "/home/x/node_modules/agent-browser/dist/daemon.js"
+    assert _is_agent_browser_invocation(["node", _ab_daemon])
+    assert _is_agent_browser_invocation(
+        ["/usr/bin/env", "node", _ab_daemon])
+    assert not _is_agent_browser_invocation(
+        ["node", "/home/x/node_modules/other/daemon.js"])
+    assert not _is_agent_browser_invocation(["/usr/bin/cat", _ab_daemon])
     assert not _is_agent_browser_invocation(
         ["node", "/tmp/other.js", "--cdp", "http://127.0.0.1:9333"])
     assert not _is_agent_browser_invocation(
@@ -317,6 +327,24 @@ def test_agent_browser_invocation_is_token_match_not_substring():
     )
     from tools.bot_desktop import browser as _bdb
     _jar = _bdb.profile_dir()
+    # Official leftover connect daemon (finding 140). Finding 112
+    # matched argv0 agent-browser; node …/daemon.js hid the holder.
+    assert _unregistered_cli_aims_at_dock(
+        ["node", _ab_daemon],
+        {"AGENT_BROWSER_CDP": "http://127.0.0.1:9333"}, None, 9333,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["node", _ab_daemon],
+        {"AGENT_BROWSER_CDP": "9333"}, None, 9333,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["node", _ab_daemon],
+        {}, None, 9333,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["node", "/home/x/node_modules/other/daemon.js"],
+        {"AGENT_BROWSER_CDP": "http://127.0.0.1:9333"}, None, 9333,
+    )
     # Official leftover jar pin is ``--profile`` / ``--user-data-dir``
     # (finding 111). Env-only hid those writers. ``--cdp`` still wins.
     assert _unregistered_cli_aims_at_dock(
@@ -5418,6 +5446,94 @@ def test_unregistered_playwright_cli_daemon_dock_cdp_killed_on_takeover():
     assert endpoint.killed == 0
     assert other_cdp.killed == 0
     assert dashboard.killed == 0
+    assert unpinned_fill.killed == 0
+    assert cat_script.killed == 0
+    assert bash_parent.killed == 0
+
+
+def test_unregistered_agent_browser_daemon_killed_on_takeover():
+    """terminal() leftover agent-browser connect daemon hid attach after CLI exited.
+
+    Official leftover ``connect <dock>`` leaves
+    ``node …/agent-browser/dist/daemon.js`` detached with
+    ``AGENT_BROWSER_CDP`` frozen (``AGENT_BROWSER_DAEMON=1``). Finding
+    112 matched argv0 ``agent-browser`` / ``cli.js``, so Take over left
+    the Node daemon still sending CDP. ``--auto-connect`` / a random
+    ``daemon.js`` / later ``agent-browser fill`` without a pin / another
+    Chrome and the bash ``-c`` parent stay up.
+    """
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    daemon = "/home/x/node_modules/agent-browser/dist/daemon.js"
+    bdb.remember_dock_cdp_port(9333)
+    leftover = _FakeProc(
+        10700,
+        ["node", daemon],
+        {"AGENT_BROWSER_CDP": "http://127.0.0.1:9333",
+         "AGENT_BROWSER_DAEMON": "1"},
+    )
+    via_port = _FakeProc(
+        10701,
+        ["node", daemon],
+        {"AGENT_BROWSER_CDP": "9333", "AGENT_BROWSER_DAEMON": "1"},
+    )
+    via_env = _FakeProc(
+        10702,
+        ["/usr/bin/env", "node", daemon],
+        {"AGENT_BROWSER_CDP": "ws://127.0.0.1:9333/devtools/browser/x"},
+    )
+    via_cdp_argv = _FakeProc(
+        10703,
+        ["node", daemon, "--cdp", "http://127.0.0.1:9333"],
+    )
+    other_env = _FakeProc(
+        10704,
+        ["node", daemon],
+        {"AGENT_BROWSER_CDP": "9222", "AGENT_BROWSER_DAEMON": "1"},
+    )
+    unpinned = _FakeProc(
+        10705,
+        ["node", daemon],
+        {"AGENT_BROWSER_DAEMON": "1"},
+    )
+    other_pkg = _FakeProc(
+        10706,
+        ["node", "/home/x/node_modules/other/daemon.js"],
+        {"AGENT_BROWSER_CDP": "http://127.0.0.1:9333",
+         "AGENT_BROWSER_DAEMON": "1"},
+    )
+    unpinned_fill = _FakeProc(
+        10707,
+        ["agent-browser", "fill", "@e1", "secret"],
+    )
+    cat_script = _FakeProc(
+        10708,
+        ["/usr/bin/cat", daemon],
+    )
+    bash_parent = _FakeProc(
+        10709,
+        ["/bin/bash", "-c",
+         "AGENT_BROWSER_CDP=http://127.0.0.1:9333 node "
+         "/home/x/node_modules/agent-browser/dist/daemon.js"],
+    )
+    lease.acquire("human")
+    n = interrupt_unregistered_dock_cli(
+        processes=[
+            leftover, via_port, via_env, via_cdp_argv, other_env,
+            unpinned, other_pkg, unpinned_fill, cat_script, bash_parent,
+        ],
+        chromium_pid=9999,
+        owner_daemon_pid=9998,
+    )
+    assert n == 4
+    assert leftover.killed == 1
+    assert via_port.killed == 1
+    assert via_env.killed == 1
+    assert via_cdp_argv.killed == 1
+    assert other_env.killed == 0
+    assert unpinned.killed == 0
+    assert other_pkg.killed == 0
     assert unpinned_fill.killed == 0
     assert cat_script.killed == 0
     assert bash_parent.killed == 0

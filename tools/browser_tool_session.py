@@ -1125,6 +1125,7 @@ _ENV_LAUNCHERS = frozenset({"env"})
 _COREPACK_LAUNCHERS = frozenset({"corepack"})
 _AGENT_BROWSER_NODE_ENTRYPOINTS = frozenset({
     "agent-browser", "cli.js", "cli.mjs", "cli.cjs", "index.js",
+    "daemon.js",
 })
 _PLAYWRIGHT_NODE_ENTRYPOINTS = frozenset({
     "playwright", "cli.js", "cli.mjs", "cli.cjs",
@@ -1194,14 +1195,38 @@ def _is_python_launcher(name0: str) -> bool:
     return name0 == "python" or name0.startswith("python3")
 
 
+def _token_is_agent_browser_daemon(token: str) -> bool:
+    """True when this token is official leftover ``agent-browser/dist/daemon.js``.
+
+    Finding 112 matched argv0 ``agent-browser`` with ``AGENT_BROWSER_CDP``.
+    Official leftover ``connect <dock>`` also leaves
+    ``node …/agent-browser/dist/daemon.js`` detached
+    (``AGENT_BROWSER_DAEMON=1``; that process keeps the CDP
+    connection). Path parts must include ``agent-browser`` — a random
+    ``daemon.js`` is not. ``chrome-devtools-mcp`` / ``cat daemon.js``
+    are not.
+    """
+    raw = (token or "").strip().strip("\"'")
+    if not raw:
+        return False
+    path = Path(raw)
+    if path.name.lower() != "daemon.js":
+        return False
+    return "agent-browser" in [p.lower() for p in path.parts]
+
+
 def _token_is_agent_browser_script(token: str) -> bool:
     """True when this token is the agent-browser binary or its Node entry.
 
     Linux shebang rewrites argv0 to ``node`` and the script path. A package
     path ``…/agent-browser/dist/cli.js`` is an invocation; ``cli.js`` outside
     that package and ``--user-data-dir=…/agent-browser`` are not.
+    ``…/agent-browser/dist/daemon.js`` is the leftover connect daemon
+    (finding 140).
     """
     if _token_basename_is_agent_browser(token):
+        return True
+    if _token_is_agent_browser_daemon(token):
         return True
     raw = (token or "").strip().strip("\"'")
     if not raw:
@@ -1892,8 +1917,10 @@ def _is_agent_browser_invocation(tokens: List[str]) -> bool:
 
     ``terminal()`` is ``bash -c`` (new session). After Linux shebang the
     leftover writer is ``node /path/to/agent-browser``, not argv0
-    ``agent-browser``. Do not treat the bash parent as the writer — PID-only
-    kill of bash orphans the Node child still sending CDP.
+    ``agent-browser``. Official leftover ``connect`` also leaves
+    ``node …/agent-browser/dist/daemon.js`` (finding 140). Do not treat
+    the bash parent as the writer — PID-only kill of bash orphans the
+    Node child still sending CDP.
     """
     if not tokens:
         return False
@@ -2719,13 +2746,18 @@ def _unregistered_cli_aims_at_dock(
     Explicit ``--cdp`` wins: another loopback Chrome, a LAN endpoint, or a
     cloud URL is not the dock even if ``AGENT_BROWSER_PROFILE`` is pinned.
     Official leftover that *stays* after ``connect <dock>`` is the
-    daemon with ``AGENT_BROWSER_CDP`` frozen (finding 112). Positional
+    daemon with ``AGENT_BROWSER_CDP`` frozen (finding 112). Finding
+    112 matched argv0 ``agent-browser`` / ``cli.js``. Official leftover
+    also leaves ``node …/agent-browser/dist/daemon.js`` detached
+    (finding 140) — Path name ``daemon.js`` was not an agent-browser
+    entry, so Take over left the long-lived holder. Positional
     ``connect <port|url>`` is the in-flight attach. Official leftover
     globals before ``connect`` (finding 134) — ``--state`` /
     ``--provider`` / ``--headed false`` — hid that attach; finding 133
     only peeled ``--config``. ``--auto-connect`` /
     ``AGENT_BROWSER_AUTO_CONNECT`` stay unknown (a Chrome we cannot
     prove is this jar). ``--session`` without a CDP pin stays unknown.
+    A random ``daemon.js`` outside ``agent-browser`` is not.
 
     browser-use leftover writers (finding 78) aim via ``BU_CDP_*`` /
     ``BROWSER_CDP_URL``. Official leftover attach is also
