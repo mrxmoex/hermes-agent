@@ -4,10 +4,28 @@ dispatched, and a command whose run crossed a takeover loses its result."""
 from __future__ import annotations
 
 import json
+import threading
 
 import pytest
 
 from tools.bot_desktop import lease, runtime
+
+
+def _drain_listen(listener):
+    """Accept persist TCP probes so a later named-listen check is not stuck."""
+
+    def _drain():
+        while True:
+            try:
+                conn, _ = listener.accept()
+            except OSError:
+                return
+            try:
+                conn.close()
+            except OSError:
+                pass
+
+    threading.Thread(target=_drain, daemon=True).start()
 
 
 @pytest.fixture(autouse=True)
@@ -1751,7 +1769,8 @@ def test_configured_listen_identifies_dock_when_recover_and_persist_miss(monkeyp
     )
     listener = socket.socket()
     listener.bind(("127.0.0.1", 0))
-    listener.listen(1)
+    listener.listen(8)
+    _drain_listen(listener)
     port = listener.getsockname()[1]
     monkeypatch.setattr(bdb, "_loopback_listen_ports_for_pid", lambda pid: {port, port + 1})
     monkeypatch.setattr(
@@ -1833,7 +1852,8 @@ def test_named_listen_identifies_dock_when_recover_persist_and_override_miss(
     )
     listener = socket.socket()
     listener.bind(("127.0.0.1", 0))
-    listener.listen(1)
+    listener.listen(8)
+    _drain_listen(listener)
     port = listener.getsockname()[1]
     monkeypatch.setattr(bdb, "_loopback_listen_ports_for_pid", lambda pid: {port, port + 1})
     monkeypatch.setattr(

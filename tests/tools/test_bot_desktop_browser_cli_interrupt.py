@@ -7262,7 +7262,20 @@ def test_unregistered_named_listen_killed_when_persist_and_override_miss(monkeyp
 
     listener = socket.socket()
     listener.bind(("127.0.0.1", 0))
-    listener.listen(1)
+    listener.listen(8)
+
+    def _drain():
+        while True:
+            try:
+                conn, _ = listener.accept()
+            except OSError:
+                return
+            try:
+                conn.close()
+            except OSError:
+                pass
+
+    threading.Thread(target=_drain, daemon=True).start()
     port = listener.getsockname()[1]
     profile = bdb.profile_dir()
     profile.mkdir(parents=True, exist_ok=True)
