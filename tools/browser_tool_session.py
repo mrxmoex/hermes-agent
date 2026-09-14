@@ -2396,7 +2396,11 @@ def _unregistered_cli_aims_at_dock(
     lighthouse do not; do not expand ``--user-data-dir``. Official
     leftover also pins the jar on argv: agent-browser
     ``--profile`` and Playwright ``--user-data-dir`` / ``open --profile``
-    (finding 111). chrome-devtools-mcp ``--userDataDir`` /
+    (finding 111). Official leftover also forwards Chromium
+    ``--user-data-dir`` via ``--args`` / ``AGENT_BROWSER_ARGS``
+    (finding 130) — comma or newline separated. Finding 111 only
+    checked ``--profile``, so Take over left that writer running.
+    Explicit ``--cdp`` still wins. chrome-devtools-mcp ``--userDataDir`` /
     ``--user-data-dir`` is the same launch pin (finding 123) — it
     conflicts with attach flags, so URL-only hid that writer. Env-only
     hid those writers. Explicit ``--cdp`` / ``--browserUrl`` still
@@ -2592,6 +2596,19 @@ def _unregistered_cli_aims_at_dock(
     # Take over left that writer running. Chromium does not expand
     # ``--user-data-dir``; only this agent-browser pin does.
     pinned = _expand_agent_browser_home_prefix(pinned, env)
+    if _leftover_profile_pin_aims_at_dock(pinned, profile, cwd):
+        return True
+    # Official leftover launch pin: ``--args --user-data-dir=<dock>`` /
+    # ``AGENT_BROWSER_ARGS`` (finding 130). Finding 111 only checked
+    # ``--profile``. Playwright launch appends user args after its temp
+    # dir; Chromium last-wins the dock jar. CLI ``--args`` overrides
+    # the env key. ``--cdp`` already returned above.
+    raw_args = _flag_value_allow_leading_dash(tokens, ("--args",))
+    if raw_args is None:
+        raw_args = (env.get("AGENT_BROWSER_ARGS") or "").strip() or None
+        if raw_args is None:
+            raw_args = (env.get("AGENT_BROWSER_CHROME_FLAGS") or "").strip() or None
+    pinned = _user_data_dir_from_agent_browser_args(raw_args)
     return _leftover_profile_pin_aims_at_dock(pinned, profile, cwd)
 
 
@@ -2709,6 +2726,19 @@ def _lighthouse_cli_flags_path_aims_at_dock(
         return False
     pinned = _user_data_dir_from_chrome_flags(raw_flags)
     return _leftover_profile_pin_aims_at_dock(pinned, profile, cwd)
+
+
+def _user_data_dir_from_agent_browser_args(raw: Optional[str]) -> Optional[str]:
+    """``--user-data-dir`` inside leftover ``--args`` / ``AGENT_BROWSER_ARGS``.
+
+    Official leftover is comma or newline separated Chromium switches.
+    A quoted space-delimited group is the same class as lighthouse
+    ``--chrome-flags``. Chromium last-wins when the switch repeats.
+    """
+    text = (raw or "").strip()
+    if not text:
+        return None
+    return _user_data_dir_from_chrome_flags(text.replace("\n", " ").replace(",", " "))
 
 
 def _user_data_dir_from_chrome_flags(chrome_flags: Optional[str]) -> Optional[str]:

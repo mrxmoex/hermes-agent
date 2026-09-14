@@ -368,6 +368,61 @@ def test_agent_browser_invocation_is_token_match_not_substring():
          "--profile", "~/bot-desktop/browser-profile", "snapshot"],
         _ab_home, _jar, 9333,
     )
+    # Official leftover also forwards Chromium --user-data-dir via
+    # --args / AGENT_BROWSER_ARGS (finding 130). Finding 111 only
+    # checked --profile. CLI --args overrides the env key. --cdp
+    # still wins. Playwright launch last-wins the dock jar.
+    assert _unregistered_cli_aims_at_dock(
+        ["agent-browser", "--args", f"--user-data-dir={_jar}", "fill"],
+        {}, _jar, None,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["agent-browser", f"--args=--user-data-dir={_jar}", "fill"],
+        {}, _jar, None,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["agent-browser", "--args",
+         f"--headless,--user-data-dir={_jar}", "fill"],
+        {}, _jar, None,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["agent-browser", "fill"],
+        {"AGENT_BROWSER_ARGS": f"--user-data-dir={_jar}"}, _jar, None,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["agent-browser", "fill"],
+        {"AGENT_BROWSER_CHROME_FLAGS": f"--user-data-dir={_jar}"},
+        _jar, None,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["agent-browser", "--args", "--user-data-dir=browser-profile",
+         "fill"],
+        {}, _jar, None, cwd=_jar.parent,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["agent-browser", "--args",
+         f"--user-data-dir=/tmp/other --user-data-dir={_jar}", "fill"],
+        {}, _jar, None,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["agent-browser", "--profile", "/tmp/other-chrome",
+         "--args", f"--user-data-dir={_jar}", "fill"],
+        {}, _jar, None,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["agent-browser", "--args", "--user-data-dir=/tmp/other-chrome",
+         "fill"],
+        {}, _jar, None,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["agent-browser", "--args", "--headless", "fill"],
+        {"AGENT_BROWSER_ARGS": f"--user-data-dir={_jar}"}, _jar, None,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["agent-browser", "--cdp", "http://127.0.0.1:9222",
+         "--args", f"--user-data-dir={_jar}", "fill"],
+        {}, _jar, 9333,
+    )
     assert _unregistered_cli_aims_at_dock(
         ["npx", "playwright", "codegen", "--user-data-dir", str(_jar)],
         {}, _jar, None,
@@ -3621,6 +3676,117 @@ def test_unregistered_agent_browser_tilde_profile_killed_on_takeover():
     assert playwright.killed == 0
     assert lighthouse.killed == 0
     assert other_cdp.killed == 0
+    assert bash_parent.killed == 0
+
+
+def test_unregistered_agent_browser_args_user_data_dir_killed_on_takeover():
+    """terminal() agent-browser --args --user-data-dir leftover hid launch.
+
+    Official leftover forwards Chromium switches via ``--args`` /
+    ``AGENT_BROWSER_ARGS`` (comma or newline separated). Finding 111
+    only checked ``--profile``, so Take over left that writer typing
+    into the jar. Playwright launch appends user args after its temp
+    dir; Chromium last-wins the dock. CLI ``--args`` overrides env.
+    Another jar, ``--cdp`` to another Chrome, and the bash ``-c``
+    parent stay up.
+    """
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    profile = bdb.profile_dir()
+    leftover = _FakeProc(
+        9800,
+        ["agent-browser", "--args", f"--user-data-dir={profile}", "fill"],
+    )
+    equals = _FakeProc(
+        9801,
+        ["agent-browser", f"--args=--user-data-dir={profile}", "fill"],
+    )
+    grouped = _FakeProc(
+        9802,
+        ["npx", "agent-browser", "--args",
+         f"--headless,--user-data-dir={profile}", "fill"],
+    )
+    via_env = _FakeProc(
+        9803,
+        ["agent-browser", "fill"],
+        {"AGENT_BROWSER_ARGS": f"--user-data-dir={profile}"},
+    )
+    via_hermes_env = _FakeProc(
+        9804,
+        ["agent-browser", "fill"],
+        {"AGENT_BROWSER_CHROME_FLAGS": f"--user-data-dir={profile}"},
+    )
+    relative = _FakeProc(
+        9805,
+        ["agent-browser", "--args", "--user-data-dir=browser-profile",
+         "fill"],
+        cwd=profile.parent,
+    )
+    last_wins = _FakeProc(
+        9806,
+        ["agent-browser", "--args",
+         f"--user-data-dir=/tmp/other --user-data-dir={profile}", "fill"],
+    )
+    profile_overridden = _FakeProc(
+        9807,
+        ["agent-browser", "--profile", "/tmp/other-chrome",
+         "--args", f"--user-data-dir={profile}", "fill"],
+    )
+    shebang = _FakeProc(
+        9808,
+        ["node", "/home/x/node_modules/agent-browser/dist/cli.js",
+         "--args", f"--user-data-dir={profile}", "fill"],
+    )
+    other_jar = _FakeProc(
+        9809,
+        ["agent-browser", "--args", "--user-data-dir=/tmp/other-chrome",
+         "fill"],
+    )
+    argv_overrides = _FakeProc(
+        9810,
+        ["agent-browser", "--args", "--headless", "fill"],
+        {"AGENT_BROWSER_ARGS": f"--user-data-dir={profile}"},
+    )
+    other_cdp = _FakeProc(
+        9811,
+        ["agent-browser", "--cdp", "http://127.0.0.1:9222",
+         "--args", f"--user-data-dir={profile}", "fill"],
+    )
+    no_pin = _FakeProc(
+        9812,
+        ["agent-browser", "fill"],
+    )
+    bash_parent = _FakeProc(
+        9813,
+        ["/bin/bash", "-c",
+         f"agent-browser --args=--user-data-dir={profile} fill"],
+    )
+    bdb.remember_dock_cdp_port(9333)
+    lease.acquire("human")
+    n = interrupt_unregistered_dock_cli(
+        processes=[
+            leftover, equals, grouped, via_env, via_hermes_env,
+            relative, last_wins, profile_overridden, shebang,
+            other_jar, argv_overrides, other_cdp, no_pin, bash_parent,
+        ],
+        chromium_pid=9999,
+        owner_daemon_pid=9998,
+    )
+    assert n == 9
+    assert leftover.killed == 1
+    assert equals.killed == 1
+    assert grouped.killed == 1
+    assert via_env.killed == 1
+    assert via_hermes_env.killed == 1
+    assert relative.killed == 1
+    assert last_wins.killed == 1
+    assert profile_overridden.killed == 1
+    assert shebang.killed == 1
+    assert other_jar.killed == 0
+    assert argv_overrides.killed == 0
+    assert other_cdp.killed == 0
+    assert no_pin.killed == 0
     assert bash_parent.killed == 0
 
 
