@@ -2115,6 +2115,42 @@ def _flag_value_allow_leading_dash(
     return found
 
 
+def _flag_values_allow_leading_dash(
+    tokens: List[str], keys: Tuple[str, ...],
+) -> List[str]:
+    """Every leftover value for a yargs-style array flag.
+
+    ``--chromeArg --no-sandbox --chromeArg --user-data-dir=<dock>``
+    keeps both operands. Last-wins ``_flag_value_allow_leading_dash``
+    dropped the dock pin when a later chromeArg was ``--headless``.
+    ``--`` still ends parse.
+    """
+    tokens = _leftover_flag_tokens(tokens)
+    found: List[str] = []
+    i = 0
+    n = len(tokens)
+    while i < n:
+        raw = str(tokens[i]) if tokens[i] is not None else ""
+        if raw == "--":
+            break
+        matched = False
+        for key in keys:
+            if raw == key:
+                if i + 1 < n:
+                    nxt = str(tokens[i + 1])
+                    if nxt != "--":
+                        found.append(nxt)
+                        i += 1
+                matched = True
+                break
+            if raw.startswith(key + "="):
+                found.append(raw.split("=", 1)[1])
+                matched = True
+                break
+        i += 1
+    return found
+
+
 def _token_is_chrome_remote_interface(token: str) -> bool:
     """True when this token is the CRI CLI or its Node entry.
 
@@ -2400,13 +2436,20 @@ def _unregistered_cli_aims_at_dock(
     ``--user-data-dir`` via ``--args`` / ``AGENT_BROWSER_ARGS``
     (finding 130) — comma or newline separated. Finding 111 only
     checked ``--profile``, so Take over left that writer running.
-    Explicit ``--cdp`` still wins. chrome-devtools-mcp ``--userDataDir`` /
+    Explicit ``--cdp`` still wins.     chrome-devtools-mcp ``--userDataDir`` /
     ``--user-data-dir`` is the same launch pin (finding 123) — it
-    conflicts with attach flags, so URL-only hid that writer. Env-only
-    hid those writers. Explicit ``--cdp`` / ``--browserUrl`` still
-    wins. Gateway cwd must not decide the pin. browser-use ``--profile``
-    is a Chrome profile *name* and stays unknown.
-    ``--autoConnect`` / no pin stays unknown.
+    conflicts with attach flags, so URL-only hid that writer. Official
+    leftover also hides the pin in ``--chromeArg`` / ``--chrome-arg``
+    (yargs array; Puppeteer appends those switches after its
+    ``userDataDir``, so Chromium last-wins the dock) and in ``--config``
+    JSON ``userDataDir`` / ``browserUrl`` / ``wsEndpoint`` / ``chromeArg``
+    (finding 131). Finding 123 only checked argv ``--userDataDir``, so
+    Take over left ``--chrome-arg=--user-data-dir=<dock>`` and
+    ``--config {userDataDir}`` typing. yargs CLI flags still override
+    the file per key. Env-only hid those writers. Explicit ``--cdp`` /
+    ``--browserUrl`` still wins. Gateway cwd must not decide the pin.
+    browser-use ``--profile`` is a Chrome profile *name* and stays
+    unknown. ``--autoConnect`` / no pin stays unknown.
 
     lighthouse leftover launch pin is ``--chrome-flags=--user-data-dir=<dock>``
     (finding 126). Official leftover also hides ``--port`` /
@@ -2540,10 +2583,28 @@ def _unregistered_cli_aims_at_dock(
         # conflicts with ``--browserUrl`` / ``--wsEndpoint`` / ``--isolated``.
         # Finding 89 only checked URL attach, so Take over left the
         # launch-on-jar writer running on the cookie jar a human holds.
-        # ``--autoConnect`` / no pin stays unknown (a Chrome we cannot
-        # prove is this jar).
+        # Official leftover also forwards Chromium ``--user-data-dir``
+        # via ``--chromeArg`` / ``--chrome-arg`` and hides both launch
+        # and attach in ``--config`` JSON (finding 131). Finding 123
+        # only checked argv ``--userDataDir``. ``_flag_value`` treats
+        # ``--chrome-arg=--user-data-dir=<dock>`` as missing.
+        # Puppeteer appends chromeArg after its ``userDataDir``, so
+        # Chromium last-wins the dock. yargs CLI still overrides the
+        # file per key. ``--autoConnect`` / no pin stays unknown (a
+        # Chrome we cannot prove is this jar).
+        argv_chrome = _chrome_devtools_chrome_args(tokens)
+        if argv_chrome:
+            pinned = _user_data_dir_from_chrome_flags(" ".join(argv_chrome))
+            if _leftover_profile_pin_aims_at_dock(pinned, profile, cwd):
+                return True
         pinned = _flag_value(tokens, ("--userDataDir", "--user-data-dir"))
-        return _leftover_profile_pin_aims_at_dock(pinned, profile, cwd)
+        if _leftover_profile_pin_aims_at_dock(pinned, profile, cwd):
+            return True
+        return _chrome_devtools_config_aims_at_dock(
+            tokens, profile, dock_port, cwd,
+            skip_user_data_dir=pinned is not None,
+            skip_chrome_arg=bool(argv_chrome),
+        )
     if (
         _is_lighthouse_invocation(tokens)
         and not _is_agent_browser_invocation(tokens)
@@ -2609,6 +2670,95 @@ def _unregistered_cli_aims_at_dock(
         if raw_args is None:
             raw_args = (env.get("AGENT_BROWSER_CHROME_FLAGS") or "").strip() or None
     pinned = _user_data_dir_from_agent_browser_args(raw_args)
+    return _leftover_profile_pin_aims_at_dock(pinned, profile, cwd)
+
+
+_CHROME_DEVTOOLS_CHROME_ARG_FLAGS = ("--chromeArg", "--chrome-arg")
+_CHROME_DEVTOOLS_CONFIG_MAX_BYTES = 256 * 1024
+
+
+def _chrome_devtools_chrome_args(tokens: List[str]) -> List[str]:
+    """All leftover ``--chromeArg`` / ``--chrome-arg`` values (yargs array)."""
+    return _flag_values_allow_leading_dash(tokens, _CHROME_DEVTOOLS_CHROME_ARG_FLAGS)
+
+
+def _chrome_devtools_config_str(data: dict, *keys: str) -> Optional[str]:
+    for key in keys:
+        raw = data.get(key)
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip()
+    return None
+
+
+def _chrome_devtools_config_chrome_args(data: dict) -> List[str]:
+    raw = data.get("chromeArg")
+    if raw is None:
+        raw = data.get("chrome-arg")
+    if isinstance(raw, str) and raw.strip():
+        return [raw.strip()]
+    if not isinstance(raw, list):
+        return []
+    out: List[str] = []
+    for item in raw:
+        if isinstance(item, str) and item.strip():
+            out.append(item.strip())
+    return out
+
+
+def _chrome_devtools_config_aims_at_dock(
+    tokens: List[str],
+    profile: Optional[Path],
+    dock_port: Optional[int],
+    cwd: Optional[Path],
+    *,
+    skip_user_data_dir: bool = False,
+    skip_chrome_arg: bool = False,
+) -> bool:
+    """True when leftover ``--config`` JSON aims at this dock.
+
+    Official leftover: ``npx chrome-devtools-mcp --config mcp.json``
+    with flat ``userDataDir`` / ``browserUrl`` / ``wsEndpoint`` /
+    ``chromeArg``. Finding 123 only checked argv ``--userDataDir``,
+    so Take over left that writer running. yargs CLI flags override
+    the file per key. Relative paths resolve against the leftover
+    writer cwd. Unreadable / oversized / non-JSON stays unknown.
+    """
+    path_text = _flag_value(tokens, ("--config",))
+    text = (path_text or "").strip()
+    if not text:
+        return False
+    path = Path(text)
+    if not path.is_absolute():
+        base = cwd if cwd is not None else Path.cwd()
+        path = base / path
+    try:
+        if path.stat().st_size > _CHROME_DEVTOOLS_CONFIG_MAX_BYTES:
+            return False
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    cdp = _chrome_devtools_config_str(
+        data,
+        "browserUrl", "browser-url",
+        "wsEndpoint", "ws-endpoint",
+    )
+    if cdp:
+        if _cdp_url_is_bot_desktop_browser(cdp):
+            return True
+        port = _loopback_cdp_port(cdp)
+        return dock_port is not None and port == dock_port
+    if not skip_user_data_dir:
+        pinned = _chrome_devtools_config_str(data, "userDataDir", "user-data-dir")
+        if _leftover_profile_pin_aims_at_dock(pinned, profile, cwd):
+            return True
+    if skip_chrome_arg:
+        return False
+    chrome_args = _chrome_devtools_config_chrome_args(data)
+    if not chrome_args:
+        return False
+    pinned = _user_data_dir_from_chrome_flags(" ".join(chrome_args))
     return _leftover_profile_pin_aims_at_dock(pinned, profile, cwd)
 
 

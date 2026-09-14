@@ -653,6 +653,107 @@ def test_agent_browser_invocation_is_token_match_not_substring():
         ["chrome-devtools", "start", "--userDataDir", "/tmp/other-chrome"],
         {}, _jar, None,
     )
+    # Official leftover also hides the pin off argv (finding 131).
+    # ``--chrome-arg=--user-data-dir`` / ``--config`` flat userDataDir /
+    # browserUrl / chromeArg. Finding 123 only checked argv
+    # ``--userDataDir``. yargs CLI still overrides the file per key.
+    _cd_cfg = _jar.parent / "cd-mcp-dock.json"
+    _cd_cfg.parent.mkdir(parents=True, exist_ok=True)
+    _cd_cfg.write_text(json.dumps({"userDataDir": str(_jar)}))
+    _cd_cdp = _jar.parent / "cd-mcp-cdp.json"
+    _cd_cdp.write_text(json.dumps({"browserUrl": "http://127.0.0.1:9333"}))
+    _cd_arg = _jar.parent / "cd-mcp-arg.json"
+    _cd_arg.write_text(json.dumps({
+        "chromeArg": [f"--user-data-dir={_jar}"],
+    }))
+    _cd_other = _jar.parent / "cd-mcp-other.json"
+    _cd_other.write_text(json.dumps({"userDataDir": "/tmp/other-chrome"}))
+    _cd_kebab = _jar.parent / "cd-mcp-kebab.json"
+    _cd_kebab.write_text(json.dumps({"user-data-dir": str(_jar)}))
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "chrome-devtools-mcp",
+         f"--chrome-arg=--user-data-dir={_jar}"],
+        {}, _jar, None,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "chrome-devtools-mcp",
+         f"--chromeArg=--user-data-dir={_jar}"],
+        {}, _jar, None,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "chrome-devtools-mcp", "--chromeArg", "--headless",
+         "--chromeArg", f"--user-data-dir={_jar}"],
+        {}, _jar, None,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "chrome-devtools-mcp",
+         f"--chromeArg=--user-data-dir={_jar}",
+         "--chromeArg", "--headless"],
+        {}, _jar, None,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "chrome-devtools-mcp", "--userDataDir", "/tmp/other-chrome",
+         f"--chrome-arg=--user-data-dir={_jar}"],
+        {}, _jar, None,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "chrome-devtools-mcp", "--config", str(_cd_cfg)],
+        {}, _jar, None,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "chrome-devtools-mcp", "--config", "cd-mcp-dock.json"],
+        {}, _jar, None, cwd=_jar.parent,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "chrome-devtools-mcp", "--config", str(_cd_cdp)],
+        {}, _jar, 9333,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "chrome-devtools-mcp", "--config", str(_cd_arg)],
+        {}, _jar, None,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "chrome-devtools-mcp", "--config", str(_cd_kebab)],
+        {}, _jar, None,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["chrome-devtools", "start", "--config", str(_cd_cfg)],
+        {}, _jar, None,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "chrome-devtools-mcp", "--chromeArg", "--headless",
+         "--config", str(_cd_cfg)],
+        {}, _jar, None,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["npx", "chrome-devtools-mcp",
+         "--chrome-arg=--user-data-dir=/tmp/other-chrome"],
+        {}, _jar, None,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["npx", "chrome-devtools-mcp", "--config", str(_cd_other)],
+        {}, _jar, None,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["npx", "chrome-devtools-mcp", "--userDataDir", "/tmp/other-chrome",
+         "--config", str(_cd_cfg)],
+        {}, _jar, None,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["npx", "chrome-devtools-mcp", "--chromeArg", "--headless",
+         "--config", str(_cd_arg)],
+        {}, _jar, None,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["npx", "chrome-devtools-mcp",
+         "--browserUrl", "http://127.0.0.1:9222",
+         "--config", str(_cd_cfg)],
+        {}, _jar, 9333,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["npx", "@playwright/mcp", "--config", str(_cd_cfg)],
+        {}, _jar, None,
+    )
     # Official leftover launch pin (finding 126). chrome-launcher
     # appends ``--chrome-flags`` after its temp dir; Chromium last-wins
     # the dock jar. ``--port`` attach still wins. LAN / other jar /
@@ -3902,6 +4003,142 @@ def test_unregistered_playwright_mcp_env_and_config_killed_on_takeover():
     assert isolated.killed == 0
     assert other_cfg_proc.killed == 0
     assert cdp_wins.killed == 0
+    assert bash_parent.killed == 0
+
+
+def test_unregistered_chrome_devtools_config_and_chrome_arg_killed_on_takeover():
+    """terminal() chrome-devtools leftover --config / --chromeArg hid the jar.
+
+    Official leftover pins ``--chrome-arg=--user-data-dir`` and
+    ``--config`` ``userDataDir`` / ``browserUrl`` / ``chromeArg``.
+    Finding 123 only checked argv ``--userDataDir``, so Take over left
+    those writers typing into the jar. yargs CLI still overrides the
+    file per key. Other jar / ``--autoConnect`` / fill / attach-to-other
+    and the bash ``-c`` parent stay up.
+    """
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    profile = bdb.profile_dir()
+    cfg = profile.parent / "cd-mcp-dock.json"
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    cfg.write_text(json.dumps({"userDataDir": str(profile)}))
+    cdp_cfg = profile.parent / "cd-mcp-cdp.json"
+    cdp_cfg.write_text(json.dumps({
+        "browserUrl": "http://127.0.0.1:9333",
+    }))
+    arg_cfg = profile.parent / "cd-mcp-arg.json"
+    arg_cfg.write_text(json.dumps({
+        "chromeArg": [f"--user-data-dir={profile}"],
+    }))
+    other_cfg = profile.parent / "cd-mcp-other.json"
+    other_cfg.write_text(json.dumps({"userDataDir": "/tmp/other-chrome"}))
+    bdb.remember_dock_cdp_port(9333)
+    leftover = _FakeProc(
+        9600,
+        ["npx", "chrome-devtools-mcp",
+         f"--chrome-arg=--user-data-dir={profile}"],
+    )
+    camel = _FakeProc(
+        9601,
+        ["npx", "chrome-devtools-mcp",
+         f"--chromeArg=--user-data-dir={profile}"],
+    )
+    last_wins = _FakeProc(
+        9602,
+        ["npx", "chrome-devtools-mcp", "--userDataDir", "/tmp/other-chrome",
+         f"--chrome-arg=--user-data-dir={profile}"],
+    )
+    via_cfg = _FakeProc(
+        9603,
+        ["npx", "chrome-devtools-mcp", "--config", str(cfg)],
+    )
+    via_rel = _FakeProc(
+        9604,
+        ["npx", "chrome-devtools-mcp", "--config", "cd-mcp-dock.json"],
+        cwd=profile.parent,
+    )
+    via_cdp = _FakeProc(
+        9605,
+        ["npx", "chrome-devtools-mcp", "--config", str(cdp_cfg)],
+    )
+    via_arg = _FakeProc(
+        9606,
+        ["npx", "chrome-devtools-mcp", "--config", str(arg_cfg)],
+    )
+    cli_start = _FakeProc(
+        9607,
+        ["chrome-devtools", "start", "--config", str(cfg)],
+    )
+    shebang = _FakeProc(
+        9608,
+        ["node", "/home/x/node_modules/chrome-devtools-mcp/build/src/index.js",
+         f"--chrome-arg=--user-data-dir={profile}"],
+    )
+    headless_only = _FakeProc(
+        9609,
+        ["npx", "chrome-devtools-mcp", "--chromeArg", "--headless"],
+    )
+    other_cfg_proc = _FakeProc(
+        9610,
+        ["npx", "chrome-devtools-mcp", "--config", str(other_cfg)],
+    )
+    cli_dir_wins = _FakeProc(
+        9611,
+        ["npx", "chrome-devtools-mcp", "--userDataDir", "/tmp/other-chrome",
+         "--config", str(cfg)],
+    )
+    cli_arg_wins = _FakeProc(
+        9612,
+        ["npx", "chrome-devtools-mcp", "--chromeArg", "--headless",
+         "--config", str(arg_cfg)],
+    )
+    url_wins = _FakeProc(
+        9613,
+        ["npx", "chrome-devtools-mcp",
+         "--browserUrl", "http://127.0.0.1:9222",
+         "--config", str(cfg)],
+    )
+    auto = _FakeProc(
+        9614,
+        ["npx", "chrome-devtools-mcp", "--autoConnect"],
+    )
+    fill = _FakeProc(
+        9615,
+        ["chrome-devtools", "fill", "1", "uid", "secret"],
+    )
+    bash_parent = _FakeProc(
+        9616,
+        ["/bin/bash", "-c",
+         f"npx chrome-devtools-mcp --config {cfg}"],
+    )
+    lease.acquire("human")
+    n = interrupt_unregistered_dock_cli(
+        processes=[
+            leftover, camel, last_wins, via_cfg, via_rel, via_cdp,
+            via_arg, cli_start, shebang, headless_only, other_cfg_proc,
+            cli_dir_wins, cli_arg_wins, url_wins, auto, fill, bash_parent,
+        ],
+        chromium_pid=9999,
+        owner_daemon_pid=9998,
+    )
+    assert n == 9
+    assert leftover.killed == 1
+    assert camel.killed == 1
+    assert last_wins.killed == 1
+    assert via_cfg.killed == 1
+    assert via_rel.killed == 1
+    assert via_cdp.killed == 1
+    assert via_arg.killed == 1
+    assert cli_start.killed == 1
+    assert shebang.killed == 1
+    assert headless_only.killed == 0
+    assert other_cfg_proc.killed == 0
+    assert cli_dir_wins.killed == 0
+    assert cli_arg_wins.killed == 0
+    assert url_wins.killed == 0
+    assert auto.killed == 0
+    assert fill.killed == 0
     assert bash_parent.killed == 0
 
 
