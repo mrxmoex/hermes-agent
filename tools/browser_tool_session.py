@@ -2166,15 +2166,65 @@ _BROWSER_USE_SCRIPT_NAMES = (
 )
 
 
+def _pep508_requirement_name(token: str) -> str:
+    """Package/script name from a leftover uv requirement token.
+
+    Official leftover ``uvx 'browser-use[cli]'`` / ``uvx
+    browser-use==0.1.0`` is one PEP 508 token. ``_token_basename_is``
+    only strips ``@ver``, so Take over never saw those writers
+    (finding 150). ``browser-use-cli==1`` stays a different name.
+    """
+    raw = (token or "").strip().strip("\"'")
+    if not raw:
+        return ""
+    name = Path(raw).name.split("@", 1)[0]
+    extras = name.find("[")
+    if extras != -1:
+        name = name[:extras]
+    for sep in ("===", "==", ">=", "<=", "~=", "!=", ">", "<"):
+        if sep in name:
+            name = name.split(sep, 1)[0]
+            break
+    if name.lower().endswith((".exe", ".cmd", ".bat")):
+        name = Path(name).stem
+    return name.strip()
+
+
 def _token_is_browser_use_script(token: str) -> bool:
     """Official leftover console scripts except the too-broad ``browser``.
 
     PyPI ``[project.scripts]`` also ships ``browser`` → ``cli:main``.
     Argv0 ``browser`` is every wrapper named that; do not treat it as
     this leftover. ``browseruse`` / ``bu`` / ``browser-use-tui`` are
-    the unique official aliases (finding 149).
+    the unique official aliases (finding 149). Finding 150: leftover
+    ``uvx`` pins extras / a version on the same token
+    (``browser-use[cli]`` / ``browser-use==0.1.0``). ``browser[cli]``
+    stays unknown.
     """
-    return any(_token_basename_is(token, name) for name in _BROWSER_USE_SCRIPT_NAMES)
+    name = _pep508_requirement_name(token)
+    return any(_token_basename_is(name, script) for script in _BROWSER_USE_SCRIPT_NAMES)
+
+
+def _uv_browser_use_command(cmd_tokens: List[str]) -> bool:
+    """True when leftover uvx/uv operands launch browser-use.
+
+    Finding 149 matched ``uvx browseruse``. Official leftover is
+    also ``uvx --from browser-use python -m browser_use.cli`` /
+    ``uv run python -m browser_use.cli`` (``-m`` is skipped by
+    ``_first_non_flag_tokens``, so the module is the next operand).
+    ``uvx python -m ruff`` / ``uv run ruff`` are not.
+    """
+    if not cmd_tokens:
+        return False
+    if _token_is_browser_use_script(cmd_tokens[0]):
+        return True
+    if _is_python_launcher(_launcher_basename(cmd_tokens[0])):
+        more = cmd_tokens[1:]
+        return bool(more) and (
+            _token_is_browser_use_script(more[0])
+            or _token_is_browser_use_module(more[0])
+        )
+    return False
 
 
 def _token_is_browser_use_module(token: str) -> bool:
@@ -2212,7 +2262,9 @@ def _is_browser_use_invocation(tokens: List[str]) -> bool:
     the field a human was typing into. Finding 149: official leftover
     is also ``python -m browser_use.cli`` and the unique aliases
     ``browseruse`` / ``bu`` / ``browser-use-tui``. Argv0 ``browser``
-    stays unknown.
+    stays unknown. Finding 150: leftover ``uvx 'browser-use[cli]'`` /
+    ``uvx browser-use==ver`` and ``uvx --from … python -m
+    browser_use.cli`` / ``uv run python -m browser_use.cli``.
     """
     if not tokens:
         return False
@@ -2242,12 +2294,12 @@ def _is_browser_use_invocation(tokens: List[str]) -> bool:
     if not rest:
         return False
     if name0 == "uvx":
-        return _token_is_browser_use_script(rest[0])
+        return _uv_browser_use_command(rest)
     # uv tool run browser-use / uv run browser-use
     if rest[0] == "tool" and len(rest) >= 3 and rest[1] == "run":
-        return _token_is_browser_use_script(rest[2])
+        return _uv_browser_use_command(rest[2:])
     if rest[0] == "run" and len(rest) >= 2:
-        return _token_is_browser_use_script(rest[1])
+        return _uv_browser_use_command(rest[1:])
     return False
 
 
@@ -3103,7 +3155,10 @@ def _unregistered_cli_aims_at_dock(
     hyphenated script; official leftover is also
     ``python -m browser_use.cli`` and the unique aliases
     ``browseruse`` / ``bu`` / ``browser-use-tui`` (finding 149).
-    Argv0 ``browser`` stays unknown. Official leftover also leaves
+    Finding 150: leftover ``uvx 'browser-use[cli]'`` /
+    ``uvx browser-use==ver`` and ``uvx --from … python -m
+    browser_use.cli`` / ``uv run python -m browser_use.cli``.
+    Argv0 ``browser`` / ``browser[cli]`` stay unknown. Official leftover also leaves
     ``python -m browser_harness.daemon`` detached with those same
     env pins (finding 148) — finding 78 / 110 only matched the
     parent CLI, so Take over left the long-lived holder.
