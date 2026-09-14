@@ -1260,7 +1260,14 @@ def _leftover_inherited_chrome_listen(
     this-jar children is not a grandparent walk. Orphan
     leftover python stays 86. Leftover GPU / chrome-family
     leftover persist plus chrome CDP leftover siblings
-    do not hold stays 85.
+    do not hold stays 85. Finding 203: leftover fill
+    spawned leftover CRI which spawned leftover python
+    that inherited leftover persist. 202's one hop is
+    leftover CRI, not leftover python. One hop of leftover
+    siblings' grandchildren is leftover fill's leftover
+    grandchild. Leftover fill great-grandchild stays 86.
+    Leftover python that inherited both stays 85.
+    Cousin chrome under leftover CRI stays 86.
     """
     if not leftover_pids or not isinstance(chrome_pid, int) or chrome_pid <= 1:
         return None
@@ -1322,6 +1329,13 @@ def _leftover_inherited_chrome_listen(
     # only walked leftover daemon's children. One hop of
     # leftover siblings' this-jar children is leftover fill's
     # leftover child, not a leftover-holder grandparent walk.
+    # Finding 203: leftover fill spawned leftover CRI which
+    # spawned leftover python that inherited leftover persist.
+    # 202's one hop is leftover CRI, not leftover python.
+    # One hop of leftover siblings' grandchildren is leftover
+    # fill's leftover grandchild, not a leftover-holder
+    # grandparent walk. Leftover fill great-grandchild stays
+    # 86. Cousin chrome under leftover CRI stays 86.
     if len(not_leftover) <= 1:
         return None
     siblings = set(leftover_pids)
@@ -1331,8 +1345,8 @@ def _leftover_inherited_chrome_listen(
                 siblings.add(child)
     except Exception:
         pass
+    extra_siblings: Set[int] = set()
     try:
-        extra_siblings: Set[int] = set()
         for sibling in siblings:
             if _pid_is_chromium_browser(sibling):
                 continue
@@ -1340,6 +1354,17 @@ def _leftover_inherited_chrome_listen(
                 if not _pid_is_chromium_browser(child):
                     extra_siblings.add(child)
         siblings |= extra_siblings
+    except Exception:
+        extra_siblings = set()
+    try:
+        extra_grand: Set[int] = set()
+        for sibling in extra_siblings:
+            if _pid_is_chromium_browser(sibling):
+                continue
+            for child in _this_jar_children(sibling, user_data_dir):
+                if not _pid_is_chromium_browser(child):
+                    extra_grand.add(child)
+        siblings |= extra_grand
     except Exception:
         pass
     not_sibling: list[int] = []
@@ -1388,6 +1413,12 @@ def unique_lock_chrome_hidden_by_leftover_file(
     only walked leftover daemon's children. One hop of
     leftover siblings' this-jar children is leftover fill's
     leftover child. Orphan leftover python stays 86.
+    Finding 203: leftover fill spawned leftover CRI which
+    spawned leftover python that inherited leftover persist.
+    202's one hop is leftover CRI, not leftover python.
+    One hop of leftover siblings' grandchildren is leftover
+    fill's leftover grandchild. Leftover fill
+    great-grandchild stays 86.
     Finding 185: when the lock is gone,
     leftover holders that inherited chrome's DevTools fd still
     advertise that unique listen. Finding 186: leftover this-jar
