@@ -5268,11 +5268,20 @@ def _remembered_dock_attach_port(*, exclude_session: Optional[str] = None) -> Op
     unlinked) still attaches. File-named ``DevToolsActivePort`` with
     inode hosts still attaches when persist was never stamped
     (finding 170) — that is not a guess among ports. Empty-hosts
-    persist must not hide that file. ``exclude_session`` stays None
-    when that session owns the lock pid (``--cdp`` would close its
-    own browser). A holder of one candidate does not hide the other.
-    Do not stamp persist. 9222 stays unknown unless this jar
-    inode-listens there.
+    persist must not hide that file. Persist-with-hosts on an older
+    stamp must not hide a different file-named live listen
+    (finding 172): unique-listen recover is unknown when Chromium
+    has several specific loopbacks (finding 85), leftover holding
+    the file port is the TCP miss that skips finding 164
+    (finding 165), and persist stays the previous stamp.
+    ``DevToolsActivePort`` is Chromium's current advertisement —
+    prefer it when it differs, unless the lock pid still lists
+    persist and not the file (file is then the inherited leftover
+    listen; persist is current chrome). ``exclude_session`` stays
+    None when that session owns the lock pid (``--cdp`` would close
+    its own browser). A holder of one candidate does not hide the
+    other. Do not stamp persist. 9222 stays unknown unless this
+    jar inode-listens there.
     """
     from tools.bot_desktop import browser as _bd_browser
 
@@ -5281,11 +5290,28 @@ def _remembered_dock_attach_port(*, exclude_session: Optional[str] = None) -> Op
         named = _bd_browser.file_named_dock_listen_port()
     except Exception:
         named = None
-    if isinstance(named, int) and named not in candidates:
-        candidates.append(named)
+    user_data_dir = str(_bd_browser.profile_dir())
+    if isinstance(named, int) and 1 <= named <= 65535:
+        persist_first = candidates[0] if candidates else None
+        prefer_named = persist_first != named
+        if prefer_named and persist_first is not None:
+            try:
+                pid = _bd_browser._lock_pid(user_data_dir)
+                if (
+                    pid is not None
+                    and _bd_browser._pid_names_this_jar(pid, user_data_dir)
+                ):
+                    lock_ports = _bd_browser._loopback_listen_ports_for_pid(pid)
+                    if persist_first in lock_ports and named not in lock_ports:
+                        prefer_named = False
+            except Exception:
+                pass
+        if prefer_named:
+            candidates = [named] + [c for c in candidates if c != named]
+        elif named not in candidates:
+            candidates.append(named)
     if not candidates:
         return None
-    user_data_dir = str(_bd_browser.profile_dir())
     if exclude_session:
         pid = _bd_browser._this_jar_chromium_pid(user_data_dir)
         if pid is not None and _bd_browser._launched_by_session(pid) == exclude_session:

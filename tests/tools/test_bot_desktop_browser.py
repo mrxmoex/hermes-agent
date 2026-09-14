@@ -1494,6 +1494,92 @@ def test_agent_attach_uses_file_named_port_when_persist_never_stamped(tmp_path, 
         v4.close()
 
 
+def test_agent_attach_prefers_file_named_when_persist_still_has_hosts(
+    tmp_path, monkeypatch,
+):
+    """Finding 172: persist-with-hosts hid a different file-named live listen.
+
+    Unique-listen recover is unknown when Chromium has several specific
+    loopbacks (finding 85) — inherited old fd + new DevTools. Leftover
+    holding the file port is the TCP miss that skips finding 164
+    (finding 165), so persist stays the previous stamp. Finding 170
+    only skipped empty-hosts persist. Attach the file-named listen.
+    Lock pid that still lists persist and not the file keeps persist
+    (file is then the inherited leftover). Empty hosts stay a launch.
+    The other family squat and 9222 stay unknown.
+    """
+    from tools import browser_tool_session as session
+    from tools.browser_tool_session import (
+        _cdp_url_is_bot_desktop_browser,
+        _last_dock_cdp_port,
+        _remembered_dock_attach_port,
+        _reset_dock_port_memory_for_tests,
+    )
+
+    live6, live4, live, profile = _ipv6_only_dock(tmp_path, monkeypatch)
+    stale6 = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+    stale6.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+    stale6.bind(("::1", 0))
+    stale6.listen(1)
+    stale = stale6.getsockname()[1]
+    stale4 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    stale4.bind(("127.0.0.1", stale))
+    stale4.listen(1)
+    monkeypatch.setattr(
+        browser, "_loopback_listen_ports_for_pid", lambda pid: {live, stale},
+    )
+    monkeypatch.setattr(
+        browser,
+        "_loopback_listen_targets_for_pid",
+        lambda pid: {("::1", live), ("::1", stale)},
+    )
+    try:
+        _reset_dock_port_memory_for_tests()
+        (profile / "DevToolsActivePort").write_text(
+            f"{live}\n/devtools/browser/abc\n", encoding="utf-8",
+        )
+        browser.remember_dock_cdp_port(stale)
+        _last_dock_cdp_port.clear()
+        monkeypatch.setattr(browser, "running_instance_cdp_port", lambda *a, **k: None)
+        assert browser.last_known_dock_cdp_port() == stale
+        assert browser.file_named_dock_listen_port() == live
+        assert browser._this_jar_listen_connect_hosts(stale) == ("::1",)
+        assert browser._this_jar_listen_connect_hosts(live) == ("::1",)
+        assert _remembered_dock_attach_port() == live
+        argvs = _spawn_agent_open(monkeypatch, session)
+        assert argvs[-1][:5] == [
+            "agent-browser", "--session", "h_abc", "--cdp", f"http://[::1]:{live}",
+        ]
+        assert "127.0.0.1" not in argvs[-1][4]
+        assert argvs[-1][4] != str(stale)
+        assert browser.last_known_dock_cdp_port() == stale
+        assert _cdp_url_is_bot_desktop_browser(f"http://[::1]:{live}") is True
+        assert _cdp_url_is_bot_desktop_browser(f"http://127.0.0.1:{live}") is False
+
+        monkeypatch.setattr(
+            browser, "_loopback_listen_ports_for_pid", lambda pid: {live},
+        )
+        monkeypatch.setattr(
+            browser,
+            "_loopback_listen_targets_for_pid",
+            lambda pid: {("::1", live)},
+        )
+        _reset_dock_port_memory_for_tests()
+        browser.remember_dock_cdp_port(live)
+        (profile / "DevToolsActivePort").write_text(
+            f"{stale}\n/devtools/browser/abc\n", encoding="utf-8",
+        )
+        assert browser.file_named_dock_listen_port() == stale
+        assert browser._this_jar_listen_connect_hosts(live) == ("::1",)
+        assert _remembered_dock_attach_port() == live
+        assert browser.dock_cdp_attach_target(9222) == "9222"
+    finally:
+        live6.close()
+        live4.close()
+        stale6.close()
+        stale4.close()
+
+
 def _ipv6_only_dock(tmp_path, monkeypatch):
     """Live ::1 dock plus a sibling squat on 127.0.0.1:same. Yields (port, profile)."""
     v6 = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
