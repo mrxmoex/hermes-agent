@@ -465,7 +465,9 @@ def _file_named_this_jar_listen_port(
     that number are not a guess among ports (finding 164). A lock pid
     that no longer holds the listen must not hide those helpers.
     ``exclude_session`` stays None when any holder is that session's
-    own browser. A sibling cmdline is not this jar. No HTTP.
+    own browser. Callers must not use this when the lock pid still
+    lists *candidate* and only its family failed (finding 165).
+    A sibling cmdline is not this jar. No HTTP.
     """
     if not isinstance(candidate, int) or not (1 <= candidate <= 65535):
         return None
@@ -701,9 +703,11 @@ def running_instance_cdp_port(user_data_dir: str, *, exclude_session: Optional[s
     the port file is gone or stale but the lock pid is still this
     profile's Chromium, recover the port from that pid (explicit
     ``--remote-debugging-port=N`` this pid still listens on, or a unique
-    loopback listen). When the lock pid no longer holds the file listen
+    loopback listen).     When the lock pid no longer holds the file listen
     and recover is unknown, helpers that still name this jar and
-    inode-hold the file port are that port (finding 164). An instance
+    inode-hold the file port are that port (finding 164). If the lock
+    pid still lists that number and TCP to its family failed, do not
+    stamp another family's holder (finding 165). An instance
     agent-browser launched for ``exclude_session`` itself is reported as ``None``:
     its daemon already owns that browser, and handing it ``--cdp`` would make it
     close the browser as a config change and then attach to the port that just died with it.
@@ -740,12 +744,14 @@ def running_instance_cdp_port(user_data_dir: str, *, exclude_session: Optional[s
         if exclude_session and _launched_by_session(pid) == exclude_session:
             return None
         port = None
+        lock_still_lists_file_port = False
         if port_line.isdigit():
             candidate = int(port_line)
             # File has no address and outlives a port switch. Trust it only
             # when this pid still holds that listen — otherwise a sibling
             # on the stale number is stamped as the dock (finding 144).
             if candidate in _loopback_listen_ports_for_pid(pid):
+                lock_still_lists_file_port = True
                 hosts = _listen_connect_hosts(pid, candidate)
                 if hosts and _cdp_port_reachable(candidate, hosts):
                     port = candidate
@@ -758,10 +764,13 @@ def running_instance_cdp_port(user_data_dir: str, *, exclude_session: Optional[s
                 hosts = _listen_connect_hosts(pid, recovered)
                 if hosts and _cdp_port_reachable(recovered, hosts):
                     port = recovered
-        if port is None and port_line.isdigit():
+        if port is None and port_line.isdigit() and not lock_still_lists_file_port:
             # Finding 164: lock pid is still this jar but no longer holds
             # the file listen (fork inherit). Helpers that name this jar
             # and inode-hold that number are the file-named dock port.
+            # Finding 165: if this pid still lists that number and TCP to
+            # its family failed, do not shop other holders' families —
+            # a sibling squat on 127.0.0.1 after ::1 died used to stamp.
             # Do not guess when the file is gone too.
             port = _file_named_this_jar_listen_port(
                 int(port_line), user_data_dir, exclude_session=exclude_session,

@@ -380,7 +380,11 @@ def test_running_instance_does_not_stamp_ipv4_squat_for_ipv6_listen(tmp_path, mo
 
 
 def test_devtools_file_does_not_stamp_ipv4_squat_for_ipv6_listen(tmp_path, monkeypatch):
-    """DevToolsActivePort still used 127.0.0.1 first (finding 81 only fixed recover)."""
+    """DevToolsActivePort still used 127.0.0.1 first (finding 81 only fixed recover).
+
+    Finding 165: lock pid still lists this number after ::1 dies. Do not
+    fall through to inode holders that still accept on 127.0.0.1.
+    """
     v6 = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
     v6.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
     v6.bind(("::1", 0))
@@ -986,6 +990,53 @@ def test_file_named_port_survives_lock_pid_that_dropped_the_listen(tmp_path, mon
     assert browser._this_jar_listens_on_port(9222) is False
     (tmp_path / "DevToolsActivePort").unlink()
     assert browser.running_instance_cdp_port(str(tmp_path)) is None
+
+
+def test_lock_pid_dead_family_does_not_shop_holder_squat(tmp_path, monkeypatch):
+    """Finding 165: lock pid still lists the file port; its family is dead.
+
+    Finding 164 fell through to inode holders whenever persist was empty.
+    A this-jar helper (or the lock pid itself) that still holds another
+    family's socket on that number then stamped the IPv4 squat after
+    ::1 died. Helpers after a *dropped* listen still persist (164).
+    Skip-kill stays the lock pid. 9222 stays unknown.
+    """
+    monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path)
+    monkeypatch.setattr(browser, "profile_dir", lambda: tmp_path)
+    monkeypatch.setattr(browser, "_lock_pid", lambda d: 4240)
+    monkeypatch.setattr(
+        browser,
+        "_chromium_cmdline_tokens",
+        lambda pid: ["chrome", f"--user-data-dir={tmp_path}"],
+    )
+    monkeypatch.setattr(browser, "_loopback_listen_ports_for_pid", lambda pid: {40141})
+    monkeypatch.setattr(
+        browser, "_loopback_listen_targets_for_pid", lambda pid: {("::1", 40141)},
+    )
+    monkeypatch.setattr(browser, "_recover_cdp_port_from_singleton", lambda *a, **k: None)
+    monkeypatch.setattr(
+        browser,
+        "_loopback_listen_inodes_for_port",
+        lambda port: {7: {"127.0.0.1"}} if port == 40141 else {},
+    )
+    monkeypatch.setattr(
+        browser,
+        "_pids_holding_socket_inodes",
+        lambda want: {4242: {7}} if 7 in want else {},
+    )
+    monkeypatch.setattr(
+        browser,
+        "_cdp_port_reachable",
+        lambda port, hosts: port == 40141 and "127.0.0.1" in hosts,
+    )
+    (tmp_path / "DevToolsActivePort").write_text(
+        "40141\n/devtools/browser/abc\n", encoding="utf-8",
+    )
+    assert browser.running_instance_cdp_port(str(tmp_path)) is None
+    assert browser._this_jar_chromium_pid(str(tmp_path)) == 4240
+    assert browser._this_jar_listen_connect_hosts(40141) == ("::1",)
+    assert browser._this_jar_listens_on_port(40141) is False
+    assert browser._this_jar_listens_on_port(9222) is False
 
 
 def test_devtools_file_does_not_stamp_recycled_lock_pid(tmp_path, monkeypatch):
