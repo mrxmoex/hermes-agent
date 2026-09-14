@@ -6062,6 +6062,70 @@ def test_unregistered_playwright_ini_and_pwtest_global_killed_on_takeover():
     assert bash_parent.killed == 0
 
 
+def test_unregistered_spares_ipv4_leftover_on_ipv6_only_dock(monkeypatch):
+    """Take over must not SIGKILL leftover aimed at a 127.0.0.1 squat of a ::1 dock."""
+    import os
+    import socket
+
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    v6 = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+    v6.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+    v6.bind(("::1", 0))
+    v6.listen(1)
+    port = v6.getsockname()[1]
+    v4 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    v4.bind(("127.0.0.1", port))
+    v4.listen(1)
+    try:
+        profile = bdb.profile_dir()
+        profile.mkdir(parents=True, exist_ok=True)
+        lock = profile / "SingletonLock"
+        if lock.exists() or lock.is_symlink():
+            lock.unlink()
+        os.symlink(f"host-{os.getpid()}", lock)
+        monkeypatch.setattr(
+            bdb,
+            "_chromium_cmdline_tokens",
+            lambda pid: ["chrome", f"--user-data-dir={profile}", "--remote-debugging-port=0"],
+        )
+        monkeypatch.setattr(bdb, "_loopback_listen_ports_for_pid", lambda pid: {port})
+        monkeypatch.setattr(
+            bdb, "_loopback_listen_targets_for_pid", lambda pid: {("::1", port)},
+        )
+        leftover_v4 = _FakeProc(
+            11100,
+            ["agent-browser", "--cdp", f"http://127.0.0.1:{port}", "fill"],
+        )
+        leftover_v6 = _FakeProc(
+            11101,
+            ["agent-browser", "--cdp", f"http://[::1]:{port}", "fill"],
+        )
+        leftover_port = _FakeProc(
+            11102,
+            ["agent-browser", "--cdp", str(port), "fill"],
+        )
+        sibling_lan = _FakeProc(
+            11103,
+            ["agent-browser", "--cdp", f"http://10.0.0.5:{port}", "fill"],
+        )
+        lease.acquire("human")
+        n = interrupt_unregistered_dock_cli(
+            processes=[leftover_v4, leftover_v6, leftover_port, sibling_lan],
+            chromium_pid=9999,
+            owner_daemon_pid=9998,
+        )
+        assert leftover_v4.killed == 0
+        assert leftover_v6.killed == 1
+        assert leftover_port.killed == 1
+        assert sibling_lan.killed == 0
+        assert n == 2
+    finally:
+        v6.close()
+        v4.close()
+
+
 def test_stop_reserved_calls_unregistered_interrupt(monkeypatch):
     from tools.browser_tool_session import interrupt_unregistered_dock_cli as real
     from tools.browser_tool_supervisor_lease import stop_reserved_supervisors

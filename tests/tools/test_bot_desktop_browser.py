@@ -880,3 +880,75 @@ def test_agent_attaches_to_human_started_browser(monkeypatch):
     monkeypatch.setattr(browser, "running_instance_cdp_port", lambda d, **kw: None)
     session._run_browser_command_unfenced("t", "open", ["https://x"], 10, None, "agent-browser", info)
     assert "--cdp" not in argvs[-1] and argvs[-1][:3] == ["agent-browser", "--session", "h_abc"]
+
+
+def _ipv6_only_dock(tmp_path, monkeypatch):
+    """Live ::1 dock plus a sibling squat on 127.0.0.1:same. Yields (port, profile)."""
+    v6 = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+    v6.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+    v6.bind(("::1", 0))
+    v6.listen(1)
+    port = v6.getsockname()[1]
+    v4 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    v4.bind(("127.0.0.1", port))
+    v4.listen(1)
+    profile = tmp_path / "browser-profile"
+    profile.mkdir()
+    os.symlink(f"host-{os.getpid()}", profile / "SingletonLock")
+    monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path)
+    monkeypatch.setattr(browser, "profile_dir", lambda: profile)
+    monkeypatch.setattr(
+        browser,
+        "_chromium_cmdline_tokens",
+        lambda pid: ["chrome", f"--user-data-dir={profile}", "--remote-debugging-port=0"],
+    )
+    monkeypatch.setattr(browser, "_loopback_listen_ports_for_pid", lambda pid: {port})
+    monkeypatch.setattr(
+        browser, "_loopback_listen_targets_for_pid", lambda pid: {("::1", port)},
+    )
+    return v6, v4, port, profile
+
+
+def test_cdp_identity_rejects_other_family_sibling_on_same_port(tmp_path, monkeypatch):
+    """Leftover ``http://127.0.0.1:<dock>`` is the squat, not a ::1-only jar."""
+    from tools.browser_tool_session import (
+        _cdp_url_is_bot_desktop_browser,
+        _leftover_cdp_aims_at_dock,
+        _reset_dock_port_memory_for_tests,
+    )
+
+    v6, v4, port, profile = _ipv6_only_dock(tmp_path, monkeypatch)
+    try:
+        _reset_dock_port_memory_for_tests()
+        assert browser.running_instance_cdp_port(str(profile)) == port
+        assert browser._listen_connect_hosts(os.getpid(), port) == ("::1",)
+        assert _cdp_url_is_bot_desktop_browser(f"http://[::1]:{port}") is True
+        assert _cdp_url_is_bot_desktop_browser(f"http://127.0.0.1:{port}") is False
+        assert _cdp_url_is_bot_desktop_browser(f"http://127.1:{port}") is False
+        assert _cdp_url_is_bot_desktop_browser(f"http://[::ffff:127.0.0.1]:{port}") is False
+        assert _cdp_url_is_bot_desktop_browser(f"http://localhost:{port}") is True
+        assert _cdp_url_is_bot_desktop_browser(str(port)) is True
+        assert _leftover_cdp_aims_at_dock(f"http://127.0.0.1:{port}", port) is False
+        assert _leftover_cdp_aims_at_dock(f"http://[::1]:{port}", port) is True
+        assert _leftover_cdp_aims_at_dock(str(port), port) is True
+    finally:
+        v6.close()
+        v4.close()
+
+
+def test_cdp_identity_port_only_when_listen_unknown(tmp_path, monkeypatch):
+    """Planted 9333 / no SingletonLock stays port-only (leftover-CLI fixtures)."""
+    from tools.browser_tool_session import (
+        _cdp_url_is_bot_desktop_browser,
+        _leftover_cdp_aims_at_dock,
+        _reset_dock_port_memory_for_tests,
+    )
+
+    monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path)
+    monkeypatch.setattr(browser, "profile_dir", lambda: tmp_path / "browser-profile")
+    monkeypatch.setattr(browser, "running_instance_cdp_port", lambda *a, **k: None)
+    _reset_dock_port_memory_for_tests()
+    browser.remember_dock_cdp_port(9333)
+    assert _cdp_url_is_bot_desktop_browser("http://127.0.0.1:9333") is True
+    assert _leftover_cdp_aims_at_dock("http://127.0.0.1:9333", 9333) is True
+    assert _leftover_cdp_aims_at_dock("http://10.0.0.5:9333", 9333) is False

@@ -999,6 +999,85 @@ def _loopback_cdp_port(url: str) -> Optional[int]:
     return port if port is not None and 1 <= port <= 65535 else None
 
 
+def _dock_listen_connect_hosts(port: int) -> Tuple[str, ...]:
+    """This jar's connect hosts for *port*, or empty when unknown."""
+    from tools.bot_desktop import browser as _bd_browser
+
+    try:
+        pid = _bd_browser._lock_pid(str(_bd_browser.profile_dir()))
+    except Exception:
+        return ()
+    if pid is None:
+        return ()
+    try:
+        return _bd_browser._listen_connect_hosts(pid, port)
+    except Exception:
+        return ()
+
+
+def _leftover_cdp_host_matches_this_jar(cdp_url: str, port: int) -> bool:
+    """True when leftover CDP host is this jar's listen family, or unknown.
+
+    Persist is family-correct (finding 144): a ::1-only dock plus a
+    sibling on ``127.0.0.1:same`` is not stamped. Leftover identity
+    still compared ports only, so ``--cdp http://127.0.0.1:<dock>``
+    aimed at the squat (finding 145). Port-only / localhost / a
+    hostname stay unknown-family (official leftover resolves those
+    via getaddrinfo). No listen info (planted 9333, dead lock) stays
+    port-only — do not fail-closed every fixture.
+    """
+    text = (cdp_url or "").strip()
+    if not text or text.isdigit():
+        return True
+    host, _ = _cdp_url_host_port(text)
+    if not host:
+        return True
+    decoded = _percent_decode_cdp_host(host).strip().lower().strip("[]").rstrip(".")
+    if not decoded:
+        return True
+    addr = _parse_cdp_ip(decoded)
+    if addr is None:
+        return True
+    hosts = _dock_listen_connect_hosts(port)
+    if not hosts:
+        return True
+    from tools.bot_desktop import browser as _bd_browser
+
+    leftover_hosts = set(_bd_browser._connect_hosts_for_listen_ip(str(addr)))
+    return bool(leftover_hosts and leftover_hosts.intersection(hosts))
+
+
+def _leftover_cdp_aims_at_dock(cdp: Optional[str], dock_port: Optional[int]) -> bool:
+    """True when leftover CDP URL / port is this profile's dock jar."""
+    text = (cdp or "").strip()
+    if not text:
+        return False
+    if _cdp_url_is_bot_desktop_browser(text):
+        return True
+    port = _loopback_cdp_port(text)
+    if dock_port is None or port != dock_port:
+        return False
+    return _leftover_cdp_host_matches_this_jar(text, port)
+
+
+def _leftover_host_port_aims_at_dock(
+    host: Optional[str],
+    port: int,
+    dock_port: Optional[int],
+) -> bool:
+    """True when leftover ``--host`` / ``--hostname`` + port is this jar."""
+    if dock_port is None or not (1 <= port <= 65535) or port != dock_port:
+        return False
+    text = (host or "").strip()
+    if not text:
+        return True
+    if ":" in text and not text.startswith("["):
+        url = f"http://[{text}]:{port}"
+    else:
+        url = f"http://{text}:{port}"
+    return _leftover_cdp_aims_at_dock(url, dock_port)
+
+
 # Last live dock DevTools port per profile. Take over can unlink
 # DevToolsActivePort / SingletonLock while Chromium is still the jar the
 # human is typing into; a live miss must not treat that remembered port as
@@ -2866,6 +2945,9 @@ def _unregistered_cli_aims_at_dock(
 
     Explicit ``--cdp`` wins: another loopback Chrome, a LAN endpoint, or a
     cloud URL is not the dock even if ``AGENT_BROWSER_PROFILE`` is pinned.
+    A leftover URL on the other loopback family of this port is a sibling
+    squat (finding 145), not this jar. Port-only / localhost stay
+    unknown-family.
     Official leftover that *stays* after ``connect <dock>`` is the
     daemon with ``AGENT_BROWSER_CDP`` frozen (finding 112). Finding
     112 matched argv0 ``agent-browser`` / ``cli.js``. Official leftover
@@ -2996,18 +3078,12 @@ def _unregistered_cli_aims_at_dock(
         # ``--cdp`` (agent-browser) or treat ``--connect`` as this jar.
         cdp = _flag_value(tokens, ("--cdp-url",))
         if cdp:
-            if _cdp_url_is_bot_desktop_browser(cdp):
-                return True
-            port = _loopback_cdp_port(cdp)
-            return dock_port is not None and port == dock_port
+            return _leftover_cdp_aims_at_dock(cdp, dock_port)
         for key in ("BU_CDP_WS", "BU_CDP_URL", "BROWSER_CDP_URL"):
             val = (env.get(key) or "").strip()
             if not val:
                 continue
-            if _cdp_url_is_bot_desktop_browser(val):
-                return True
-            port = _loopback_cdp_port(val)
-            return dock_port is not None and port == dock_port
+            return _leftover_cdp_aims_at_dock(val, dock_port)
         return False
     if (
         (_is_playwright_invocation(tokens) or _is_playwright_mcp_invocation(tokens))
@@ -3045,10 +3121,7 @@ def _unregistered_cli_aims_at_dock(
                     tokens, env, cwd,
                 )
                 if cfg_cdp:
-                    if _cdp_url_is_bot_desktop_browser(cfg_cdp):
-                        return True
-                    port = _loopback_cdp_port(cfg_cdp)
-                    return dock_port is not None and port == dock_port
+                    return _leftover_cdp_aims_at_dock(cfg_cdp, dock_port)
                 if argv_dir_set or env_dir:
                     return False
                 return _leftover_profile_pin_aims_at_dock(
@@ -3067,38 +3140,26 @@ def _unregistered_cli_aims_at_dock(
                 return True
             cfg_cdp, cfg_dir = _playwright_mcp_config_pins(tokens, env, cwd)
             if cfg_cdp:
-                if _cdp_url_is_bot_desktop_browser(cfg_cdp):
-                    return True
-                port = _loopback_cdp_port(cfg_cdp)
-                return dock_port is not None and port == dock_port
+                return _leftover_cdp_aims_at_dock(cfg_cdp, dock_port)
             return _leftover_profile_pin_aims_at_dock(cfg_dir, profile, cwd)
-        if _cdp_url_is_bot_desktop_browser(cdp):
-            return True
-        port = _loopback_cdp_port(cdp)
-        return dock_port is not None and port == dock_port
+        return _leftover_cdp_aims_at_dock(cdp, dock_port)
     if (
         _is_chrome_remote_interface_invocation(tokens)
         and not _is_agent_browser_invocation(tokens)
     ):
         ws = _flag_value(tokens, ("--web-socket", "-w"))
         if ws:
-            if _cdp_url_is_bot_desktop_browser(ws):
-                return True
-            port = _loopback_cdp_port(ws)
-            return dock_port is not None and port == dock_port
+            return _leftover_cdp_aims_at_dock(ws, dock_port)
         host = _flag_value(tokens, ("--host",))
         if host and not _is_loopback_cdp_host(host):
             return False
         port_text = _flag_value(tokens, ("--port", "-p"))
         if port_text and str(port_text).isdigit():
             port = int(port_text)
-            return dock_port is not None and 1 <= port <= 65535 and port == dock_port
+            return _leftover_host_port_aims_at_dock(host, port, dock_port)
         val = (env.get("BROWSER_CDP_URL") or "").strip()
         if val:
-            if _cdp_url_is_bot_desktop_browser(val):
-                return True
-            port = _loopback_cdp_port(val)
-            return dock_port is not None and port == dock_port
+            return _leftover_cdp_aims_at_dock(val, dock_port)
         return False
     if (
         _is_chrome_devtools_mcp_invocation(tokens)
@@ -3112,16 +3173,10 @@ def _unregistered_cli_aims_at_dock(
             cdp = _flag_value(tokens, keys)
             if not cdp:
                 continue
-            if _cdp_url_is_bot_desktop_browser(cdp):
-                return True
-            port = _loopback_cdp_port(cdp)
-            return dock_port is not None and port == dock_port
+            return _leftover_cdp_aims_at_dock(cdp, dock_port)
         val = (env.get("BROWSER_CDP_URL") or "").strip()
         if val:
-            if _cdp_url_is_bot_desktop_browser(val):
-                return True
-            port = _loopback_cdp_port(val)
-            return dock_port is not None and port == dock_port
+            return _leftover_cdp_aims_at_dock(val, dock_port)
         # Official leftover launch pin: ``--userDataDir`` / ``--user-data-dir``
         # conflicts with ``--browserUrl`` / ``--wsEndpoint`` / ``--isolated``.
         # Finding 89 only checked URL attach, so Take over left the
@@ -3163,7 +3218,7 @@ def _unregistered_cli_aims_at_dock(
         if port_text and str(port_text).isdigit():
             port = int(port_text)
             if 1 <= port <= 65535:
-                return dock_port is not None and port == dock_port
+                return _leftover_host_port_aims_at_dock(host, port, dock_port)
         # Official leftover launch pin: ``--chrome-flags=--user-data-dir``.
         # Finding 92 only checked ``--port``, so Take over left the
         # launch-on-jar writer running on the cookie jar a human holds.
@@ -3198,10 +3253,7 @@ def _unregistered_cli_aims_at_dock(
         if cfg:
             cdp = _agent_browser_config_str(cfg, "cdp")
     if cdp:
-        if _cdp_url_is_bot_desktop_browser(cdp):
-            return True
-        port = _loopback_cdp_port(cdp)
-        return dock_port is not None and port == dock_port
+        return _leftover_cdp_aims_at_dock(cdp, dock_port)
     pinned = _flag_value(tokens, ("--profile",))
     if not pinned:
         pinned = (env.get("AGENT_BROWSER_PROFILE") or "").strip()
@@ -3310,10 +3362,7 @@ def _chrome_devtools_config_aims_at_dock(
         "wsEndpoint", "ws-endpoint",
     )
     if cdp:
-        if _cdp_url_is_bot_desktop_browser(cdp):
-            return True
-        port = _loopback_cdp_port(cdp)
-        return dock_port is not None and port == dock_port
+        return _leftover_cdp_aims_at_dock(cdp, dock_port)
     if not skip_user_data_dir:
         pinned = _chrome_devtools_config_str(data, "userDataDir", "user-data-dir")
         if _leftover_profile_pin_aims_at_dock(pinned, profile, cwd):
@@ -3632,7 +3681,15 @@ def _lighthouse_cli_flags_path_aims_at_dock(
         elif isinstance(raw_port, str) and raw_port.strip().isdigit():
             port = int(raw_port.strip())
         if port is not None and 1 <= port <= 65535:
-            return dock_port is not None and port == dock_port
+            file_host = None
+            argv_host = _flag_value(tokens, ("--hostname",))
+            if argv_host is not None:
+                file_host = argv_host
+            else:
+                raw_host = data.get("hostname")
+                if isinstance(raw_host, str) and raw_host.strip():
+                    file_host = raw_host.strip()
+            return _leftover_host_port_aims_at_dock(file_host, port, dock_port)
     if _flag_values_allow_leading_dash(
         tokens, ("--chrome-flags", "--chromeFlags"),
     ):
@@ -4311,6 +4368,10 @@ def _cdp_url_is_bot_desktop_browser(cdp_url: str) -> bool:
     already on disk). The operator override still names the DevTools port —
     consult the same lock-pid + cmdline + listen guard persist uses. Do not
     treat every configured loopback as the dock.
+
+    Persist is family-correct (finding 144). A leftover URL on the other
+    loopback family of the same port is a sibling squat, not this jar
+    (finding 145). Port-only / localhost stay unknown-family.
     """
     want = _loopback_cdp_port(cdp_url)
     if want is None:
@@ -4322,14 +4383,14 @@ def _cdp_url_is_bot_desktop_browser(cdp_url: str) -> bool:
     if live is not None:
         _last_dock_cdp_port[key] = live
         _bd_browser.remember_dock_cdp_port(live)
-        return live == want
+        return live == want and _leftover_cdp_host_matches_this_jar(cdp_url, live)
     remembered = _last_dock_cdp_port.get(key)
     if remembered is None:
         remembered = _bd_browser.last_known_dock_cdp_port()
         if remembered is not None:
             _last_dock_cdp_port[key] = remembered
     if remembered is not None and remembered == want:
-        return True
+        return _leftover_cdp_host_matches_this_jar(cdp_url, remembered)
     try:
         configured = _bd_browser._configured_listen_port_for_this_jar()
     except Exception:
@@ -4337,7 +4398,7 @@ def _cdp_url_is_bot_desktop_browser(cdp_url: str) -> bool:
     if configured is not None and configured == want:
         _last_dock_cdp_port[key] = configured
         _bd_browser.remember_dock_cdp_port(configured)
-        return True
+        return _leftover_cdp_host_matches_this_jar(cdp_url, configured)
     return False
 
 
