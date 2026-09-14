@@ -2645,7 +2645,8 @@ def test_persist_live_syncs_memory_so_missing_lock_keeps_chrome(
     monkeypatch.setattr(bdb, "_loopback_listen_targets_for_pid", lambda pid: set())
     assert bdb.lock_listed_persist_port() == 9333
     assert bdb.file_named_dock_listen_port() == 40141
-    assert bdb.persist_live_dock_cdp_port() is None
+    # Finding 185: chrome still inode-listens and TCP works.
+    assert bdb.persist_live_dock_cdp_port() == 9333
     assert _remembered_dock_attach_port() == 9333
     assert _cdp_url_is_bot_desktop_browser("http://[::1]:40141") is True
     assert _cdp_url_is_bot_desktop_browser("40141") is True
@@ -2873,7 +2874,8 @@ def test_running_instance_syncs_memory_so_missing_lock_keeps_chrome(
     monkeypatch.setattr(bdb, "_loopback_listen_targets_for_pid", lambda pid: set())
     assert bdb.lock_listed_persist_port() == 9333
     assert bdb.file_named_dock_listen_port() == 40141
-    assert bdb.persist_live_dock_cdp_port() is None
+    # Finding 185: chrome still inode-listens and TCP works.
+    assert bdb.persist_live_dock_cdp_port() == 9333
     assert _remembered_dock_attach_port() == 9333
     assert _cdp_url_is_bot_desktop_browser("http://[::1]:40141") is True
     assert _cdp_url_is_bot_desktop_browser("40141") is True

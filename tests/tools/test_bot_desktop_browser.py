@@ -1511,8 +1511,10 @@ def test_persist_live_syncs_memory_so_missing_lock_keeps_chrome(
     )
     assert browser.lock_listed_persist_port() == 9333
     assert browser.file_named_dock_listen_port() == 40141
-    assert browser.running_instance_cdp_port(str(tmp_path)) is None
-    assert browser.persist_live_dock_cdp_port() is None
+    # Finding 185: chrome still inode-listens and TCP works. Stamp
+    # that persist; do not shop leftover helpers.
+    assert browser.running_instance_cdp_port(str(tmp_path)) == 9333
+    assert browser.persist_live_dock_cdp_port() == 9333
     assert _remembered_dock_attach_port() == 9333
     assert _cdp_url_is_bot_desktop_browser("http://[::1]:40141") is True
     assert _cdp_url_is_bot_desktop_browser("http://[::1]:9333") is True
@@ -1728,8 +1730,10 @@ def test_running_instance_syncs_memory_so_missing_lock_keeps_chrome(
     )
     assert browser.lock_listed_persist_port() == 9333
     assert browser.file_named_dock_listen_port() == 40141
-    assert browser.running_instance_cdp_port(str(tmp_path)) is None
-    assert browser.persist_live_dock_cdp_port() is None
+    # Finding 185: chrome still inode-listens and TCP works. Stamp
+    # that persist; do not shop leftover helpers.
+    assert browser.running_instance_cdp_port(str(tmp_path)) == 9333
+    assert browser.persist_live_dock_cdp_port() == 9333
     assert _remembered_dock_attach_port() == 9333
     assert _cdp_url_is_bot_desktop_browser("http://[::1]:40141") is True
     assert _cdp_url_is_bot_desktop_browser("http://[::1]:9333") is True

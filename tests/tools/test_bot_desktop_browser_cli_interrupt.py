@@ -8495,7 +8495,8 @@ def test_unregistered_persist_live_syncs_memory_before_missing_lock(
     monkeypatch.setattr(bdb, "_loopback_listen_ports_for_pid", lambda pid: set())
     monkeypatch.setattr(bdb, "_loopback_listen_targets_for_pid", lambda pid: set())
     assert bdb.lock_listed_persist_port() == 9333
-    assert bdb.persist_live_dock_cdp_port() is None
+    # Finding 185: chrome still inode-listens and TCP works.
+    assert bdb.persist_live_dock_cdp_port() == 9333
     assert bdb.last_known_dock_cdp_port() == 9333
     assert _last_dock_cdp_port.get(hermes_home_key()) == 9333
 
@@ -8766,7 +8767,8 @@ def test_unregistered_running_instance_syncs_memory_before_missing_lock(
     monkeypatch.setattr(bdb, "_loopback_listen_ports_for_pid", lambda pid: set())
     monkeypatch.setattr(bdb, "_loopback_listen_targets_for_pid", lambda pid: set())
     assert bdb.lock_listed_persist_port() == 9333
-    assert bdb.persist_live_dock_cdp_port() is None
+    # Finding 185: chrome still inode-listens and TCP works.
+    assert bdb.persist_live_dock_cdp_port() == 9333
     assert bdb.last_known_dock_cdp_port() == 9333
     assert _last_dock_cdp_port.get(hermes_home_key()) == 9333
 
