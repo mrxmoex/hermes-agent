@@ -2846,17 +2846,30 @@ def _admit_shared_browser(
             reset_hermes_home_override(token)
 
 
-def _admit_resolved_cdp_for_attach(endpoint: str) -> bool:
-    """True unless *endpoint* is this profile's dock and a human now holds.
+def _admit_resolved_cdp_for_attach(
+    endpoint: str,
+    *,
+    home: Optional[str] = None,
+    task_id: Optional[str] = None,
+) -> bool:
+    """True unless *endpoint* is the owner profile's dock and a human now holds.
 
     Discovery (``/json/version``) can outlive the start-of-call admit.
     Re-check the *resolved* WebSocket before ``get_or_start`` so a mid-resolve
     Take over cannot mint a leftover supervisor on the jar. Unrelated
     Chromes stay unfenced (admit returns None).
+
+    After a multiplex turn the process home is the launch profile. Ambient
+    admit then reads launch ``lease.json`` (agent, missing file) and leftover
+    vault / ``browser_cdp`` / supervisor attach still talked to the bot jar.
+    Re-enter ``home`` or ``_session_owner_homes[task_id]``. Unrecorded owner
+    stays ambient. A human on the launch bot does not void a sibling attach.
     """
     from tools.bot_desktop.lease import HumanHasControl
+    if not (isinstance(home, str) and home):
+        home = _session_owner_home(task_id)
     try:
-        _admit_shared_browser(cdp_url=endpoint)
+        _admit_shared_browser(cdp_url=endpoint, home=home)
         return True
     except HumanHasControl:
         return False

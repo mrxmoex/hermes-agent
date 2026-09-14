@@ -9,18 +9,22 @@ from typing import Optional, Tuple
 from tools.browser_tool_origin import origin_module as _origin
 
 
-def _dock_discovery_blocked_by_human(url: str) -> bool:
+def _dock_discovery_blocked_by_human(url: str, *, home: Optional[str] = None) -> bool:
     """True when HTTP ``/json/version`` would observe the dock a human holds.
 
     Callers used to admit *after* discovery. Tab list + debugger websocket
     on that jar is leftover observation — the same class as leftover
     ``ws.send``. Unrelated Chromes still resolve (admit is None). A lease
     helper failure fail-closes: do not probe a jar a human may be using.
+
+    ``home`` re-enters the session owner after a multiplex turn. Ambient
+    launch ``lease.json`` (agent, missing file) used to let discovery HTTP
+    the sibling jar a human was typing into.
     """
     try:
         from tools.bot_desktop.lease import HumanHasControl
         from tools.browser_tool_session import _admit_shared_browser
-        _admit_shared_browser(cdp_url=url)
+        _admit_shared_browser(cdp_url=url, home=home)
         return False
     except HumanHasControl:
         return True
@@ -28,7 +32,7 @@ def _dock_discovery_blocked_by_human(url: str) -> bool:
         return True
 
 
-def _resolve_cdp_override(cdp_url: str) -> str:
+def _resolve_cdp_override(cdp_url: str, *, home: Optional[str] = None) -> str:
     """Normalize a user-supplied CDP endpoint into a concrete websocket URL.
 
     Full ``ws://.../devtools/browser/...`` endpoints pass through; HTTP discovery roots and bare ``ws://host:port``
@@ -52,7 +56,10 @@ def _resolve_cdp_override(cdp_url: str) -> str:
     # Admit *before* HTTP. Vault ``get cdp-url``, ``browser_cdp`` discovery,
     # and any future caller that skipped the raw-URL fence used to talk to
     # the jar a human is typing into, then admit the resolved WS.
-    if _dock_discovery_blocked_by_human(raw) or _dock_discovery_blocked_by_human(discovery_url):
+    if (
+        _dock_discovery_blocked_by_human(raw, home=home)
+        or _dock_discovery_blocked_by_human(discovery_url, home=home)
+    ):
         return raw
 
     san = _bt._sanitize_url_for_logs
@@ -210,7 +217,24 @@ def _ensure_cdp_supervisor(task_id: str) -> None:
     Admit on the *raw* URL before HTTP ``/json/version``. Discovery talks to the
     dock jar (tab list + debugger websocket); doing that while a human holds is
     the leftover observation path ``_get_session_info`` already closed.
+
+    Re-enter the session owner's home. After a multiplex turn the process home
+    is the launch profile; ambient ``lease.json`` / ``BROWSER_CDP_URL`` then
+    belong to the launch bot and leftover attach talked to the sibling jar.
     """
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.browser_tool_session import _session_owner_home
+
+    owner = _session_owner_home(task_id)
+    token = set_hermes_home_override(owner) if owner else None
+    try:
+        _ensure_cdp_supervisor_unscoped(task_id, owner)
+    finally:
+        if token is not None:
+            reset_hermes_home_override(token)
+
+
+def _ensure_cdp_supervisor_unscoped(task_id: str, owner: Optional[str] = None) -> None:
     _bt = _origin()
     raw = ""
     try:
@@ -228,7 +252,7 @@ def _ensure_cdp_supervisor(task_id: str) -> None:
         from tools.browser_tool_session import _admit_shared_browser, _shares_bot_desktop_browser
         from tools.browser_tool_supervisor_lease import install_supervisor_lease_hook, supervisor_may_touch_page
         if session_info and _shares_bot_desktop_browser(session_info):
-            _admit_shared_browser(session_info)
+            _admit_shared_browser(session_info, home=owner)
         elif not supervisor_may_touch_page(candidate):
             return
         install_supervisor_lease_hook()
@@ -248,7 +272,7 @@ def _ensure_cdp_supervisor(task_id: str) -> None:
     # minted a leftover supervisor after a mid-resolve Take over.
     try:
         from tools.browser_tool_session import _admit_resolved_cdp_for_attach
-        if not _admit_resolved_cdp_for_attach(cdp_url):
+        if not _admit_resolved_cdp_for_attach(cdp_url, home=owner, task_id=task_id):
             return
     except Exception:
         return

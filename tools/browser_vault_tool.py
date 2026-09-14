@@ -138,16 +138,23 @@ def _ensure_supervisor(task_id: str):
         return None
     policy, timeout_s = _get_dialog_policy_config()
     try:
-        from tools.browser_tool_session import _admit_resolved_cdp_for_attach
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from tools.browser_tool_session import _admit_resolved_cdp_for_attach, _session_owner_home
         # Admit the raw daemon URL before HTTP /json/version. Session admit
         # can be a no-op (cloud / other-Chrome row) while ``get cdp-url``
         # still names this profile's dock.
-        if not _admit_resolved_cdp_for_attach(cdp_url):
+        owner = _session_owner_home(task_id)
+        if not _admit_resolved_cdp_for_attach(cdp_url, home=owner, task_id=task_id):
             return None
-        resolved = _resolve_cdp_override(cdp_url)
+        token = set_hermes_home_override(owner) if owner else None
+        try:
+            resolved = _resolve_cdp_override(cdp_url)
+        finally:
+            if token is not None:
+                reset_hermes_home_override(token)
         if not resolved:
             return None
-        if not _admit_resolved_cdp_for_attach(resolved):
+        if not _admit_resolved_cdp_for_attach(resolved, home=owner, task_id=task_id):
             return None
         return SUPERVISOR_REGISTRY.get_or_start(task_id=task_id, cdp_url=resolved,
                                                 dialog_policy=policy, dialog_timeout_s=timeout_s)

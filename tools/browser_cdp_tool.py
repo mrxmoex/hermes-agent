@@ -101,14 +101,22 @@ def _run_async(coro):
     return asyncio.run(coro)
 
 
-def _resolve_cdp_endpoint() -> str:
+def _resolve_cdp_endpoint(*, task_id: Optional[str] = None) -> str:
     """Normalized CDP WebSocket URL via ``browser_tool_cdp._get_cdp_override``, or ""."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.browser_tool_session import _session_owner_home
+
+    owner = _session_owner_home(task_id)
+    token = set_hermes_home_override(owner) if owner else None
     try:
         from tools.browser_tool_cdp import _get_cdp_override  # type: ignore[import-not-found]
         return (_get_cdp_override() or "").strip()
     except Exception as exc:  # pragma: no cover — defensive
         logger.debug("browser_cdp: failed to resolve CDP endpoint: %s", exc)
         return ""
+    finally:
+        if token is not None:
+            reset_hermes_home_override(token)
 
 
 def _blocked(message: str, method: str) -> str:
@@ -291,7 +299,7 @@ def _admit_bot_desktop_cdp(endpoint: str = "", task_id: Optional[str] = None):
         return None, json.dumps({"success": False, "error": str(e), "code": "human_has_control"})
 
 
-def _admit_resolved_cdp_endpoint(endpoint: str):
+def _admit_resolved_cdp_endpoint(endpoint: str, *, task_id: Optional[str] = None):
     """Admit the resolved WebSocket only — not the task session.
 
     A leftover/session admit at the start of ``browser_cdp`` can be the dock
@@ -299,11 +307,17 @@ def _admit_resolved_cdp_endpoint(endpoint: str):
     other Chrome because *this* profile's lease moved would mute an
     unrelated browser. Conversely, a Take over during ``/json/version``
     must re-admit *this* endpoint before ``ws.send``.
+
+    After a multiplex turn the process home is the launch profile. Ambient
+    admit then reads launch ``lease.json`` (agent, missing file) and leftover
+    ``ws.send`` still landed on the bot jar. Re-enter the session owner.
+    Unrecorded owner stays ambient. Do not admit the session row here — that
+    would mute an unrelated Chrome when only the session is the dock.
     """
     from tools.bot_desktop.lease import HumanHasControl
-    from tools.browser_tool_session import _admit_shared_browser
+    from tools.browser_tool_session import _admit_shared_browser, _session_owner_home
     try:
-        return _admit_shared_browser(cdp_url=endpoint), None
+        return _admit_shared_browser(cdp_url=endpoint, home=_session_owner_home(task_id)), None
     except HumanHasControl as e:
         return None, json.dumps({"success": False, "error": str(e), "code": "human_has_control"})
 
@@ -341,7 +355,7 @@ def browser_cdp(method: str, params: Optional[Dict[str, Any]] = None, target_id:
     if not _WS_AVAILABLE:
         return tool_error("The 'websockets' Python package is required but not installed. "
                           "Install it with: pip install websockets")
-    endpoint = _resolve_cdp_endpoint()
+    endpoint = _resolve_cdp_endpoint(task_id=effective_task_id)
     if not endpoint:
         return tool_error("No CDP endpoint is available. Run '/browser connect' to attach to a running Chrome, "
                           "Brave, Chromium, or Edge browser, or set 'browser.cdp_url' in config.yaml. The Camofox "
@@ -355,7 +369,9 @@ def browser_cdp(method: str, params: Optional[Dict[str, Any]] = None, target_id:
     # would still let Target.attachToTarget / Runtime.evaluate land on the
     # dock after the human holds. Unrelated Chromes stay unfenced — this
     # admit is None unless the endpoint is this profile's dock.
-    endpoint_admitted, refused = _admit_resolved_cdp_endpoint(endpoint)
+    endpoint_admitted, refused = _admit_resolved_cdp_endpoint(
+        endpoint, task_id=effective_task_id,
+    )
     if refused:
         return refused
     call_params: Dict[str, Any] = params or {}

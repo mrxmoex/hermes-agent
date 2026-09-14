@@ -434,10 +434,18 @@ def _resolve_backend_cdp(env: dict, task_id: Optional[str], session_name: str = 
     except Exception as e:  # pragma: no cover — stubbed browser_tool in tests
         logger.debug("browser_tool backend resolution unavailable: %s", e)
         return None
-    raw = _quiet(_get_cdp_override_raw, "")
-    if raw:
-        _refuse_shared_session_while_human_holds(cdp_url=raw)
-    override = _quiet(_get_cdp_override, "")
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.browser_tool_session import _session_owner_home
+    owner = _session_owner_home(task_id)
+    token = set_hermes_home_override(owner) if owner else None
+    try:
+        raw = _quiet(_get_cdp_override_raw, "")
+        if raw:
+            _refuse_shared_session_while_human_holds(cdp_url=raw)
+        override = _quiet(_get_cdp_override, "")
+    finally:
+        if token is not None:
+            reset_hermes_home_override(token)
     if override:
         _set_cdp_env(env, override)
         return None
@@ -508,24 +516,32 @@ def _attach_vault_supervisor(env: dict, task_id: Optional[str]) -> None:
         return
     try:
         from tools.bot_desktop.lease import HumanHasControl
-        from tools.browser_tool_session import _admit_shared_browser
-        _admit_shared_browser(cdp_url=cdp)
+        from tools.browser_tool_session import _admit_shared_browser, _session_owner_home
+        owner = _session_owner_home(task_id)
+        _admit_shared_browser(cdp_url=cdp, home=owner)
     except HumanHasControl:
         return
     except Exception:
         return
     try:
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
         from tools.browser_supervisor import SUPERVISOR_REGISTRY
         from tools.browser_tool_cdp import _get_dialog_policy_config, _resolve_cdp_override
-        from tools.browser_tool_session import _admit_resolved_cdp_for_attach
+        from tools.browser_tool_session import _admit_resolved_cdp_for_attach, _session_owner_home
         policy, timeout_s = _get_dialog_policy_config()
-        resolved = _resolve_cdp_override(cdp)
+        owner = _session_owner_home(task_id)
+        token = set_hermes_home_override(owner) if owner else None
+        try:
+            resolved = _resolve_cdp_override(cdp)
+        finally:
+            if token is not None:
+                reset_hermes_home_override(token)
         if not resolved:
             return
         # Re-admit the *resolved* WS. Discovery can outlive the start-of-call
         # admit; leftover get_or_start after Take over is Target.attach on the
         # jar. Unrelated Chromes stay unfenced.
-        if not _admit_resolved_cdp_for_attach(resolved):
+        if not _admit_resolved_cdp_for_attach(resolved, home=owner, task_id=task_id):
             return
         SUPERVISOR_REGISTRY.get_or_start(task_id=task_id or "default", cdp_url=resolved,
                                          dialog_policy=policy, dialog_timeout_s=timeout_s)

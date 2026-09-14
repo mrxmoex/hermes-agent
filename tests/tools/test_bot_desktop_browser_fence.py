@@ -2538,3 +2538,145 @@ def test_get_session_info_does_not_recycle_owner_session_after_multiplex_turn(mo
                     pass
         _restore_session_state(bt, saved)
 
+
+def test_admit_resolved_cdp_for_attach_uses_session_owner_lease_after_multiplex_turn(
+    monkeypatch, tmp_path,
+):
+    """Finding 114 scoped start-of-call leftover admit. Mid-resolve attach
+    (``_admit_resolved_cdp_for_attach`` / ``browser_cdp`` resolved WS) still
+    read ambient launch ``lease.json`` (agent, missing file) and leftover
+    ``get_or_start`` / ``ws.send`` talked to the bot jar a human held.
+    """
+    import tools.bot_desktop.browser as bdb
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.bot_desktop.lease import _path
+    from tools import browser_tool as bt
+    from tools.browser_cdp_tool import _admit_resolved_cdp_endpoint
+    from tools.browser_tool_session import _admit_resolved_cdp_for_attach
+
+    launch, bot = _sibling_homes(tmp_path)
+    saved = _session_state()[1]
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: 9333)
+    dock = "http://127.0.0.1:9333"
+    token_bot = set_hermes_home_override(str(bot))
+    try:
+        for name in saved:
+            getattr(bt, name).clear()
+        bt._session_owner_homes["review"] = str(bot)
+        lease.acquire("human-viewer")
+    finally:
+        reset_hermes_home_override(token_bot)
+
+    token_launch = set_hermes_home_override(str(launch))
+    try:
+        assert _admit_resolved_cdp_for_attach(dock, task_id="review") is False
+        admitted, refused = _admit_resolved_cdp_endpoint(dock, task_id="review")
+        assert admitted is None
+        assert refused and "human_has_control" in refused
+    finally:
+        reset_hermes_home_override(token_launch)
+        for home in (launch, bot):
+            for f in (_path(str(home)), _path(str(home)).with_suffix(".lock")):
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+        _restore_session_state(bt, saved)
+
+
+def test_admit_resolved_cdp_for_attach_does_not_fence_on_the_launch_profile_lease(
+    monkeypatch, tmp_path,
+):
+    """A human on the launch bot must not void a sibling resolved attach."""
+    import tools.bot_desktop.browser as bdb
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.bot_desktop.lease import _path
+    from tools import browser_tool as bt
+    from tools.browser_cdp_tool import _admit_resolved_cdp_endpoint
+    from tools.browser_tool_session import _admit_resolved_cdp_for_attach
+
+    launch, bot = _sibling_homes(tmp_path)
+    saved = _session_state()[1]
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: 9333)
+    dock = "http://127.0.0.1:9333"
+    token_launch = set_hermes_home_override(str(launch))
+    try:
+        lease.acquire("human-viewer")
+    finally:
+        reset_hermes_home_override(token_launch)
+
+    token_launch = set_hermes_home_override(str(launch))
+    try:
+        for name in saved:
+            getattr(bt, name).clear()
+        bt._session_owner_homes["review"] = str(bot)
+        assert _admit_resolved_cdp_for_attach(dock, task_id="review") is True
+        admitted, refused = _admit_resolved_cdp_endpoint(dock, task_id="review")
+        assert refused is None
+        assert admitted is not None
+        assert admitted.holder == lease.AGENT
+    finally:
+        reset_hermes_home_override(token_launch)
+        for home in (launch, bot):
+            for f in (_path(str(home)), _path(str(home)).with_suffix(".lock")):
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+        _restore_session_state(bt, saved)
+
+
+def test_resolve_cdp_override_does_not_http_probe_owner_dock_after_multiplex_turn(
+    monkeypatch, tmp_path,
+):
+    """Finding 75 admits before HTTP. After multiplex that admit used launch
+    ``lease.json``, so ``/json/version`` still observed the sibling jar.
+    """
+    import tools.bot_desktop.browser as bdb
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.bot_desktop.lease import _path
+    from tools import browser_tool as bt
+    from tools.browser_tool_cdp import _resolve_cdp_override
+
+    launch, bot = _sibling_homes(tmp_path)
+    saved = _session_state()[1]
+    probed = []
+
+    class _Resp:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"webSocketDebuggerUrl": "ws://127.0.0.1:9333/devtools/browser/x"}
+
+    monkeypatch.setattr("requests.get", lambda *a, **k: probed.append(a[0]) or _Resp())
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: 9333)
+    token_bot = set_hermes_home_override(str(bot))
+    try:
+        for name in saved:
+            getattr(bt, name).clear()
+        bt._session_owner_homes["review"] = str(bot)
+        lease.acquire("human-viewer")
+    finally:
+        reset_hermes_home_override(token_bot)
+
+    token_launch = set_hermes_home_override(str(launch))
+    try:
+        dock = "http://127.0.0.1:9333"
+        assert _resolve_cdp_override(dock, home=str(bot)) == dock
+        assert probed == []
+        other = "http://127.0.0.1:9222"
+        assert _resolve_cdp_override(other, home=str(bot)) == (
+            "ws://127.0.0.1:9333/devtools/browser/x"
+        )
+        assert probed == ["http://127.0.0.1:9222/json/version"]
+    finally:
+        reset_hermes_home_override(token_launch)
+        for home in (launch, bot):
+            for f in (_path(str(home)), _path(str(home)).with_suffix(".lock")):
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+        _restore_session_state(bt, saved)
+
