@@ -1274,12 +1274,17 @@ def _package_exec_parts(
     package pins, not the child's ``-p`` port. ``--dir`` / ``-C`` /
     ``--prefix`` / ``--cwd`` / ``--filter`` / ``--workspace`` / ``-w``
     take a value — do not treat that selector as the command (findings
-    102, 104). ``yarn workspace <name> exec`` is the leftover writer
+    102, 104).     ``yarn workspace <name> exec`` is the leftover writer
     ``yarn exec`` misses. ``yarn workspace <name> run`` /
     ``yarn workspaces foreach`` are not leftover exec.
+    ``yarn npm exec`` is Yarn Berry's leftover writer ``npm exec``
+    misses when argv0 is yarn (finding 106).
     """
     if not tokens:
         return None
+    rewritten = _yarn_npm_as_npm_argv(tokens)
+    if rewritten is not None:
+        tokens = rewritten
     name0 = _launcher_basename(tokens[0])
     if name0 not in _PACKAGE_EXEC_LAUNCHERS:
         return None
@@ -1380,6 +1385,41 @@ def _package_manager_child_argv(tokens: List[str]) -> Optional[List[str]]:
     return None
 
 
+def _yarn_npm_as_npm_argv(tokens: List[str]) -> Optional[List[str]]:
+    """``yarn [flags] npm <rest>`` → ``[npm, <rest>]``, else None.
+
+    Yarn Berry ``yarn npm exec lighthouse --port <dock>`` keeps argv0
+    ``yarn``, so leftover unwrap never entered ``npm exec``. ``yarn npm
+    install`` rewrites to ``npm install`` and stays unknown. ``yarn
+    exec`` / ``yarn workspace`` are not this shape. Do not eat
+    ``npm`` as a ``--cwd`` value.
+    """
+    if not tokens or _launcher_basename(tokens[0]) != "yarn":
+        return None
+    reserved = frozenset({"npm"})
+    i = 1
+    while i < len(tokens):
+        raw = str(tokens[i]) if tokens[i] is not None else ""
+        if raw == "--":
+            rest = [str(t) for t in tokens[i + 1:]]
+            if rest and _launcher_basename(rest[0]) == "npm":
+                return rest
+            return None
+        skipped = _skip_manager_value_flag(
+            tokens, i, raw, _PACKAGE_EXEC_VALUE_FLAGS, reserved,
+        )
+        if skipped is not None:
+            i = skipped
+            continue
+        if raw.startswith("-"):
+            i += 1
+            continue
+        if raw == "npm":
+            return ["npm"] + [str(t) for t in tokens[i + 1:]]
+        return None
+    return None
+
+
 def _is_package_exec_sub(name0: str, raw: str) -> bool:
     return (name0 == "npm" and raw == "x") or raw in _PACKAGE_EXEC_SUBCOMMANDS
 
@@ -1408,6 +1448,9 @@ def _skip_manager_value_flag(
 
 
 def _package_exec_child_argv(tokens: List[str]) -> Optional[List[str]]:
+    rewritten = _yarn_npm_as_npm_argv(tokens)
+    if rewritten is not None:
+        tokens = rewritten
     name0 = _launcher_basename(tokens[0])
     reserved = _PACKAGE_EXEC_SUBCOMMANDS | ({"x"} if name0 == "npm" else set())
     i = 1

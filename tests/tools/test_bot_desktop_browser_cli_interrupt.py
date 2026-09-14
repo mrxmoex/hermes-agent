@@ -418,6 +418,25 @@ def test_agent_browser_invocation_is_token_match_not_substring():
         ["npx", "--package=lighthouse", "--package=ruff", "--", "--port", "9333"])
     assert not _is_lighthouse_invocation(
         ["npx", "--package=lighthouse-ci", "--", "--port", "9333"])
+    # Yarn Berry ``yarn npm exec`` hid leftover unwrap (finding 106).
+    assert _is_lighthouse_invocation(
+        ["yarn", "npm", "exec", "lighthouse", "--port", "9333"])
+    assert _is_lighthouse_invocation(
+        ["yarn", "npm", "exec", "--", "lighthouse", "--port", "9333"])
+    assert _is_lighthouse_invocation(
+        ["yarn", "npm", "exec", "--package=lighthouse", "--", "--port", "9333"])
+    assert _is_lighthouse_invocation(
+        ["yarn", "npm", "x", "lighthouse", "--port", "9333"])
+    assert _is_lighthouse_invocation(
+        ["yarn", "--cwd", "/tmp/ws", "npm", "exec", "lighthouse", "--port", "9333"])
+    assert _is_lighthouse_invocation(
+        ["corepack", "yarn", "npm", "exec", "lighthouse", "--port", "9333"])
+    assert _is_chrome_devtools_mcp_invocation(
+        ["yarn", "npm", "exec", "chrome-devtools-mcp",
+         "--browserUrl", "http://127.0.0.1:9333"])
+    assert not _is_lighthouse_invocation(["yarn", "npm", "install", "lighthouse"])
+    assert not _is_lighthouse_invocation(
+        ["/bin/bash", "-c", "yarn npm exec lighthouse --port 9333"])
     assert _is_lighthouse_invocation(
         ["node", "/home/x/node_modules/lighthouse/cli/index.js",
          "--port=9333", "https://example.com"])
@@ -1459,6 +1478,86 @@ def test_unregistered_npx_package_pin_dock_cli_killed_on_takeover():
     assert last_wins.killed == 1
     assert later_other.killed == 0
     assert other_port.killed == 0
+    assert bash_parent.killed == 0
+
+
+def test_unregistered_yarn_npm_exec_dock_cli_killed_on_takeover():
+    """``yarn npm exec lighthouse --port <dock>`` missed leftover unwrap.
+
+    Yarn Berry keeps argv0 ``yarn``, so leftover unwrap never entered
+    ``npm exec``. ``yarn npm install`` is not an invocation. ``yarn
+    exec`` / ``yarn dlx`` already matched. Bash ``-c`` parent is not
+    the writer.
+    """
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    bdb.remember_dock_cdp_port(9333)
+    leftover = _FakeProc(
+        10000,
+        ["yarn", "npm", "exec", "lighthouse",
+         "--port", "9333", "https://example.com"],
+    )
+    after_sep = _FakeProc(
+        10001,
+        ["yarn", "npm", "exec", "--", "lighthouse",
+         "--port", "9333", "https://example.com"],
+    )
+    packaged = _FakeProc(
+        10002,
+        ["yarn", "npm", "exec", "--package=lighthouse", "--",
+         "--port", "9333", "https://example.com"],
+    )
+    npm_x = _FakeProc(
+        10003,
+        ["yarn", "npm", "x", "lighthouse",
+         "--port", "9333", "https://example.com"],
+    )
+    cwd = _FakeProc(
+        10004,
+        ["yarn", "--cwd", "/tmp/ws", "npm", "exec", "lighthouse",
+         "--port", "9333", "https://example.com"],
+    )
+    mcp = _FakeProc(
+        10005,
+        ["yarn", "npm", "exec", "chrome-devtools-mcp",
+         "--browserUrl", "http://127.0.0.1:9333"],
+    )
+    corepack = _FakeProc(
+        10006,
+        ["corepack", "yarn", "npm", "exec", "lighthouse",
+         "--port", "9333", "https://example.com"],
+    )
+    install = _FakeProc(10007, ["yarn", "npm", "install", "lighthouse"])
+    other = _FakeProc(
+        10008,
+        ["yarn", "npm", "exec", "lighthouse",
+         "--port", "9222", "https://example.com"],
+    )
+    bash_parent = _FakeProc(
+        10009,
+        ["/bin/bash", "-c",
+         "yarn npm exec lighthouse --port 9333"],
+    )
+    lease.acquire("human")
+    n = interrupt_unregistered_dock_cli(
+        processes=[
+            leftover, after_sep, packaged, npm_x, cwd, mcp, corepack,
+            install, other, bash_parent,
+        ],
+        chromium_pid=9999,
+        owner_daemon_pid=9998,
+    )
+    assert n == 7
+    assert leftover.killed == 1
+    assert after_sep.killed == 1
+    assert packaged.killed == 1
+    assert npm_x.killed == 1
+    assert cwd.killed == 1
+    assert mcp.killed == 1
+    assert corepack.killed == 1
+    assert install.killed == 0
+    assert other.killed == 0
     assert bash_parent.killed == 0
 
 
