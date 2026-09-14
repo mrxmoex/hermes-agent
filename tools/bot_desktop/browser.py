@@ -1230,16 +1230,32 @@ def running_instance_cdp_port(user_data_dir: str, *, exclude_session: Optional[s
         lock_ports = _loopback_listen_ports_for_pid(pid)
         persist = lock_listed_persist_port(user_data_dir)
         persist_on_lock = persist is not None
+        hidden_chrome = unique_lock_chrome_hidden_by_leftover_file(
+            file_port, user_data_dir,
+        )
         file_hides_chrome = persist_on_lock and leftover_helpers_hide_persist_chrome(
             persist, file_port, user_data_dir,
         )
-        if port is not None and file_hides_chrome and persist != port:
+        if (
+            hidden_chrome is not None
+            and port is not None
+            and hidden_chrome != port
+        ):
+            # Finding 188: leftover inherited chrome's unique listen,
+            # so persist / hidden chrome has several holders and
+            # 183's unique-persist check misses. File TCP then
+            # stamped leftover DevTools over chrome.
+            file_hides_chrome = True
+        if port is not None and file_hides_chrome and (
+            persist != port if persist_on_lock else hidden_chrome != port
+        ):
             # Finding 183: lock inherited leftover DevTools fd, so
             # file TCP succeeds on helpers chrome still lists.
             # Persist unique + named several is leftover hiding
             # chrome — do not overwrite dock-cdp-port. Finding 172
             # chrome-switch (persist several / named unique) keeps
-            # the file stamp.
+            # the file stamp. Finding 188: leftover-shared chrome
+            # is the same class when n!=1.
             port = None
         if port is None:
             recovered = _recover_cdp_port_from_singleton(user_data_dir, pid)
@@ -1269,9 +1285,6 @@ def running_instance_cdp_port(user_data_dir: str, *, exclude_session: Optional[s
             hosts = _listen_connect_hosts(pid, persist)
             if hosts and _cdp_port_reachable(persist, hosts):
                 port = persist
-        hidden_chrome = unique_lock_chrome_hidden_by_leftover_file(
-            file_port, user_data_dir,
-        )
         if (
             port is None
             and hidden_chrome is not None

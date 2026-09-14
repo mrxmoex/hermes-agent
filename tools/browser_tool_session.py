@@ -5363,8 +5363,13 @@ def _remembered_dock_attach_port(*, exclude_session: Optional[str] = None) -> Op
                     elif (
                         persist_first in lock_ports
                         and named in lock_ports
-                        and _bd_browser.leftover_helpers_hide_persist_chrome(
-                            persist_first, named, user_data_dir,
+                        and (
+                            _bd_browser.leftover_helpers_hide_persist_chrome(
+                                persist_first, named, user_data_dir,
+                            )
+                            or _bd_browser.unique_lock_chrome_hidden_by_leftover_file(
+                                named, user_data_dir,
+                            ) == persist_first
                         )
                     ):
                         # Finding 183: lock inherited leftover
@@ -5374,6 +5379,11 @@ def _remembered_dock_attach_port(*, exclude_session: Optional[str] = None) -> Op
                         # unique + named several is leftover hiding
                         # chrome — keep persist. Unique+unique and
                         # persist several stay finding 172.
+                        # Finding 188: leftover inherited chrome's
+                        # unique listen, so persist has several
+                        # holders and 183's unique-persist check
+                        # misses. Leftover-shared chrome is still
+                        # persist — keep it.
                         prefer_named = False
                 elif listed == persist_first and listed != named:
                     # Finding 179: no this-jar lock pid. Finding 172
