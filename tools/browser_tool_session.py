@@ -4929,8 +4929,9 @@ def _cdp_url_is_bot_desktop_browser(cdp_url: str) -> bool:
     ``dock-cdp-port``. Persist still on the lock is current chrome —
     identify the other listen, do not stamp it. Finding 177: that
     persist may live only in ``_last_dock_cdp_port`` after a remember
-    miss or unlinked ``dock-cdp-port``. 9222 and the other family
-    stay unknown.
+    miss or unlinked ``dock-cdp-port``. Finding 179: that persist
+    may still be this-jar inode-listed after Take over unlinks
+    ``SingletonLock``. 9222 and the other family stay unknown.
     """
     want = _loopback_cdp_port(cdp_url)
     if want is None:
@@ -5317,8 +5318,12 @@ def _remembered_dock_attach_port(*, exclude_session: Optional[str] = None) -> Op
     file only, so pre-177 persist_live left ``dock-cdp-port`` on
     the leftover while ``_last_dock_cdp_port`` still named chrome.
     Put lock-listed persist first; finding 172's file-named
-    tie-break still runs. Candidate order for leftover identity
-    stays file-then-memory (finding 169). ``exclude_session`` stays
+    tie-break still runs. Finding 179: Take over can unlink
+    ``SingletonLock`` while memory still names chrome. Lock-listed
+    persist then comes from this-jar inode hosts, not lock ports;
+    do not let 172 prefer leftover file-named helpers over that
+    memory. Candidate order for leftover identity stays
+    file-then-memory (finding 169). ``exclude_session`` stays
     None when that session owns the lock pid (``--cdp`` would close
     its own browser). A holder of one candidate does not hide the
     other. Do not stamp persist. 9222 stays unknown unless this
@@ -5350,6 +5355,19 @@ def _remembered_dock_attach_port(*, exclude_session: Optional[str] = None) -> Op
                 ):
                     lock_ports = _bd_browser._loopback_listen_ports_for_pid(pid)
                     if persist_first in lock_ports and named not in lock_ports:
+                        prefer_named = False
+                elif listed == persist_first and listed != named:
+                    # Finding 179: no this-jar lock pid. Finding 172
+                    # would prefer leftover file-named helpers over
+                    # lock-listed memory. Prefer memory when named
+                    # is the persist file (or persist was never
+                    # stamped). A different file-named live listen
+                    # is still finding 172.
+                    try:
+                        persist_file = _bd_browser.last_known_dock_cdp_port()
+                    except Exception:
+                        persist_file = None
+                    if persist_file == named or persist_file is None:
                         prefer_named = False
             except Exception:
                 pass
