@@ -548,7 +548,11 @@ def test_agent_browser_invocation_is_token_match_not_substring():
     # only checked argv --cdp / --profile. codegen does not read
     # those keys. Gateway cwd / Path.home() must not decide a
     # relative or global file.
-    from tools.browser_tool_session import _is_playwright_cli_agent_invocation
+    from tools.browser_tool_session import (
+        _is_playwright_cli_agent_invocation,
+        _is_playwright_invocation,
+        _is_playwright_mcp_invocation,
+    )
     assert _is_playwright_invocation(
         ["npx", "@playwright/cli", "attach", "--cdp",
          "http://127.0.0.1:9333"])
