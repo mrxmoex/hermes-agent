@@ -8018,7 +8018,8 @@ def test_unregistered_missing_lock_and_file_other_family_stays(monkeypatch):
         assert sibling.killed == 0
         assert bash_parent.killed == 0
         assert n == 1
-        assert bdb.last_known_dock_cdp_port() is None
+        # Named listen may stamp memory; persist still must not guess a file port.
+        assert bdb.running_instance_cdp_port(str(profile)) is None
         assert bdb._this_jar_chromium_pid(str(profile)) is None
     finally:
         listener.close()
