@@ -7487,6 +7487,93 @@ def test_unregistered_host_port_killed_when_persist_and_override_miss(monkeypatc
         listener.close()
 
 
+def test_unregistered_stale_lock_pid_does_not_spare_leftover(monkeypatch):
+    """Finding 157: Take over skipped the raw SingletonLock pid.
+
+    Official leftover after a crashed dock still aims ``--cdp`` at the
+    remembered port. The lock symlink can keep that chrome's pid — or
+    a leftover writer can recycle it. Interrupt treated the symlink
+    target as Chromium and left the writer typing. A dead lock pid
+    is not this jar. 9222 and the bash ``-c`` parent stay up.
+    Production Take over does not pass ``chromium_pid``.
+    """
+    import os
+
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    profile = bdb.profile_dir()
+    profile.mkdir(parents=True, exist_ok=True)
+    lock = profile / "SingletonLock"
+    if lock.exists() or lock.is_symlink():
+        lock.unlink()
+    os.symlink("host-11221", lock)
+    bdb.remember_dock_cdp_port(9333)
+    leftover = _FakeProc(
+        11221,
+        ["agent-browser", "--cdp", "http://127.0.0.1:9333", "fill"],
+    )
+    sibling = _FakeProc(
+        11222,
+        ["agent-browser", "--cdp", "http://127.0.0.1:9222", "fill"],
+    )
+    bash_parent = _FakeProc(
+        11223,
+        ["/bin/bash", "-c", "agent-browser --cdp http://127.0.0.1:9333 fill"],
+    )
+    lease.acquire("human")
+    n = interrupt_unregistered_dock_cli(
+        processes=[leftover, sibling, bash_parent],
+    )
+    assert leftover.killed == 1
+    assert sibling.killed == 0
+    assert bash_parent.killed == 0
+    assert n == 1
+
+
+def test_unregistered_live_jar_pid_still_spared(monkeypatch):
+    """Finding 157: a lock pid that still names this jar stays up.
+
+    Take over must not SIGKILL the dock Chromium when it happens to
+    look leftover-shaped. Recover's cmdline / ``CHROME_USER_DATA_DIR``
+    guard is the skip identity. Another leftover still dies.
+    """
+    import os
+
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    profile = bdb.profile_dir()
+    profile.mkdir(parents=True, exist_ok=True)
+    lock = profile / "SingletonLock"
+    if lock.exists() or lock.is_symlink():
+        lock.unlink()
+    os.symlink("host-11225", lock)
+    monkeypatch.setattr(bdb, "_pid_alive", lambda pid: pid == 11225)
+    monkeypatch.setattr(
+        bdb,
+        "_listed_user_data_dir",
+        lambda pid, tokens=None: str(profile) if pid == 11225 else None,
+    )
+    monkeypatch.setattr(bdb, "_proc_cwd", lambda pid: profile.parent)
+    bdb.remember_dock_cdp_port(9333)
+    chrome = _FakeProc(
+        11225,
+        ["agent-browser", "--cdp", "http://127.0.0.1:9333", "fill"],
+    )
+    leftover = _FakeProc(
+        11226,
+        ["npx", "agent-browser", "--cdp", "http://127.0.0.1:9333", "fill"],
+    )
+    lease.acquire("human")
+    n = interrupt_unregistered_dock_cli(
+        processes=[chrome, leftover],
+    )
+    assert chrome.killed == 0
+    assert leftover.killed == 1
+    assert n == 1
+
+
 def test_stop_reserved_calls_unregistered_interrupt(monkeypatch):
     from tools.browser_tool_session import interrupt_unregistered_dock_cli as real
     from tools.browser_tool_supervisor_lease import stop_reserved_supervisors

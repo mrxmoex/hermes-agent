@@ -4337,15 +4337,18 @@ def _leftover_profile_pin_aims_at_dock(
 
 
 def _singleton_lock_pid(user_data_dir: str) -> Optional[int]:
+    """Alive lock pid that still names this jar, or None.
+
+    Finding 157: interrupt skipped the raw symlink target. A leftover
+    writer that inherited a crashed chrome's lock (or a recycled pid)
+    then survived Take over. Recover already refuses a recycled pid
+    whose cmdline / ``CHROME_USER_DATA_DIR`` is not this jar.
+    """
     try:
-        target = os.readlink(os.path.join(user_data_dir, "SingletonLock"))
-    except OSError:
+        from tools.bot_desktop import browser as _bd_browser
+        return _bd_browser._this_jar_chromium_pid(user_data_dir)
+    except Exception:
         return None
-    _host, _, pid_text = target.rpartition("-")
-    if not pid_text.isdigit():
-        return None
-    pid = int(pid_text)
-    return pid if pid > 1 else None
 
 
 def _proc_ppid(pid: int) -> Optional[int]:

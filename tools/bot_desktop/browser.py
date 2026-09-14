@@ -558,6 +558,28 @@ def _lock_pid(user_data_dir: str) -> Optional[int]:
     return pid if pid > 1 and _pid_alive(pid) else None
 
 
+def _this_jar_chromium_pid(user_data_dir: Optional[str] = None) -> Optional[int]:
+    """Alive lock pid that still names this jar, or ``None``.
+
+    Recover already refuses a recycled SingletonLock pid whose cmdline
+    / ``CHROME_USER_DATA_DIR`` is not this ``user-data-dir``. Take over
+    used to skip whatever pid the lock pointed at (finding 157), so a
+    leftover writer that inherited a crashed chrome's lock survived.
+    A dead lock pid is not Chromium. No HTTP.
+    """
+    if user_data_dir is None:
+        user_data_dir = str(profile_dir())
+    pid = _lock_pid(user_data_dir)
+    if pid is None:
+        return None
+    listed = _listed_user_data_dir(pid)
+    if not listed or not _paths_same_user_data_dir(
+        listed, user_data_dir, cwd=_proc_cwd(pid),
+    ):
+        return None
+    return pid
+
+
 def _configured_cdp_override_url() -> str:
     """``/browser connect`` / ``BROWSER_CDP_URL`` / ``browser.cdp_url``, or empty."""
     try:

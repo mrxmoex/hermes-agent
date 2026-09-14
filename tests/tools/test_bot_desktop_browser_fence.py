@@ -1958,6 +1958,45 @@ def test_named_listen_host_port_aims_when_persist_and_override_miss(
         listener.close()
 
 
+def test_stale_lock_pid_is_not_this_jar_chromium(monkeypatch, tmp_path):
+    """Finding 157: a leftover pid on SingletonLock is not the dock.
+
+    Recover already refuses a recycled lock pid whose cmdline does not
+    name this jar. Take over used to skip the raw symlink target.
+    A dead pid, a live pid that is not this Chromium, and another
+    profile stay unknown. A live pid that still names this jar is.
+    """
+    import os
+
+    import tools.bot_desktop.browser as bdb
+    from tools.browser_tool_session import _singleton_lock_pid
+
+    profile = tmp_path / "browser-profile"
+    profile.mkdir()
+    os.symlink("host-11221", profile / "SingletonLock")
+    monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path)
+    monkeypatch.setattr(bdb, "profile_dir", lambda: profile)
+    assert bdb._lock_pid(str(profile)) is None
+    assert bdb._this_jar_chromium_pid(str(profile)) is None
+    assert _singleton_lock_pid(str(profile)) is None
+
+    os.unlink(profile / "SingletonLock")
+    os.symlink("host-11225", profile / "SingletonLock")
+    monkeypatch.setattr(bdb, "_pid_alive", lambda pid: pid == 11225)
+    monkeypatch.setattr(
+        bdb,
+        "_listed_user_data_dir",
+        lambda pid, tokens=None: str(profile) if pid == 11225 else None,
+    )
+    monkeypatch.setattr(bdb, "_proc_cwd", lambda pid: profile.parent)
+    assert bdb._this_jar_chromium_pid(str(profile)) == 11225
+    assert _singleton_lock_pid(str(profile)) == 11225
+
+    monkeypatch.setattr(bdb, "_listed_user_data_dir", lambda pid, tokens=None: None)
+    assert bdb._this_jar_chromium_pid(str(profile)) is None
+    assert _singleton_lock_pid(str(profile)) is None
+
+
 def test_vault_ensure_does_not_probe_raw_dock_url_while_human_holds(monkeypatch):
     """Session admit can be a no-op while ``get cdp-url`` names the dock."""
     import tools.bot_desktop.browser as bdb
