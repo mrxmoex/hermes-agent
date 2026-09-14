@@ -745,6 +745,48 @@ def test_agent_browser_invocation_is_token_match_not_substring():
         ["npx", "playwright-core", "attach", "--cdp", "http://127.0.0.1:9333"])
     assert not _is_playwright_invocation(
         ["/bin/bash", "-c", "playwright-cli attach --cdp http://127.0.0.1:9333"])
+    # Official leftover attach daemon (finding 138). attach --cdp
+    # exits after spawning node …/cliDaemon.js <session> --cdp=<url>.
+    from tools.browser_tool_session import (
+        _is_playwright_cli_agent_invocation,
+        _is_playwright_mcp_invocation,
+        _token_is_bundled_playwright_cli,
+    )
+    _daemon_core = (
+        "/home/x/node_modules/playwright-core/lib/entry/cliDaemon.js"
+    )
+    _daemon_pw = "/home/x/node_modules/playwright/lib/entry/cliDaemon.js"
+    assert _is_playwright_invocation(
+        ["node", _daemon_core, "default", "--cdp=http://127.0.0.1:9333"])
+    assert _is_playwright_invocation(
+        ["node", _daemon_pw, "mysession", "--cdp=http://127.0.0.1:9333"])
+    assert _is_playwright_cli_agent_invocation(
+        ["node", _daemon_core, "default", "--cdp=http://127.0.0.1:9333"])
+    assert _is_playwright_cli_agent_invocation([_daemon_core, "default"])
+    assert not _is_playwright_mcp_invocation(
+        ["node", _daemon_core, "mcp", "--cdp=http://127.0.0.1:9333"])
+    assert not _token_is_bundled_playwright_cli(_daemon_core)
+    assert not _is_playwright_invocation(
+        ["node", "/home/x/node_modules/playwright-core/lib/entry/"
+         "dashboardApp.js", "--cdp=http://127.0.0.1:9333"])
+    assert not _is_playwright_invocation(
+        ["/usr/bin/cat", _daemon_core])
+    assert _unregistered_cli_aims_at_dock(
+        ["node", _daemon_core, "default", "--cdp=http://127.0.0.1:9333"],
+        {}, None, 9333,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["node", _daemon_core, "default", f"--profile={_jar}"],
+        {}, _jar, None,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["node", _daemon_core, "default", "--cdp=chrome"],
+        {}, None, 9333,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["playwright-cli", "fill", "@e1", "secret"],
+        {}, None, 9333,
+    )
     from tools.browser_tool_session import _is_playwright_mcp_invocation
     assert _is_playwright_mcp_invocation(["npx", "-y", "@playwright/mcp@latest"])
     assert _is_playwright_mcp_invocation(
@@ -5151,6 +5193,116 @@ def test_unregistered_agent_browser_connect_after_globals_killed_on_takeover():
     assert shebang.killed == 1
     assert other.killed == 0
     assert no_connect.killed == 0
+    assert bash_parent.killed == 0
+
+
+def test_unregistered_playwright_cli_daemon_dock_cdp_killed_on_takeover():
+    """terminal() leftover Agent CLI daemon hid attach after playwright-cli exited.
+
+    Official leftover ``attach --cdp=<dock>`` spawns
+    ``node …/lib/entry/cliDaemon.js <session> --cdp=<url>`` detached
+    and exits. Finding 109 / 136 only matched the parent CLI, so Take
+    over left the long-lived holder. ``--cdp chrome`` / ``--extension``
+    / ``--endpoint`` / later ``playwright-cli fill`` without a pin stay
+    unknown. ``dashboardApp.js`` and the bash ``-c`` parent stay up.
+    """
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    profile = bdb.profile_dir()
+    cwd = profile.parent
+    cwd.mkdir(parents=True, exist_ok=True)
+    cfg = cwd / "pw-daemon-dock.json"
+    cfg.write_text(json.dumps({"browser": {"userDataDir": str(profile)}}))
+    daemon_core = (
+        "/home/x/node_modules/playwright-core/lib/entry/cliDaemon.js"
+    )
+    daemon_pw = "/home/x/node_modules/playwright/lib/entry/cliDaemon.js"
+    bdb.remember_dock_cdp_port(9333)
+    leftover = _FakeProc(
+        10500,
+        ["node", daemon_core, "default", "--cdp=http://127.0.0.1:9333"],
+    )
+    via_playwright = _FakeProc(
+        10501,
+        ["node", daemon_pw, "mysession", "--cdp=http://127.0.0.1:9333"],
+    )
+    via_space = _FakeProc(
+        10502,
+        ["node", daemon_core, "default", "--cdp", "http://127.0.0.1:9333"],
+    )
+    via_profile = _FakeProc(
+        10503,
+        ["node", daemon_core, "default", f"--profile={profile}"],
+    )
+    via_cfg = _FakeProc(
+        10504,
+        ["node", daemon_core, "default", "--config", str(cfg)],
+    )
+    via_env = _FakeProc(
+        10505,
+        ["/usr/bin/env", "node", daemon_core, "default",
+         "--cdp=http://127.0.0.1:9333"],
+    )
+    channel = _FakeProc(
+        10506,
+        ["node", daemon_core, "chrome", "--cdp=chrome"],
+    )
+    extension = _FakeProc(
+        10507,
+        ["node", daemon_core, "default", "--extension"],
+    )
+    endpoint = _FakeProc(
+        10508,
+        ["node", daemon_core, "default",
+         "--endpoint=ws://127.0.0.1:9333/devtools/browser/x"],
+    )
+    other_cdp = _FakeProc(
+        10509,
+        ["node", daemon_core, "default", "--cdp=http://127.0.0.1:9222"],
+    )
+    dashboard = _FakeProc(
+        10510,
+        ["node", "/home/x/node_modules/playwright-core/lib/entry/"
+         "dashboardApp.js", "--cdp=http://127.0.0.1:9333"],
+    )
+    unpinned_fill = _FakeProc(
+        10511,
+        ["playwright-cli", "fill", "@e1", "secret"],
+    )
+    cat_script = _FakeProc(
+        10512,
+        ["/usr/bin/cat", daemon_core],
+    )
+    bash_parent = _FakeProc(
+        10513,
+        ["/bin/bash", "-c",
+         f"node {daemon_core} default --cdp=http://127.0.0.1:9333"],
+    )
+    lease.acquire("human")
+    n = interrupt_unregistered_dock_cli(
+        processes=[
+            leftover, via_playwright, via_space, via_profile, via_cfg,
+            via_env, channel, extension, endpoint, other_cdp, dashboard,
+            unpinned_fill, cat_script, bash_parent,
+        ],
+        chromium_pid=9999,
+        owner_daemon_pid=9998,
+    )
+    assert n == 6
+    assert leftover.killed == 1
+    assert via_playwright.killed == 1
+    assert via_space.killed == 1
+    assert via_profile.killed == 1
+    assert via_cfg.killed == 1
+    assert via_env.killed == 1
+    assert channel.killed == 0
+    assert extension.killed == 0
+    assert endpoint.killed == 0
+    assert other_cdp.killed == 0
+    assert dashboard.killed == 0
+    assert unpinned_fill.killed == 0
+    assert cat_script.killed == 0
     assert bash_parent.killed == 0
 
 

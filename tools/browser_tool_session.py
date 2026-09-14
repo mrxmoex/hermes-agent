@@ -1985,21 +1985,39 @@ def _is_browser_use_invocation(tokens: List[str]) -> bool:
     return False
 
 
+def _token_is_playwright_cli_daemon(token: str) -> bool:
+    """True when this token is official leftover Agent CLI ``cliDaemon.js``.
+
+    Finding 109 / 136 matched ``playwright-cli`` / ``@playwright/cli``.
+    Official leftover ``attach --cdp=<dock>`` exits after spawning
+    ``node …/lib/entry/cliDaemon.js <session> --cdp=<url>`` detached
+    (``Session.startDaemon``). That daemon keeps the CDP connection;
+    later ``fill`` / ``snapshot`` have no ``--cdp``. Path parts are
+    ``playwright-core`` + ``entry`` or ``playwright`` + ``entry``, so
+    ``cli.js`` matching never saw it. ``dashboardApp.js`` /
+    ``cat cliDaemon.js`` are not.
+    """
+    return _token_basename_is(token, "cliDaemon.js")
+
+
 def _token_is_playwright_script(token: str) -> bool:
     """True when this token is the Playwright CLI or its Node entry.
 
     ``…/playwright/cli.js`` is an invocation. ``playwright-cli`` is the
     Agent CLI leftover writer (``attach --cdp=<dock>``).
-    ``…/@playwright/mcp/cli.js`` is not — Path parts are ``@playwright``
-    + ``mcp``, not ``playwright``. ``playwright-core`` is not.
-    ``npx playwright install`` is an invocation but stays unknown without
-    a CDP aim (not leftover action).
+    ``…/lib/entry/cliDaemon.js`` is the Agent CLI attach daemon
+    (finding 138). ``…/@playwright/mcp/cli.js`` is not — Path parts
+    are ``@playwright`` + ``mcp``, not ``playwright``. ``playwright-core``
+    as a package token is not. ``npx playwright install`` is an
+    invocation but stays unknown without a CDP aim (not leftover action).
     """
     if _token_basename_is(token, "playwright") or _token_basename_is(
         token, "playwright-cli",
     ):
         return True
     if _token_is_playwright_cli_package(token):
+        return True
+    if _token_is_playwright_cli_daemon(token):
         return True
     raw = (token or "").strip().strip("\"'")
     if not raw:
@@ -2053,8 +2071,10 @@ def _is_playwright_invocation(tokens: List[str]) -> bool:
     Token-match only. ``npx playwright install`` is an invocation; it is
     not dock-aimed unless ``--cdp-endpoint`` / ``PW_TEST_CONNECT_*`` pin
     this jar.     ``playwright-cli attach --cdp=<dock>`` / ``npx @playwright/cli``
-    are leftover Agent CLI (finding 109 / 136). Do not match
-    ``@playwright/mcp`` or ``playwright-core`` by substring.
+    are leftover Agent CLI (finding 109 / 136). Official leftover
+    ``attach`` also leaves ``node …/cliDaemon.js --cdp=<dock>``
+    (finding 138). Do not match ``@playwright/mcp`` or a bare
+    ``playwright-core`` package token by substring.
     """
     if not tokens:
         return False
@@ -2062,6 +2082,7 @@ def _is_playwright_invocation(tokens: List[str]) -> bool:
         _token_basename_is(tokens[0], "playwright")
         or _token_basename_is(tokens[0], "playwright-cli")
         or _token_is_playwright_cli_package(tokens[0])
+        or _token_is_playwright_cli_daemon(tokens[0])
     ):
         return True
     name0 = _launcher_basename(tokens[0])
@@ -2282,14 +2303,15 @@ def _token_is_bundled_playwright_cli(token: str) -> bool:
     """Playwright CLI binary/script, not Agent CLI / ``@playwright/mcp``.
 
     Official leftover Playwright 1.62+ is ``npx playwright mcp`` — the
-    bundled MCP server. ``playwright-cli`` / ``@playwright/cli`` are
-    the Agent CLI leftover (finding 109 / 136). ``@playwright/mcp`` is
+    bundled MCP server.     ``playwright-cli`` / ``@playwright/cli`` / ``cliDaemon.js`` are
+    the Agent CLI leftover (finding 109 / 136 / 138). ``@playwright/mcp`` is
     the standalone package (finding 87 / 127).
     """
     if (
         _token_is_playwright_mcp(token)
         or _token_is_playwright_cli_package(token)
         or _token_basename_is(token, "playwright-cli")
+        or _token_is_playwright_cli_daemon(token)
     ):
         return False
     raw = (token or "").strip().strip("\"'")
@@ -2305,8 +2327,9 @@ def _playwright_cli_mcp_subcommand(tokens: List[str]) -> bool:
     bundled MCP server and reads the same ``PLAYWRIGHT_MCP_*`` /
     ``--config`` pins as ``@playwright/mcp``. Finding 127 only matched
     the scoped package token, so Take over left this writer running.
-    ``npx playwright codegen`` / ``playwright-cli attach`` are not MCP
-    and must not read those keys. A bare ``mcp`` binary is not.
+    ``npx playwright codegen`` / ``playwright-cli attach`` /
+    ``cliDaemon.js`` are not MCP and must not read those keys. A bare
+    ``mcp`` binary is not.
     """
     if not tokens:
         return False
@@ -2316,6 +2339,7 @@ def _playwright_cli_mcp_subcommand(tokens: List[str]) -> bool:
     if (
         _token_basename_is(tokens[0], "playwright-cli")
         or _token_is_playwright_cli_package(tokens[0])
+        or _token_is_playwright_cli_daemon(tokens[0])
     ):
         return False
     name0 = _launcher_basename(tokens[0])
@@ -2413,18 +2437,20 @@ def _is_playwright_cli_agent_invocation(tokens: List[str]) -> bool:
     """True when leftover is official Playwright Agent CLI.
 
     ``playwright-cli``, ``npx @playwright/cli``,
-    ``node …/@playwright/cli/cli.js``, or ``npx playwright cli``.
-    Finding 109 matched argv0 ``playwright-cli`` / ``--cdp`` only.
-    Official leftover also pins ``PLAYWRIGHT_MCP_USER_DATA_DIR`` /
-    ``--config`` / ``~/.playwright/cli.config.json`` /
-    ``.playwright/cli.config.json`` (finding 136). ``npx playwright mcp``
-    / ``codegen`` / ``test`` and ``@playwright/mcp`` are not Agent CLI.
+    ``node …/@playwright/cli/cli.js``, ``npx playwright cli``, or
+    ``node …/lib/entry/cliDaemon.js`` (finding 138). Finding 109
+    matched argv0 ``playwright-cli`` / ``--cdp`` only. Official leftover
+    also pins ``PLAYWRIGHT_MCP_USER_DATA_DIR`` / ``--config`` /
+    ``~/.playwright/cli.config.json`` / ``.playwright/cli.config.json``
+    (finding 136). ``npx playwright mcp`` / ``codegen`` / ``test`` and
+    ``@playwright/mcp`` are not Agent CLI.
     """
     if not tokens:
         return False
     if (
         _token_basename_is(tokens[0], "playwright-cli")
         or _token_is_playwright_cli_package(tokens[0])
+        or _token_is_playwright_cli_daemon(tokens[0])
     ):
         return True
     if _token_basename_is(tokens[0], "playwright"):
@@ -2487,6 +2513,7 @@ def _is_playwright_cli_agent_invocation(tokens: List[str]) -> bool:
             if (
                 _token_is_playwright_cli_package(tok)
                 or _token_basename_is(tok, "playwright-cli")
+                or _token_is_playwright_cli_daemon(tok)
             ):
                 return True
             if _token_is_bundled_playwright_cli(tok):
@@ -2764,7 +2791,7 @@ def _unregistered_cli_aims_at_dock(
     Finding 111 only checked ``--user-data-dir``. Official leftover
     Playwright 1.62+ is also ``npx playwright mcp`` (finding 135) —
     finding 127 only matched ``@playwright/mcp``, so env / ``--config``
-    on the bundled subcommand stayed unknown. Official leftover Agent
+    on the bundled subcommand stayed unknown.     Official leftover Agent
     CLI (finding 136) is ``playwright-cli`` / ``npx @playwright/cli`` /
     ``npx playwright cli`` and reads the same env keys plus
     ``~/.playwright/cli.config.json`` (writer HOME) and
@@ -2772,8 +2799,12 @@ def _unregistered_cli_aims_at_dock(
     ``--config`` / ``PLAYWRIGHT_MCP_CONFIG``. Finding 109 / 111 only
     checked argv ``--cdp`` / ``--profile``, so Take over left
     ``npx @playwright/cli --config {browser.userDataDir}`` and
-    ``npx @playwright/cli attach --cdp`` running. Regular Playwright
-    CLI (``codegen`` / ``test``) does not read those Agent / MCP keys.
+    ``npx @playwright/cli attach --cdp`` running. Official leftover
+    ``attach --cdp`` also exits after spawning
+    ``node …/cliDaemon.js <session> --cdp=<dock>`` (finding 138) —
+    finding 109 / 136 only matched the parent CLI, so Take over left
+    the long-lived attach holder. Regular Playwright CLI (``codegen``
+    / ``test``) does not read those Agent / MCP keys.
     ``--isolated`` / no pin stays unknown. A set argv ``--profile``
     skips env / config dir. Gateway cwd / ``Path.home()`` must not
     decide a relative or global Agent CLI file.
