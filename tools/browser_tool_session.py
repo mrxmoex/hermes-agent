@@ -1127,6 +1127,30 @@ def _reset_dock_port_memory_for_tests() -> None:
         pass
 
 
+def _remembered_dock_port_candidates() -> list[int]:
+    """Persist file then in-process memory. Valid unique ports.
+
+    ``running_instance_cdp_port`` / ``remember_dock_cdp_port`` write the
+    file only. ``_last_dock_cdp_port`` is a leftover-identity cache and
+    can lag after Chromium's ephemeral port moves. Stale memory must
+    not hide persist (finding 169). Memory-only (persist unlinked)
+    stays a candidate. No HTTP.
+    """
+    from hermes_constants import hermes_home_key
+    from tools.bot_desktop import browser as _bd_browser
+
+    ports: list[int] = []
+    try:
+        persist = _bd_browser.last_known_dock_cdp_port()
+    except Exception:
+        persist = None
+    memory = _last_dock_cdp_port.get(hermes_home_key())
+    for port in (persist, memory):
+        if isinstance(port, int) and 1 <= port <= 65535 and port not in ports:
+            ports.append(port)
+    return ports
+
+
 _inflight_dock_cli_lock = threading.Lock()
 _inflight_dock_cli: list[dict] = []
 
@@ -4878,6 +4902,10 @@ def _cdp_url_is_bot_desktop_browser(cdp_url: str) -> bool:
 
     Persist is family-correct (finding 144). Port-only / localhost stay
     unknown-family.
+
+    Finding 169: persist file then in-process memory. A stale
+    ``_last_dock_cdp_port`` must not hide leftover ``--cdp`` aimed at
+    the live stamp when named-listen hosts are empty.
     """
     want = _loopback_cdp_port(cdp_url)
     if want is None:
@@ -4907,13 +4935,14 @@ def _cdp_url_is_bot_desktop_browser(cdp_url: str) -> bool:
             _last_dock_cdp_port[key] = want
             _bd_browser.remember_dock_cdp_port(want)
         return _leftover_cdp_host_matches_this_jar(cdp_url, want)
-    remembered = _last_dock_cdp_port.get(key)
-    if remembered is None:
-        remembered = _bd_browser.last_known_dock_cdp_port()
-        if remembered is not None:
-            _last_dock_cdp_port[key] = remembered
-    if remembered is not None and remembered == want:
-        return _leftover_cdp_host_matches_this_jar(cdp_url, remembered)
+    # Persist file then memory. ``remember_dock_cdp_port`` does not
+    # update ``_last_dock_cdp_port``, so a later live stamp hid leftover
+    # ``--cdp`` aimed at persist when hosts were empty (finding 169).
+    for remembered in _remembered_dock_port_candidates():
+        if remembered == want:
+            if _last_dock_cdp_port.get(key) is None:
+                _last_dock_cdp_port[key] = remembered
+            return _leftover_cdp_host_matches_this_jar(cdp_url, remembered)
     try:
         configured = _bd_browser._configured_listen_port_for_this_jar()
     except Exception:
@@ -5227,37 +5256,39 @@ def _remembered_dock_attach_port(*, exclude_session: Optional[str] = None) -> Op
     Use persist only when this jar still inode-listens so
     ``dock_cdp_attach_target`` is family-correct. Empty hosts stay a
     launch — a bare persist port races to the other loopback squat
-    (finding 167). ``exclude_session`` stays None when that session owns
-    the lock pid or a listen holder (``--cdp`` would close its own
-    browser). Do not stamp persist. 9222 stays unknown unless this jar
-    inode-listens there.
+    (finding 167). Persist file beats stale ``_last_dock_cdp_port``
+    (finding 169): ``remember_dock_cdp_port`` writes the file only, so
+    an earlier identity cache hid the live stamp. Memory-only (persist
+    unlinked) still attaches. ``exclude_session`` stays None when that
+    session owns the lock pid (``--cdp`` would close its own browser).
+    A holder of one candidate does not hide the other. Do not stamp
+    persist. 9222 stays unknown unless this jar inode-listens there.
     """
-    from hermes_constants import hermes_home_key
     from tools.bot_desktop import browser as _bd_browser
 
-    remembered = _last_dock_cdp_port.get(hermes_home_key())
-    if remembered is None:
-        remembered = _bd_browser.last_known_dock_cdp_port()
-    if not isinstance(remembered, int) or not (1 <= remembered <= 65535):
+    candidates = _remembered_dock_port_candidates()
+    if not candidates:
         return None
     user_data_dir = str(_bd_browser.profile_dir())
     if exclude_session:
         pid = _bd_browser._this_jar_chromium_pid(user_data_dir)
         if pid is not None and _bd_browser._launched_by_session(pid) == exclude_session:
             return None
-        holders = _bd_browser._this_jar_listen_holders(remembered, user_data_dir)
-        if any(
-            _bd_browser._launched_by_session(holder_pid) == exclude_session
-            for holder_pid, _ in holders
-        ):
-            return None
-    try:
-        hosts = _bd_browser._this_jar_listen_connect_hosts(remembered)
-    except Exception:
-        hosts = ()
-    if not hosts:
-        return None
-    return remembered
+    for remembered in candidates:
+        if exclude_session:
+            holders = _bd_browser._this_jar_listen_holders(remembered, user_data_dir)
+            if any(
+                _bd_browser._launched_by_session(holder_pid) == exclude_session
+                for holder_pid, _ in holders
+            ):
+                continue
+        try:
+            hosts = _bd_browser._this_jar_listen_connect_hosts(remembered)
+        except Exception:
+            hosts = ()
+        if hosts:
+            return remembered
+    return None
 
 
 def _bot_desktop_attach_port(session_info: Dict[str, Any]) -> Optional[int]:

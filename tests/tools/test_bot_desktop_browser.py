@@ -1387,6 +1387,57 @@ def test_agent_attach_uses_persist_when_live_tcp_misses(tmp_path, monkeypatch):
         v4.close()
 
 
+def test_agent_attach_uses_persist_when_memory_is_stale(tmp_path, monkeypatch):
+    """Finding 169: stale ``_last_dock_cdp_port`` hid persist after a live miss.
+
+    ``remember_dock_cdp_port`` / ``running_instance_cdp_port`` write the
+    file only. Leftover identity caches the previous ephemeral port in
+    ``_last_dock_cdp_port``. Finding 168 then used memory first: empty
+    hosts on the stale number launched ``--session`` and Chromium
+    singleton-forwarded into the jar a human holds. Persist file first.
+    Memory-only (persist unlinked) still attaches. Empty hosts stay a
+    launch. Planted persist still identifies leftover when hosts are
+    empty. 9222 stays unknown.
+    """
+    from hermes_constants import hermes_home_key
+    from tools import browser_tool_session as session
+    from tools.browser_tool_session import (
+        _cdp_url_is_bot_desktop_browser,
+        _last_dock_cdp_port,
+        _remembered_dock_attach_port,
+        _reset_dock_port_memory_for_tests,
+    )
+
+    v6, v4, port, profile = _ipv6_only_dock(tmp_path, monkeypatch)
+    try:
+        _reset_dock_port_memory_for_tests()
+        browser.remember_dock_cdp_port(port)
+        _last_dock_cdp_port[hermes_home_key()] = 11111
+        monkeypatch.setattr(browser, "running_instance_cdp_port", lambda *a, **k: None)
+        assert browser.last_known_dock_cdp_port() == port
+        assert browser._this_jar_listen_connect_hosts(port) == ("::1",)
+        assert browser._this_jar_listen_connect_hosts(11111) == ()
+        assert _remembered_dock_attach_port() == port
+        assert _cdp_url_is_bot_desktop_browser(f"http://[::1]:{port}") is True
+        assert _cdp_url_is_bot_desktop_browser(f"http://127.0.0.1:{port}") is False
+
+        argvs = _spawn_agent_open(monkeypatch, session)
+        assert argvs[-1][:5] == [
+            "agent-browser", "--session", "h_abc", "--cdp", f"http://[::1]:{port}",
+        ]
+        assert "127.0.0.1" not in argvs[-1][4]
+
+        _reset_dock_port_memory_for_tests()
+        browser.remember_dock_cdp_port(9333)
+        _last_dock_cdp_port[hermes_home_key()] = 11111
+        assert _cdp_url_is_bot_desktop_browser("http://127.0.0.1:9333") is True
+        assert _remembered_dock_attach_port() is None
+        assert browser.dock_cdp_attach_target(9222) == "9222"
+    finally:
+        v6.close()
+        v4.close()
+
+
 def _ipv6_only_dock(tmp_path, monkeypatch):
     """Live ::1 dock plus a sibling squat on 127.0.0.1:same. Yields (port, profile)."""
     v6 = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
