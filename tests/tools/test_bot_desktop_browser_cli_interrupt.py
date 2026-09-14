@@ -493,6 +493,72 @@ def test_agent_browser_invocation_is_token_match_not_substring():
         ["chrome-devtools", "start", "--userDataDir", "/tmp/other-chrome"],
         {}, _jar, None,
     )
+    # Official leftover launch pin (finding 126). chrome-launcher
+    # appends ``--chrome-flags`` after its temp dir; Chromium last-wins
+    # the dock jar. ``--port`` attach still wins. LAN / other jar /
+    # ``--remote-debugging-port`` inside chrome-flags stay unknown.
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "lighthouse", "https://example.com",
+         "--chrome-flags", f"--user-data-dir={_jar}"],
+        {}, _jar, None,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "lighthouse", "https://example.com",
+         f"--chrome-flags=--user-data-dir={_jar}"],
+        {}, _jar, None,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "lighthouse", "https://example.com",
+         "--chrome-flags", f"--headless --user-data-dir={_jar}"],
+        {}, _jar, None,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "lighthouse", "https://example.com",
+         "--chromeFlags", f"--user-data-dir={_jar}"],
+        {}, _jar, None,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "lighthouse", "https://example.com", "--port=0",
+         "--chrome-flags", f"--user-data-dir={_jar}"],
+        {}, _jar, None,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "lighthouse", "https://example.com",
+         "--chrome-flags", "--user-data-dir=browser-profile"],
+        {}, _jar, None, cwd=_jar.parent,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "lighthouse", "https://example.com",
+         "--chrome-flags",
+         f"--user-data-dir=/tmp/other --user-data-dir={_jar}"],
+        {}, _jar, None,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["npx", "lighthouse", "https://example.com",
+         "--chrome-flags", "--user-data-dir=/tmp/other-chrome"],
+        {}, _jar, None,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["npx", "lighthouse", "https://example.com",
+         "--chrome-flags", "--remote-debugging-port=9333"],
+        {}, _jar, 9333,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["npx", "lighthouse", "--port", "9222",
+         "--chrome-flags", f"--user-data-dir={_jar}",
+         "https://example.com"],
+        {}, _jar, 9333,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["npx", "lighthouse", "--hostname", "10.0.0.5",
+         "--chrome-flags", f"--user-data-dir={_jar}",
+         "https://example.com"],
+        {}, _jar, None,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["npx", "lighthouse", "https://example.com"],
+        {}, _jar, None,
+    )
     assert _is_playwright_invocation(
         ["npm", "exec", "--", "playwright", "codegen"])
     assert _is_playwright_mcp_invocation(
@@ -3011,6 +3077,122 @@ def test_unregistered_lighthouse_dock_port_killed_on_takeover():
     assert cri_short.killed == 0
     assert bash_parent.killed == 0
     assert later_other.killed == 0
+
+
+def test_unregistered_lighthouse_chrome_flags_user_data_dir_killed_on_takeover():
+    """terminal() lighthouse --chrome-flags --user-data-dir <dock> is leftover launch.
+
+    Official leftover launches Chrome via chrome-launcher, which appends
+    chrome-flags after its temp ``--user-data-dir``. Chromium last-wins
+    the dock jar. Finding 92 only checked ``--port``, so Take over left
+    that writer typing into the jar. ``--port`` to another Chrome, LAN
+    hostname, ``--remote-debugging-port`` inside chrome-flags, another
+    jar, and the bash ``-c`` parent stay up.
+    """
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    profile = bdb.profile_dir()
+    leftover = _FakeProc(
+        9420,
+        ["npx", "lighthouse", "https://example.com",
+         "--chrome-flags", f"--user-data-dir={profile}"],
+    )
+    equals = _FakeProc(
+        9421,
+        ["lighthouse", "https://example.com",
+         f"--chrome-flags=--user-data-dir={profile}"],
+    )
+    grouped = _FakeProc(
+        9422,
+        ["npx", "-y", "lighthouse@latest", "https://example.com",
+         "--chrome-flags", f"--headless --user-data-dir={profile}"],
+    )
+    camel = _FakeProc(
+        9423,
+        ["npx", "lighthouse", "https://example.com",
+         "--chromeFlags", f"--user-data-dir={profile}"],
+    )
+    ephemeral = _FakeProc(
+        9424,
+        ["npx", "lighthouse", "--port=0", "https://example.com",
+         "--chrome-flags", f"--user-data-dir={profile}"],
+    )
+    shebang = _FakeProc(
+        9425,
+        ["node", "/home/x/node_modules/lighthouse/cli/index.js",
+         "https://example.com",
+         f"--chrome-flags=--user-data-dir={profile}"],
+    )
+    relative = _FakeProc(
+        9426,
+        ["npx", "lighthouse", "https://example.com",
+         "--chrome-flags", "--user-data-dir=browser-profile"],
+        cwd=profile.parent,
+    )
+    last_wins = _FakeProc(
+        9427,
+        ["npx", "lighthouse", "https://example.com",
+         "--chrome-flags",
+         f"--user-data-dir=/tmp/other --user-data-dir={profile}"],
+    )
+    other_jar = _FakeProc(
+        9428,
+        ["npx", "lighthouse", "https://example.com",
+         "--chrome-flags", "--user-data-dir=/tmp/other-chrome"],
+    )
+    other_port = _FakeProc(
+        9429,
+        ["npx", "lighthouse", "--port", "9222",
+         "--chrome-flags", f"--user-data-dir={profile}",
+         "https://example.com"],
+    )
+    lan = _FakeProc(
+        9430,
+        ["npx", "lighthouse", "--hostname", "10.0.0.5",
+         "--chrome-flags", f"--user-data-dir={profile}",
+         "https://example.com"],
+    )
+    debug_port = _FakeProc(
+        9431,
+        ["npx", "lighthouse", "https://example.com",
+         "--chrome-flags", "--remote-debugging-port=9333"],
+    )
+    no_pin = _FakeProc(
+        9432,
+        ["npx", "lighthouse", "https://example.com"],
+    )
+    bash_parent = _FakeProc(
+        9433,
+        ["/bin/bash", "-c",
+         f"npx lighthouse --chrome-flags=--user-data-dir={profile} "
+         "https://example.com"],
+    )
+    lease.acquire("human")
+    n = interrupt_unregistered_dock_cli(
+        processes=[
+            leftover, equals, grouped, camel, ephemeral, shebang,
+            relative, last_wins, other_jar, other_port, lan, debug_port,
+            no_pin, bash_parent,
+        ],
+        chromium_pid=9999,
+        owner_daemon_pid=9998,
+    )
+    assert n == 8
+    assert leftover.killed == 1
+    assert equals.killed == 1
+    assert grouped.killed == 1
+    assert camel.killed == 1
+    assert ephemeral.killed == 1
+    assert shebang.killed == 1
+    assert relative.killed == 1
+    assert last_wins.killed == 1
+    assert other_jar.killed == 0
+    assert other_port.killed == 0
+    assert lan.killed == 0
+    assert debug_port.killed == 0
+    assert no_pin.killed == 0
+    assert bash_parent.killed == 0
 
 
 def test_stop_reserved_calls_unregistered_interrupt(monkeypatch):

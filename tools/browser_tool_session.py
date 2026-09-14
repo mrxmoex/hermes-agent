@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import shutil
 import signal
 import socket
@@ -2077,6 +2078,43 @@ def _flag_value(tokens: List[str], keys: Tuple[str, ...]) -> Optional[str]:
     return found
 
 
+def _flag_value_allow_leading_dash(
+    tokens: List[str], keys: Tuple[str, ...],
+) -> Optional[str]:
+    """Like ``_flag_value`` but a following ``--switch`` is still a value.
+
+    lighthouse ``--chrome-flags "--user-data-dir=<dock>"`` /
+    ``--chrome-flags --user-data-dir=<dock>`` are Chrome switches, so
+    ``_flag_value`` treated them as missing. ``--`` still ends parse.
+    Last-wins when the flag repeats.
+    """
+    tokens = _leftover_flag_tokens(tokens)
+    found: Optional[str] = None
+    i = 0
+    n = len(tokens)
+    while i < n:
+        raw = str(tokens[i]) if tokens[i] is not None else ""
+        if raw == "--":
+            break
+        for key in keys:
+            if raw == key:
+                if i + 1 < n:
+                    nxt = str(tokens[i + 1])
+                    if nxt == "--":
+                        found = None
+                    else:
+                        found = nxt
+                        i += 1
+                else:
+                    found = None
+                break
+            if raw.startswith(key + "="):
+                found = raw.split("=", 1)[1]
+                break
+        i += 1
+    return found
+
+
 def _token_is_chrome_remote_interface(token: str) -> bool:
     """True when this token is the CRI CLI or its Node entry.
 
@@ -2361,6 +2399,14 @@ def _unregistered_cli_aims_at_dock(
     wins. Gateway cwd must not decide the pin. browser-use ``--profile``
     is a Chrome profile *name* and stays unknown.
     ``--autoConnect`` / no pin stays unknown.
+
+    lighthouse leftover launch pin is ``--chrome-flags=--user-data-dir=<dock>``
+    (finding 126). Official attach is still ``--port``. chrome-launcher
+    appends chrome-flags *after* its temp ``--user-data-dir``, so
+    Chromium last-wins the dock jar. ``--port=0`` / missing ``--port``
+    launch that Chrome. A set ``--port`` that is not this dock stays
+    another Chrome (do not guess an empty listen). LAN ``--hostname``
+    does not launch local Chrome.
     """
     env = environ or {}
     if _is_browser_use_invocation(tokens) and not _is_agent_browser_invocation(tokens):
@@ -2466,16 +2512,25 @@ def _unregistered_cli_aims_at_dock(
         # hostname is localhost. ``--port=0`` / missing ``--port`` launch
         # their own Chrome. LAN ``--hostname`` is another machine.
         # ``--port`` only — never ``-p`` (npm pin / CRI short port).
-        port_text = _flag_value(tokens, ("--port",))
-        if not port_text or not str(port_text).isdigit():
-            return False
-        port = int(port_text)
-        if not (1 <= port <= 65535):
-            return False
         host = _flag_value(tokens, ("--hostname",))
         if host and not _is_loopback_cdp_host(host):
             return False
-        return dock_port is not None and port == dock_port
+        port_text = _flag_value(tokens, ("--port",))
+        if port_text and str(port_text).isdigit():
+            port = int(port_text)
+            if 1 <= port <= 65535:
+                return dock_port is not None and port == dock_port
+        # Official leftover launch pin: ``--chrome-flags=--user-data-dir``.
+        # Finding 92 only checked ``--port``, so Take over left the
+        # launch-on-jar writer running on the cookie jar a human holds.
+        # chrome-launcher emits its temp dir *before* chrome-flags;
+        # Chromium last-wins the dock. ``--chromeFlags`` is yargs
+        # camelCase. A set non-dock ``--port`` stays another Chrome.
+        chrome_flags = _flag_value_allow_leading_dash(
+            tokens, ("--chrome-flags", "--chromeFlags"),
+        )
+        pinned = _user_data_dir_from_chrome_flags(chrome_flags)
+        return _leftover_profile_pin_aims_at_dock(pinned, profile, cwd)
     cdp = _cdp_arg_from_argv(tokens)
     if not cdp and _is_agent_browser_invocation(tokens):
         cdp = _agent_browser_connect_target(tokens)
@@ -2490,6 +2545,28 @@ def _unregistered_cli_aims_at_dock(
     if not pinned:
         pinned = (env.get("AGENT_BROWSER_PROFILE") or "").strip()
     return _leftover_profile_pin_aims_at_dock(pinned, profile, cwd)
+
+
+def _user_data_dir_from_chrome_flags(chrome_flags: Optional[str]) -> Optional[str]:
+    """``--user-data-dir`` inside lighthouse ``--chrome-flags``.
+
+    Official leftover is space-delimited Chrome switches. Lighthouse
+    ``parseChromeFlags`` also strips wrapping quotes around the whole
+    group (``execFile`` leftover). Chromium last-wins when the switch
+    repeats. ``--remote-debugging-port`` here is not leftover attach
+    (finding 92 is lighthouse ``--port``).
+    """
+    text = (chrome_flags or "").strip()
+    if len(text) >= 2 and text[0] in "'\"" and text[-1] == text[0]:
+        text = text[1:-1].strip()
+    if not text:
+        return None
+    try:
+        flag_tokens = shlex.split(text, posix=True)
+    except ValueError:
+        flag_tokens = text.split()
+    from tools.bot_desktop.browser import _chromium_switch_value
+    return _chromium_switch_value(flag_tokens, "user-data-dir")
 
 
 def _leftover_profile_pin_aims_at_dock(
