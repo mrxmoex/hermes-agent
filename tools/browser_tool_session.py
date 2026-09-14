@@ -5326,7 +5326,15 @@ def _remembered_dock_attach_port(*, exclude_session: Optional[str] = None) -> Op
     ``SingletonLock`` while memory still names chrome. Lock-listed
     persist then comes from this-jar inode hosts, not lock ports;
     do not let 172 prefer leftover file-named helpers over that
-    memory. Candidate order for leftover identity stays
+    memory. Finding 194: leftover identity can stamp a different
+    unique leftover listen into the persist file (finding 193).
+    Lock-listed is then sibling chrome while the persist file is
+    leftover CRI and ``DevToolsActivePort`` is leftover helpers.
+    Finding 172 preferred leftover DevTools because persist file
+    matched neither named nor listed. Hidden chrome that equals
+    lock-listed is chrome — keep it, including when leftover
+    already holds chrome's CDP socket (166) and live recover
+    misses. Candidate order for leftover identity stays
     file-then-memory (finding 169). ``exclude_session`` stays
     None when that session owns the lock pid (``--cdp`` would close
     its own browser). A holder of one candidate does not hide the
@@ -5403,11 +5411,25 @@ def _remembered_dock_attach_port(*, exclude_session: Optional[str] = None) -> Op
                         persist_file = _bd_browser.last_known_dock_cdp_port()
                     except Exception:
                         persist_file = None
+                    hidden = None
+                    try:
+                        hidden = _bd_browser.unique_lock_chrome_hidden_by_leftover_file(
+                            named, user_data_dir,
+                        )
+                    except Exception:
+                        hidden = None
                     if (
                         persist_file == named
                         or persist_file is None
                         or persist_file == listed
+                        or hidden == listed
                     ):
+                        # Finding 194: leftover persist unique
+                        # (193) is neither named leftover
+                        # DevTools nor lock-listed chrome.
+                        # Finding 172 then preferred leftover
+                        # helpers. Hidden chrome that equals
+                        # lock-listed is chrome.
                         prefer_named = False
             except Exception:
                 pass
