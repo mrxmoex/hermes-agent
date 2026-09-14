@@ -345,10 +345,12 @@ def _connect_hosts_for_listen_ip(ip: str) -> Tuple[str, ...]:
 
 
 def _listen_connect_hosts(pid: int, port: int) -> Tuple[str, ...]:
-    """Connect hosts for *port* from this pid's listens, else IPv4 then IPv6.
+    """Connect hosts for *port* from this pid's listens. Empty if none.
 
-    Unknown address (DevTools file, mocked ports, inode miss) may try both
-    families. A known ::1-only listen must not probe ``127.0.0.1``.
+    A stale ``DevToolsActivePort`` / explicit argv port plus a sibling
+    Chrome on that number used to fall back to ``127.0.0.1`` / ``::1``
+    and stamp the squat (finding 144). A known ::1-only listen must not
+    probe ``127.0.0.1``.
     """
     hosts: list[str] = []
     try:
@@ -361,9 +363,7 @@ def _listen_connect_hosts(pid: int, port: int) -> Tuple[str, ...]:
         for host in _connect_hosts_for_listen_ip(ip):
             if host not in hosts:
                 hosts.append(host)
-    if hosts:
-        return tuple(hosts)
-    return ("127.0.0.1", "::1")
+    return tuple(hosts)
 
 
 def _cdp_port_reachable(port: int, hosts: Tuple[str, ...]) -> bool:
@@ -444,10 +444,12 @@ def _recover_cdp_port_from_singleton(user_data_dir: str, pid: int) -> Optional[i
     """Port of the still-alive jar when ``DevToolsActivePort`` is gone.
 
     Persist sites can miss a human-first dock. ``SingletonLock`` still names
-    this profile's Chromium. Recover only that pid's explicit DevTools port,
-    or a *unique* loopback listen. Multiple specific loopbacks stay unknown
-    — do not stamp an arbitrary port. An unspecified extra
-    (``0.0.0.0`` / ``::``) next to one specific loopback is not ambiguity.
+    this profile's Chromium. Recover only that pid's explicit DevTools port
+    when this pid still listens on it, or a *unique* loopback listen.
+    Multiple specific loopbacks stay unknown — do not stamp an arbitrary
+    port. An unspecified extra (``0.0.0.0`` / ``::``) next to one specific
+    loopback is not ambiguity. A stale explicit port that a sibling Chrome
+    now occupies is not the dock.
     Cmdline ``--user-data-dir`` or ``CHROME_USER_DATA_DIR`` must name this
     ``user_data_dir`` so a recycled pid is not trusted. No HTTP (tab list
     is leftover observation).
@@ -459,9 +461,12 @@ def _recover_cdp_port_from_singleton(user_data_dir: str, pid: int) -> Optional[i
     ):
         return None
     explicit = _remote_debugging_port_from_cmdline(tokens)
-    if explicit is not None:
-        return explicit
     listens = _loopback_listen_ports_for_pid(pid)
+    # Argv can name a port this pid no longer holds. A sibling Chrome
+    # that occupied it must not become the dock (finding 144). Fall
+    # through to this pid's unique listen when the explicit port is stale.
+    if explicit is not None and explicit in listens:
+        return explicit
     if len(listens) == 1:
         return next(iter(listens))
     targets = {
@@ -481,10 +486,12 @@ def running_instance_cdp_port(user_data_dir: str, *, exclude_session: Optional[s
     """DevTools port of a Chromium currently running on ``user_data_dir``, or ``None``.
 
     Both files outlive a crashed or closed Chromium: ``SingletonLock`` is a symlink to ``host-pid`` and
-    ``DevToolsActivePort`` keeps the last port, so the pid must be alive AND the port must accept a
-    connection before it is trusted. When the port file is gone but the lock pid is still this
-    profile's Chromium, recover the port from that pid (explicit
-    ``--remote-debugging-port=N``, or a unique loopback listen). An instance
+    ``DevToolsActivePort`` keeps the last port, so the pid must be alive AND this pid must
+    still listen on that port AND the listen must accept a connection. A sibling
+    Chrome that reused the stale file port is not the dock. When the port file
+    is gone or stale but the lock pid is still this profile's Chromium, recover
+    the port from that pid (explicit ``--remote-debugging-port=N`` this pid
+    still listens on, or a unique loopback listen). An instance
     agent-browser launched for ``exclude_session`` itself is reported as ``None``:
     its daemon already owns that browser, and handing it ``--cdp`` would make it
     close the browser as a config change and then attach to the port that just died with it.
@@ -505,19 +512,24 @@ def running_instance_cdp_port(user_data_dir: str, *, exclude_session: Optional[s
             port_line = fh.readline().strip()
     except OSError:
         port_line = ""
+    port = None
     if port_line.isdigit():
-        port = int(port_line)
-    else:
+        candidate = int(port_line)
+        # File has no address and outlives a port switch. Trust it only
+        # when this pid still holds that listen — otherwise a sibling
+        # on the stale number is stamped as the dock (finding 144).
+        if candidate in _loopback_listen_ports_for_pid(pid):
+            hosts = _listen_connect_hosts(pid, candidate)
+            if hosts and _cdp_port_reachable(candidate, hosts):
+                port = candidate
+    if port is None:
         recovered = _recover_cdp_port_from_singleton(user_data_dir, pid)
-        if recovered is None:
+        if recovered is None or recovered not in _loopback_listen_ports_for_pid(pid):
+            return None
+        hosts = _listen_connect_hosts(pid, recovered)
+        if not hosts or not _cdp_port_reachable(recovered, hosts):
             return None
         port = recovered
-    # Port file has no address. Probe this pid's listen family so a
-    # ::1-only dock is not stamped as a sibling on 127.0.0.1:same
-    # (finding 81's recover path; the file path used to IPv4-first).
-    hosts = _listen_connect_hosts(pid, port)
-    if not _cdp_port_reachable(port, hosts):
-        return None
     try:
         if Path(user_data_dir).resolve() == profile_dir().resolve():
             remember_dock_cdp_port(port)

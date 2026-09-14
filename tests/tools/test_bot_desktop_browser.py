@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import os
 import socket
+import subprocess
+import sys
 from pathlib import Path
 
 from tools.bot_desktop import browser, runtime
@@ -91,6 +93,24 @@ def test_dock_command_keeps_a_profile_dir_that_contains_spaces():
 def _fake_running_instance(user_data_dir, pid: int, port: int) -> None:
     (user_data_dir / "DevToolsActivePort").write_text(f"{port}\n/devtools/browser/abc\n", encoding="utf-8")
     os.symlink(f"host-{pid}", user_data_dir / "SingletonLock")
+
+
+def _other_pid_loopback_listen():
+    """Sibling process that LISTENs on an ephemeral loopback port."""
+    return subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import socket, time\n"
+            "s = socket.socket()\n"
+            "s.bind(('127.0.0.1', 0))\n"
+            "s.listen(1)\n"
+            "print(s.getsockname()[1], flush=True)\n"
+            "time.sleep(30)\n",
+        ],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
 
 
 def test_running_instance_port_requires_live_pid_and_open_port(tmp_path):
@@ -705,6 +725,92 @@ def test_running_instance_recovers_spaced_user_data_dir(tmp_path, monkeypatch):
         assert browser.running_instance_cdp_port(str(tmp_path)) == port
     finally:
         listener.close()
+
+
+def test_devtools_file_does_not_stamp_sibling_listen(tmp_path):
+    """Stale DevToolsActivePort plus another Chrome on that port is not this jar.
+
+    ``_listen_connect_hosts`` used to fall back to 127.0.0.1 when this pid
+    no longer listened, so persist stamped the sibling as the dock.
+    """
+    child = _other_pid_loopback_listen()
+    try:
+        port = int(child.stdout.readline())
+        _fake_running_instance(tmp_path, os.getpid(), port)
+        assert port not in browser._loopback_listen_ports_for_pid(os.getpid())
+        assert port in browser._loopback_listen_ports_for_pid(child.pid)
+        assert browser.running_instance_cdp_port(str(tmp_path)) is None
+    finally:
+        child.kill()
+        child.wait(timeout=5)
+
+
+def test_stale_devtools_file_recovers_this_jar_listen(tmp_path, monkeypatch):
+    """File names a sibling port; this jar still listens elsewhere — recover that."""
+    child = _other_pid_loopback_listen()
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    ours = listener.getsockname()[1]
+    try:
+        stale = int(child.stdout.readline())
+        _fake_running_instance(tmp_path, os.getpid(), stale)
+        monkeypatch.setattr(
+            browser,
+            "_chromium_cmdline_tokens",
+            lambda pid: ["chrome", f"--user-data-dir={tmp_path}", "--remote-debugging-port=0"],
+        )
+        monkeypatch.setattr(browser, "_loopback_listen_ports_for_pid", lambda pid: {ours})
+        monkeypatch.setattr(
+            browser, "_loopback_listen_targets_for_pid", lambda pid: {("127.0.0.1", ours)},
+        )
+        assert browser.running_instance_cdp_port(str(tmp_path)) == ours
+    finally:
+        listener.close()
+        child.kill()
+        child.wait(timeout=5)
+
+
+def test_recover_explicit_does_not_stamp_sibling_listen(tmp_path, monkeypatch):
+    """File gone + argv ``--remote-debugging-port`` of a sibling is not the dock."""
+    child = _other_pid_loopback_listen()
+    try:
+        port = int(child.stdout.readline())
+        os.symlink(f"host-{os.getpid()}", tmp_path / "SingletonLock")
+        monkeypatch.setattr(
+            browser,
+            "_chromium_cmdline_tokens",
+            lambda pid: [
+                "chrome",
+                f"--user-data-dir={tmp_path}",
+                f"--remote-debugging-port={port}",
+            ],
+        )
+        monkeypatch.setattr(browser, "_loopback_listen_ports_for_pid", lambda pid: set())
+        monkeypatch.setattr(browser, "_loopback_listen_targets_for_pid", lambda pid: set())
+        assert browser.running_instance_cdp_port(str(tmp_path)) is None
+    finally:
+        child.kill()
+        child.wait(timeout=5)
+
+
+def test_persist_does_not_stamp_stale_devtools_sibling(tmp_path, monkeypatch):
+    """Human-first persist must not write a sibling Chrome's port as this jar."""
+    child = _other_pid_loopback_listen()
+    profile = tmp_path / "browser-profile"
+    profile.mkdir()
+    try:
+        port = int(child.stdout.readline())
+        _fake_running_instance(profile, os.getpid(), port)
+        monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path)
+        monkeypatch.setattr(browser, "profile_dir", lambda: profile)
+        monkeypatch.setattr(browser, "_configured_cdp_override_url", lambda: "")
+        monkeypatch.setattr(browser, "_chromium_cmdline_tokens", lambda pid: ["chrome"])
+        assert browser.persist_live_dock_cdp_port() is None
+        assert browser.last_known_dock_cdp_port() is None
+    finally:
+        child.kill()
+        child.wait(timeout=5)
 
 
 def test_persist_stamps_configured_port_when_recover_is_ambiguous(tmp_path, monkeypatch):
