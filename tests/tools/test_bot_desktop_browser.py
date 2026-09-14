@@ -737,6 +737,52 @@ def test_running_instance_recovers_spaced_user_data_dir(tmp_path, monkeypatch):
         listener.close()
 
 
+def test_materialized_lock_file_stamps_this_jar(tmp_path, monkeypatch):
+    """Finding 160: a regular-file SingletonLock is still this jar.
+
+    Chromium writes a ``host-pid`` symlink. ``cp -L`` / overlay copies
+    materialize that text as a file, ``readlink`` fails, and persist
+    treated a live dock as another Chrome. Recycled file text that
+    names another profile stays unknown. A directory is not a lock.
+    """
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(8)
+    port = listener.getsockname()[1]
+    (tmp_path / "DevToolsActivePort").write_text(
+        f"{port}\n/devtools/browser/abc\n", encoding="utf-8",
+    )
+    (tmp_path / "SingletonLock").write_text(f"host-{os.getpid()}\n", encoding="utf-8")
+    monkeypatch.setattr(
+        browser,
+        "_chromium_cmdline_tokens",
+        lambda pid: ["chrome", f"--user-data-dir={tmp_path}"],
+    )
+    try:
+        assert not (tmp_path / "SingletonLock").is_symlink()
+        assert browser._lock_pid(str(tmp_path)) == os.getpid()
+        assert browser.running_instance_cdp_port(str(tmp_path)) == port
+
+        monkeypatch.setattr(
+            browser,
+            "_chromium_cmdline_tokens",
+            lambda pid: ["chrome", "--user-data-dir=/other/profile"],
+        )
+        assert browser.running_instance_cdp_port(str(tmp_path)) is None
+
+        (tmp_path / "SingletonLock").unlink()
+        (tmp_path / "SingletonLock").mkdir()
+        monkeypatch.setattr(
+            browser,
+            "_chromium_cmdline_tokens",
+            lambda pid: ["chrome", f"--user-data-dir={tmp_path}"],
+        )
+        assert browser._lock_pid(str(tmp_path)) is None
+        assert browser.running_instance_cdp_port(str(tmp_path)) is None
+    finally:
+        listener.close()
+
+
 def test_devtools_file_does_not_stamp_recycled_lock_pid(tmp_path, monkeypatch):
     """Finding 158: DevToolsActivePort trusted a recycled lock pid.
 

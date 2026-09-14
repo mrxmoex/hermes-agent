@@ -421,11 +421,34 @@ def _pid_names_this_jar(
     )
 
 
+def _lock_pid_text(user_data_dir: str) -> Optional[str]:
+    """Chromium ``host-pid`` from SingletonLock — symlink or materialized file.
+
+    Official Chromium on Linux writes a symlink. ``cp -L``, some
+    rsync/backup tools, and overlay copies materialize the target as a
+    regular file. ``readlink`` then fails and persist / leftover
+    identity treated a live dock as another Chrome (finding 160).
+    Do not follow a symlink with ``open`` (dangling / other-file).
+    Callers still require the pid alive and to name this jar.
+    """
+    path = os.path.join(user_data_dir, "SingletonLock")
+    try:
+        return os.readlink(path)
+    except OSError:
+        pass
+    try:
+        if os.path.islink(path) or not os.path.isfile(path):
+            return None
+        with open(path, encoding="utf-8") as fh:
+            return fh.readline(256).strip() or None
+    except OSError:
+        return None
+
+
 def _lock_pid(user_data_dir: str) -> Optional[int]:
     """Alive SingletonLock pid for ``user_data_dir``, or ``None``."""
-    try:
-        target = os.readlink(os.path.join(user_data_dir, "SingletonLock"))
-    except OSError:
+    target = _lock_pid_text(user_data_dir)
+    if not target:
         return None
     _host, _, pid_text = target.rpartition("-")
     if not pid_text.isdigit():
@@ -507,12 +530,14 @@ def _recover_cdp_port_from_singleton(user_data_dir: str, pid: int) -> Optional[i
 def running_instance_cdp_port(user_data_dir: str, *, exclude_session: Optional[str] = None) -> Optional[int]:
     """DevTools port of a Chromium currently running on ``user_data_dir``, or ``None``.
 
-    Both files outlive a crashed or closed Chromium: ``SingletonLock`` is a symlink to ``host-pid`` and
-    ``DevToolsActivePort`` keeps the last port, so the pid must be alive AND still
-    name this ``user-data-dir`` AND this pid must still listen on that port AND
-    the listen must accept a connection. A sibling Chrome that reused the stale
-    file port, or a recycled lock pid that does not name this jar, is not the
-    dock. When the port file is gone or stale but the lock pid is still this
+    Both files outlive a crashed or closed Chromium: ``SingletonLock`` is a
+    ``host-pid`` symlink (or a materialized regular file of the same
+    text — finding 160) and ``DevToolsActivePort`` keeps the last port, so
+    the pid must be alive AND still name this ``user-data-dir`` AND this
+    pid must still listen on that port AND the listen must accept a
+    connection. A sibling Chrome that reused the stale file port, or a
+    recycled lock pid that does not name this jar, is not the dock. When
+    the port file is gone or stale but the lock pid is still this
     profile's Chromium, recover the port from that pid (explicit
     ``--remote-debugging-port=N`` this pid still listens on, or a unique
     loopback listen). An instance
@@ -579,7 +604,8 @@ def _this_jar_chromium_pid(user_data_dir: Optional[str] = None) -> Optional[int]
     / ``CHROME_USER_DATA_DIR`` is not this ``user-data-dir``. Take over
     used to skip whatever pid the lock pointed at (finding 157), so a
     leftover writer that inherited a crashed chrome's lock survived.
-    A dead lock pid is not Chromium. No HTTP.
+    A dead lock pid is not Chromium. A materialized regular-file lock
+    is still this jar when the pid names it (finding 160). No HTTP.
     """
     if user_data_dir is None:
         user_data_dir = str(profile_dir())
@@ -605,9 +631,9 @@ def _this_jar_listens_on_port(want: Optional[int]) -> bool:
     *specific* loopbacks — do not guess among them. A caller that
     already named ``want`` (leftover ``--cdp-url`` / vault attach /
     ``/browser connect``) is not a guess. Stamp only if SingletonLock's
-    pid holds that listen and cmdline names this ``user-data-dir``.
-    A sibling on 9222, empty inodes, and a recycled pid are not.
-    No HTTP.
+    pid (symlink or materialized file) holds that listen and cmdline
+    names this ``user-data-dir``. A sibling on 9222, empty inodes, a
+    recycled pid, and a missing lock are not. No HTTP.
     """
     if not isinstance(want, int) or not (1 <= want <= 65535):
         return False
@@ -626,9 +652,9 @@ def _configured_listen_port_for_this_jar() -> Optional[int]:
 
     Unique-listen recover stays unknown when Chromium has several *specific*
     loopbacks. The operator override still names the DevTools port. Stamp
-    it only if SingletonLock's pid holds that listen and cmdline names
-    this ``user-data-dir`` — a config pointing at another Chrome on 9222
-    must not become the dock. No HTTP.
+    it only if SingletonLock's pid (symlink or materialized file) holds
+    that listen and cmdline names this ``user-data-dir`` — a config
+    pointing at another Chrome on 9222 must not become the dock. No HTTP.
     """
     raw = _configured_cdp_override_url()
     if not raw:

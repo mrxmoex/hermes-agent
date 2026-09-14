@@ -4351,6 +4351,7 @@ def _singleton_lock_pid(user_data_dir: str) -> Optional[int]:
     writer that inherited a crashed chrome's lock (or a recycled pid)
     then survived Take over. Recover already refuses a recycled pid
     whose cmdline / ``CHROME_USER_DATA_DIR`` is not this jar.
+    A materialized regular-file lock still names this jar (finding 160).
     """
     try:
         from tools.bot_desktop import browser as _bd_browser
