@@ -3339,6 +3339,7 @@ def test_missing_lock_first_persist_does_not_stamp_parent_chrome_as_leftover(
         40141, str(tmp_path),
     ) == 9333
     assert bdb.lock_listed_persist_port() == 9333
+    assert bdb._this_jar_chromium_pid(str(tmp_path)) == 4240
     assert bdb.running_instance_cdp_port(str(tmp_path)) == 9333
     assert bdb.last_known_dock_cdp_port() == 9333
     assert _last_dock_cdp_port.get(hermes_home_key()) == 9333
@@ -3372,6 +3373,105 @@ def test_missing_lock_first_persist_does_not_stamp_parent_chrome_as_leftover(
     assert _remembered_dock_attach_port() == 9333
     assert bdb.last_known_dock_cdp_port() == 9333
     assert _last_dock_cdp_port.get(hermes_home_key()) == 9333
+
+
+def test_missing_lock_does_not_hide_parent_chrome_pid_from_owner_session(
+    monkeypatch, tmp_path,
+):
+    """Finding 187: leftover helpers hid chrome pid after lock unlink.
+
+    Skip-kill / owner-session used unique leftover-file holders.
+    Several leftover DevTools helpers made chrome unknown, so Take
+    over tree-killed the daemon that spawned the Browser a human
+    is typing into. Unique holder of hidden chrome is that pid.
+    Leftover-only several stays unknown.
+    """
+    import tools.bot_desktop.browser as bdb
+    from tools.browser_tool_session import _singleton_lock_pid
+
+    leftover_helpers = {4242, 4243}
+
+    monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path)
+    monkeypatch.setattr(bdb, "profile_dir", lambda: tmp_path)
+    monkeypatch.setattr(bdb, "_lock_pid", lambda d: None)
+    monkeypatch.setattr(
+        bdb,
+        "_chromium_cmdline_tokens",
+        lambda pid: ["chrome", f"--user-data-dir={tmp_path}"],
+    )
+    monkeypatch.setattr(
+        bdb, "_loopback_listen_ports_for_pid",
+        lambda pid: {9333} if pid == 4240 else (
+            {40141} if pid in leftover_helpers else set()
+        ),
+    )
+    monkeypatch.setattr(
+        bdb, "_loopback_listen_targets_for_pid",
+        lambda pid: {("::1", 9333)} if pid == 4240 else (
+            {("::1", 40141)} if pid in leftover_helpers else set()
+        ),
+    )
+    monkeypatch.setattr(bdb, "_recover_cdp_port_from_singleton", lambda *a, **k: None)
+    monkeypatch.setattr(
+        bdb,
+        "_proc_ppid",
+        lambda pid: 4240 if pid in leftover_helpers else None,
+    )
+    monkeypatch.setattr(
+        bdb,
+        "_launched_by_session",
+        lambda pid: "h_review" if pid == 4240 else None,
+    )
+
+    def _inodes(port):
+        if port == 40141:
+            return {7: {"::1"}}
+        if port == 9333:
+            return {8: {"::1"}}
+        return {}
+
+    def _holders(want):
+        out = {}
+        if 7 in want:
+            out[4242] = {7}
+            out[4243] = {7}
+        if 8 in want:
+            out[4240] = {8}
+        return out
+
+    monkeypatch.setattr(bdb, "_loopback_listen_inodes_for_port", _inodes)
+    monkeypatch.setattr(bdb, "_pids_holding_socket_inodes", _holders)
+    monkeypatch.setattr(
+        bdb,
+        "_cdp_port_reachable",
+        lambda port, hosts: port in (9333, 40141) and "::1" in hosts,
+    )
+    monkeypatch.setattr(bdb, "_configured_cdp_override_url", lambda: "")
+    (tmp_path / "DevToolsActivePort").write_text(
+        "40141\n/devtools/browser/abc\n", encoding="utf-8",
+    )
+    assert bdb._this_jar_chromium_pid(str(tmp_path)) == 4240
+    assert bdb.shared_chromium_owner_session() == "h_review"
+    assert _singleton_lock_pid(str(tmp_path)) == 4240
+
+    def _leftover_only(want):
+        out = {}
+        if 7 in want:
+            out[4240] = {7}
+            out[4242] = {7}
+            out[4243] = {7}
+        return out
+
+    monkeypatch.setattr(bdb, "_pids_holding_socket_inodes", _leftover_only)
+    monkeypatch.setattr(
+        bdb, "_loopback_listen_ports_for_pid",
+        lambda pid: {40141} if pid == 4240 else (
+            {40141} if pid in leftover_helpers else set()
+        ),
+    )
+    assert bdb._this_jar_chromium_pid(str(tmp_path)) is None
+    assert bdb.shared_chromium_owner_session() is None
+    assert _singleton_lock_pid(str(tmp_path)) is None
 
 
 def test_stale_lock_pid_is_not_this_jar_chromium(monkeypatch, tmp_path):

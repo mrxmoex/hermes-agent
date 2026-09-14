@@ -1228,9 +1228,15 @@ def _this_jar_chromium_pid(user_data_dir: Optional[str] = None) -> Optional[int]
     used to skip whatever pid the lock pointed at (finding 157), so a
     leftover writer that inherited a crashed chrome's lock survived.
     A dead lock pid is not Chromium. A materialized regular-file lock
-    is still this jar when the pid names it (finding 160). A missing
+    is still this jar when the pid names it (finding 160).     A missing
     lock still names this jar when DevToolsActivePort and a unique
-    this-jar listen agree (finding 161). No HTTP.
+    this-jar listen agree (finding 161). Finding 187: leftover
+    ``DevToolsActivePort`` helpers are several holders, so 161
+    stays unknown. Findings 185 / 186 already named unique chrome
+    on another listen. Skip-kill / ``shared_chromium_owner_session``
+    still need that pid — Take over otherwise tree-kills the
+    daemon that spawned chrome. Unique holder of that hidden
+    chrome is not a guess among leftover helpers. No HTTP.
     """
     if user_data_dir is None:
         user_data_dir = str(profile_dir())
@@ -1244,7 +1250,22 @@ def _this_jar_chromium_pid(user_data_dir: Optional[str] = None) -> Optional[int]
         return None
     if not port_line.isdigit():
         return None
-    holder = _scan_this_jar_listen_holder(int(port_line), user_data_dir)
+    file_port = int(port_line)
+    holder = _scan_this_jar_listen_holder(file_port, user_data_dir)
+    if holder is not None:
+        return holder[0]
+    # Finding 187: leftover file helpers are several holders.
+    # 185 / 186 already named unique chrome. Skip-kill and
+    # owner-session still need that pid.
+    try:
+        hidden = unique_lock_chrome_hidden_by_leftover_file(
+            file_port, user_data_dir,
+        )
+    except Exception:
+        hidden = None
+    if hidden is None:
+        return None
+    holder = _scan_this_jar_listen_holder(hidden, user_data_dir)
     return holder[0] if holder is not None else None
 
 
@@ -1496,6 +1517,9 @@ def shared_chromium_owner_session(user_data_dir: Optional[str] = None) -> Option
     an agent-browser daemon is then leftover-CDP cleanup, not a Browser kill.
     When this equals a session's ``session_name``, that daemon *is* the parent
     of the page the human is typing into and must stay reserved.
+    Finding 187: overlay can unlink SingletonLock while leftover
+    DevTools helpers are several holders. ``_this_jar_chromium_pid``
+    must still find chrome so this is not ``None`` for the owner.
     """
     if user_data_dir is None:
         user_data_dir = str(profile_dir())
