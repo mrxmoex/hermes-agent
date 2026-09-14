@@ -6018,7 +6018,6 @@ def test_unregistered_playwright_ini_and_pwtest_global_killed_on_takeover():
     missing_cwd = _FakeProc(
         11010,
         ["playwright-cli", "--config", "pw-dock.ini"],
-        {"HOME": str(home_other)},
     )
     pwtest_no_cwd = _FakeProc(
         11011,
