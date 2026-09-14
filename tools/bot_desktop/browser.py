@@ -577,6 +577,24 @@ def _proc_cwd(pid: int) -> Optional[Path]:
         return None
 
 
+def _proc_ppid(pid: int) -> Optional[int]:
+    """Parent pid of *pid* from ``/proc``, or ``None``.
+
+    Finding 186: leftover this-jar helpers that dropped chrome's
+    DevTools fd still have chrome as parent. That pid is not a
+    scan of every this-jar process. pid 1 is not chrome.
+    """
+    try:
+        with open(f"/proc/{pid}/status", encoding="utf-8") as fh:
+            ppid = next(
+                (int(line.split()[1]) for line in fh if line.startswith("PPid:")),
+                0,
+            )
+    except (OSError, ValueError):
+        return None
+    return ppid if ppid > 1 else None
+
+
 def _resolve_user_data_dir(path: str, *, cwd: Optional[Path] = None) -> Path:
     """Resolve a cmdline ``--user-data-dir`` against *cwd* when relative.
 
@@ -752,6 +770,9 @@ def lock_listed_persist_port(user_data_dir: Optional[str] = None) -> Optional[in
     the lock is already gone. Leftover holders that inherited
     chrome's DevTools fd still name chrome's other unique
     listen — that is the first persist, not those helpers.
+    Finding 186: leftover this-jar helpers that dropped that
+    fd still have chrome as parent. That parent's other
+    unique listen is the first persist.
     No HTTP.
     """
     if user_data_dir is None:
@@ -808,6 +829,8 @@ def lock_listed_persist_port(user_data_dir: Optional[str] = None) -> Optional[in
     # / Take over can unlink SingletonLock before the first live
     # stamp. 184 needs that pid; leftover holders that inherited
     # chrome's DevTools fd still name chrome's other unique listen.
+    # Finding 186: leftover helpers that dropped that fd still
+    # have chrome as parent.
     if not candidates:
         hidden = _hidden_leftover_holder_chrome()
         if hidden is not None:
@@ -898,8 +921,11 @@ def unique_lock_chrome_hidden_by_leftover_file(
     lock ports stay unknown (do not guess). File unique is finding
     170 / 172 advertisement. Finding 185: when the lock is gone,
     leftover holders that inherited chrome's DevTools fd still
-    advertise that unique listen. Helpers that are not leftover
-    holders of *named* stay finding 86. No HTTP.
+    advertise that unique listen. Finding 186: leftover this-jar
+    helpers that are no longer leftover holders of chrome still
+    have chrome as parent. That parent's other unique listen is
+    chrome. Helpers whose parent does not name this jar stay
+    finding 86. No HTTP.
     """
     if user_data_dir is None:
         user_data_dir = str(profile_dir())
@@ -929,18 +955,34 @@ def unique_lock_chrome_hidden_by_leftover_file(
         return chrome[0] if len(chrome) == 1 else None
     # Finding 185: lock is gone. Leftover holders that inherited
     # chrome's DevTools fd still advertise chrome's other unique
-    # listen. Several other unique holder ports stay unknown
-    # (do not guess). Helpers that are not leftover holders of
-    # *named* stay finding 86. No HTTP.
+    # listen. Finding 186: leftover this-jar helpers that dropped
+    # that fd still have chrome as parent. Several other unique
+    # holder ports stay unknown (do not guess). A parent that
+    # does not name this jar stays finding 86. No HTTP.
     chrome = []
     try:
         holders = _this_jar_listen_holders(named, user_data_dir)
     except Exception:
         return None
-    seen: set[int] = set()
+    scan_pids: list[int] = []
     for holder_pid, _hosts in holders:
+        if holder_pid not in scan_pids:
+            scan_pids.append(holder_pid)
         try:
-            ports = _loopback_listen_ports_for_pid(holder_pid)
+            ppid = _proc_ppid(holder_pid)
+        except Exception:
+            ppid = None
+        if (
+            isinstance(ppid, int)
+            and ppid > 1
+            and ppid not in scan_pids
+            and _pid_names_this_jar(ppid, user_data_dir)
+        ):
+            scan_pids.append(ppid)
+    seen: set[int] = set()
+    for scan_pid in scan_pids:
+        try:
+            ports = _loopback_listen_ports_for_pid(scan_pid)
         except Exception:
             continue
         for port in ports:
@@ -1346,7 +1388,10 @@ def persist_live_dock_cdp_port() -> Optional[int]:
     is the first persist, not those helpers.
     Finding 185: overlay can unlink the lock before that
     first stamp. Leftover-holder unique chrome is still
-    the first persist.
+    the first persist. Finding 186: leftover this-jar
+    helpers that dropped chrome's inherited fd still
+    have chrome as parent. That parent's other unique
+    listen is the first persist.
     """
     try:
         port = running_instance_cdp_port(str(profile_dir()))

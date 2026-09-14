@@ -2216,6 +2216,258 @@ def test_missing_lock_first_persist_does_not_stamp_leftover_helpers(
     assert _remembered_dock_attach_port() == 40141
 
 
+def test_missing_lock_first_persist_does_not_stamp_parent_chrome_as_leftover(
+    tmp_path, monkeypatch,
+):
+    """Finding 186: leftover helpers that dropped chrome's DevTools fd.
+
+    Finding 185 scans leftover holders' listens. Overlay can unlink
+    ``SingletonLock`` before any persist stamp. Helpers that dropped
+    chrome's inherited fd no longer advertise that unique listen, so
+    finding 185 misses and file TCP / finding 164 stamped leftover
+    ``DevToolsActivePort`` helpers as the first persist. Those helpers
+    still have chrome as PPID. That parent's other unique this-jar
+    listen is chrome. A parent that does not name this jar stays
+    finding 86. Several unique parent ports stay unknown. Unique+unique
+    stays file. 9222 and the other family stay unknown.
+    """
+    from hermes_constants import hermes_home_key
+    from tools.browser_tool_session import (
+        _cdp_url_is_bot_desktop_browser,
+        _last_dock_cdp_port,
+        _remembered_dock_attach_port,
+        _reset_dock_port_memory_for_tests,
+    )
+
+    leftover_helpers = {4242, 4243}
+
+    monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path)
+    monkeypatch.setattr(browser, "profile_dir", lambda: tmp_path)
+    monkeypatch.setattr(browser, "_lock_pid", lambda d: None)
+    monkeypatch.setattr(
+        browser,
+        "_chromium_cmdline_tokens",
+        lambda pid: ["chrome", f"--user-data-dir={tmp_path}"],
+    )
+    monkeypatch.setattr(
+        browser, "_loopback_listen_ports_for_pid",
+        lambda pid: {9333} if pid == 4240 else (
+            {40141} if pid in leftover_helpers else set()
+        ),
+    )
+    monkeypatch.setattr(
+        browser, "_loopback_listen_targets_for_pid",
+        lambda pid: {("::1", 9333)} if pid == 4240 else (
+            {("::1", 40141)} if pid in leftover_helpers else set()
+        ),
+    )
+    monkeypatch.setattr(browser, "_recover_cdp_port_from_singleton", lambda *a, **k: None)
+    monkeypatch.setattr(
+        browser,
+        "_proc_ppid",
+        lambda pid: 4240 if pid in leftover_helpers else None,
+    )
+
+    def _inodes(port):
+        if port == 40141:
+            return {7: {"::1"}}
+        if port == 9333:
+            return {8: {"::1"}}
+        return {}
+
+    def _holders(want):
+        out = {}
+        if 7 in want:
+            out[4242] = {7}
+            out[4243] = {7}
+        if 8 in want:
+            out[4240] = {8}
+        return out
+
+    monkeypatch.setattr(browser, "_loopback_listen_inodes_for_port", _inodes)
+    monkeypatch.setattr(browser, "_pids_holding_socket_inodes", _holders)
+    monkeypatch.setattr(
+        browser,
+        "_cdp_port_reachable",
+        lambda port, hosts: port in (9333, 40141) and "::1" in hosts,
+    )
+    monkeypatch.setattr(
+        browser, "_configured_cdp_override_url",
+        lambda: "http://[::1]:40141",
+    )
+    _reset_dock_port_memory_for_tests()
+    (tmp_path / "DevToolsActivePort").write_text(
+        "40141\n/devtools/browser/abc\n", encoding="utf-8",
+    )
+    assert browser.last_known_dock_cdp_port() is None
+    assert _last_dock_cdp_port.get(hermes_home_key()) is None
+    assert browser.unique_lock_chrome_hidden_by_leftover_file(
+        40141, str(tmp_path),
+    ) == 9333
+    assert browser.lock_listed_persist_port() == 9333
+    assert browser.file_named_dock_listen_port() == 40141
+    assert browser.running_instance_cdp_port(str(tmp_path)) == 9333
+    assert browser.last_known_dock_cdp_port() == 9333
+    assert _last_dock_cdp_port.get(hermes_home_key()) == 9333
+    assert _remembered_dock_attach_port() == 9333
+    assert browser.persist_live_dock_cdp_port() == 9333
+    assert (tmp_path / "dock-cdp-port").read_text(encoding="utf-8") == "9333"
+    assert _cdp_url_is_bot_desktop_browser("http://[::1]:40141") is True
+    assert _cdp_url_is_bot_desktop_browser("http://[::1]:9333") is True
+    assert _cdp_url_is_bot_desktop_browser("http://127.0.0.1:40141") is False
+    assert _cdp_url_is_bot_desktop_browser("9222") is False
+    assert _remembered_dock_attach_port() == 9333
+
+    monkeypatch.setattr(
+        browser,
+        "_cdp_port_reachable",
+        lambda port, hosts: port == 40141 and "::1" in hosts,
+    )
+    _reset_dock_port_memory_for_tests()
+    (tmp_path / "DevToolsActivePort").write_text(
+        "40141\n/devtools/browser/abc\n", encoding="utf-8",
+    )
+    assert browser.lock_listed_persist_port() == 9333
+    assert browser.running_instance_cdp_port(str(tmp_path)) is None
+    assert browser.last_known_dock_cdp_port() is None
+    assert _remembered_dock_attach_port() == 9333
+
+    monkeypatch.setattr(
+        browser,
+        "_cdp_port_reachable",
+        lambda port, hosts: port in (9333, 40141) and "::1" in hosts,
+    )
+    monkeypatch.setattr(
+        browser,
+        "_proc_ppid",
+        lambda pid: 4240 if pid == 4242 else (4250 if pid == 4243 else None),
+    )
+    monkeypatch.setattr(
+        browser, "_loopback_listen_ports_for_pid",
+        lambda pid: {9333} if pid == 4240 else (
+            {9444} if pid == 4250 else (
+                {40141} if pid in leftover_helpers else set()
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        browser, "_loopback_listen_targets_for_pid",
+        lambda pid: {("::1", 9333)} if pid == 4240 else (
+            {("::1", 9444)} if pid == 4250 else (
+                {("::1", 40141)} if pid in leftover_helpers else set()
+            )
+        ),
+    )
+
+    def _several_parent_inodes(port):
+        if port == 40141:
+            return {7: {"::1"}}
+        if port == 9333:
+            return {8: {"::1"}}
+        if port == 9444:
+            return {9: {"::1"}}
+        return {}
+
+    def _several_parent_holders(want):
+        out = {}
+        if 7 in want:
+            out[4242] = {7}
+            out[4243] = {7}
+        if 8 in want:
+            out[4240] = {8}
+        if 9 in want:
+            out[4250] = {9}
+        return out
+
+    monkeypatch.setattr(browser, "_loopback_listen_inodes_for_port", _several_parent_inodes)
+    monkeypatch.setattr(browser, "_pids_holding_socket_inodes", _several_parent_holders)
+    _reset_dock_port_memory_for_tests()
+    (tmp_path / "DevToolsActivePort").write_text(
+        "40141\n/devtools/browser/abc\n", encoding="utf-8",
+    )
+    assert browser.unique_lock_chrome_hidden_by_leftover_file(
+        40141, str(tmp_path),
+    ) is None
+    assert browser.lock_listed_persist_port() is None
+
+    monkeypatch.setattr(
+        browser,
+        "_proc_ppid",
+        lambda pid: 9999 if pid in leftover_helpers else None,
+    )
+    monkeypatch.setattr(
+        browser,
+        "_chromium_cmdline_tokens",
+        lambda pid: (
+            ["chrome", "--user-data-dir=/other"]
+            if pid == 9999
+            else ["chrome", f"--user-data-dir={tmp_path}"]
+        ),
+    )
+    monkeypatch.setattr(browser, "_loopback_listen_inodes_for_port", _inodes)
+    monkeypatch.setattr(browser, "_pids_holding_socket_inodes", _holders)
+    monkeypatch.setattr(
+        browser, "_loopback_listen_ports_for_pid",
+        lambda pid: {9333} if pid == 4240 else (
+            {40141} if pid in leftover_helpers else set()
+        ),
+    )
+    monkeypatch.setattr(
+        browser, "_loopback_listen_targets_for_pid",
+        lambda pid: {("::1", 9333)} if pid == 4240 else (
+            {("::1", 40141)} if pid in leftover_helpers else set()
+        ),
+    )
+    _reset_dock_port_memory_for_tests()
+    (tmp_path / "DevToolsActivePort").write_text(
+        "40141\n/devtools/browser/abc\n", encoding="utf-8",
+    )
+    assert browser.unique_lock_chrome_hidden_by_leftover_file(
+        40141, str(tmp_path),
+    ) is None
+    assert browser.lock_listed_persist_port() is None
+    assert browser.running_instance_cdp_port(str(tmp_path)) == 40141
+    assert _remembered_dock_attach_port() == 40141
+
+    def _unique_unique(want):
+        out = {}
+        if 7 in want:
+            out[4242] = {7}
+        if 8 in want:
+            out[4240] = {8}
+        return out
+
+    monkeypatch.setattr(browser, "_pids_holding_socket_inodes", _unique_unique)
+    monkeypatch.setattr(
+        browser,
+        "_chromium_cmdline_tokens",
+        lambda pid: ["chrome", f"--user-data-dir={tmp_path}"],
+    )
+    monkeypatch.setattr(
+        browser, "_loopback_listen_ports_for_pid",
+        lambda pid: {9333, 40141} if pid == 4240 else set(),
+    )
+    monkeypatch.setattr(
+        browser, "_loopback_listen_targets_for_pid",
+        lambda pid: {("::1", 9333), ("::1", 40141)} if pid == 4240 else set(),
+    )
+    monkeypatch.setattr(
+        browser,
+        "_cdp_port_reachable",
+        lambda port, hosts: port in (9333, 40141) and "::1" in hosts,
+    )
+    _reset_dock_port_memory_for_tests()
+    (tmp_path / "DevToolsActivePort").write_text(
+        "40141\n/devtools/browser/abc\n", encoding="utf-8",
+    )
+    assert browser.unique_lock_chrome_hidden_by_leftover_file(
+        40141, str(tmp_path),
+    ) is None
+    assert browser.lock_listed_persist_port() is None
+    assert browser.running_instance_cdp_port(str(tmp_path)) == 40141
+    assert _remembered_dock_attach_port() == 40141
+
+
 def test_lock_pid_dead_family_does_not_shop_holder_squat(tmp_path, monkeypatch):
     """Finding 165: lock pid still lists the file port; its family is dead.
 
