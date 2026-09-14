@@ -986,10 +986,21 @@ def _unique_this_jar_parent(
     Unique leftover parent among leftover holders' leftover
     parents that are not leftover file holders is leftover
     daemon. Several leftover parents that are not leftover
-    file holders stay unknown. Leftover CRI that does not
-    name this jar stays 86. Leftover CRI inherited chrome
-    CDP plus leftover python leftover persist stays 85.
-    Leftover fill great-grandchild leftover persist leftover-
+    file holders stay unknown. Finding 205: leftover daemon
+    also holds leftover ``DevToolsActivePort``. leftover
+    fill's leftover parent leftover daemon is leftover
+    file holder, so leftover-outside is empty and leftover-
+    inherited never ran. Unique leftover parent among
+    leftover holders' leftover parents whose leftover
+    parent is not a leftover file holder is leftover
+    daemon — leftover-file-holder leftover parent of
+    leftover fill, not a leftover-holder grandparent
+    walk. Several leftover-file-holder leftover parents
+    whose leftover parent is not a leftover file holder
+    stay unknown. Leftover CRI that does not name this
+    jar stays 86. Leftover CRI inherited chrome CDP plus
+    leftover python leftover persist stays 85. Leftover
+    fill great-grandchild leftover persist leftover-
     shared stays 85.
     """
     parents: list[int] = []
@@ -1008,7 +1019,21 @@ def _unique_this_jar_parent(
     if len(parents) == 1:
         return parents[0]
     outside = [parent for parent in parents if parent not in holder_pids]
-    return outside[0] if len(outside) == 1 else None
+    if len(outside) == 1:
+        return outside[0]
+    if outside:
+        return None
+    roots: list[int] = []
+    for parent in parents:
+        try:
+            ppid = _proc_ppid(parent)
+        except Exception:
+            ppid = None
+        if isinstance(ppid, int) and ppid > 1 and ppid in holder_pids:
+            continue
+        if parent not in roots:
+            roots.append(parent)
+    return roots[0] if len(roots) == 1 else None
 
 
 def _this_jar_descendant_of_chrome(
@@ -1440,7 +1465,13 @@ def unique_lock_chrome_hidden_by_leftover_file(
     leftover-file parent was several and leftover-inherited
     never ran. Unique leftover parent among leftover holders'
     leftover parents that are not leftover file holders is
-    leftover daemon. Leftover CRI that does not name this
+    leftover daemon. Finding 205: leftover daemon also
+    holds leftover DevTools, so leftover fill's leftover
+    parent leftover daemon is leftover file holder and
+    leftover-outside is empty. Unique leftover parent
+    among leftover holders' leftover parents whose leftover
+    parent is not a leftover file holder is leftover
+    daemon. Leftover CRI that does not name this
     jar stays 86. Leftover CRI inherited chrome CDP plus
     leftover python leftover persist stays 85.
     Finding 185: when the lock is gone,
