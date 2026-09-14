@@ -411,6 +411,45 @@ def test_agent_browser_invocation_is_token_match_not_substring():
     assert not _is_browser_use_invocation(
         ["uv", "tool", "run", "-m", "browser_use.cli"])
     assert not _is_browser_use_invocation(["uvx", "--with", "ruff", "ruff"])
+    # Finding 152: official leftover MCP server is
+    # ``python -m browser_use.mcp`` (``browser_use/mcp/__main__.py``).
+    # ``browser_use.mcp.client`` / ``browser_mcp`` / a random
+    # ``mcp/__main__.py`` are not leftover writers.
+    _bu_mcp = (
+        "/home/x/.local/lib/python3.12/site-packages/browser_use/mcp/__main__.py"
+    )
+    _bu_mcp_server = (
+        "/home/x/.local/lib/python3.12/site-packages/browser_use/mcp/server.py"
+    )
+    assert _is_browser_use_invocation(
+        ["python3", "-m", "browser_use.mcp", "--cdp-url",
+         "http://127.0.0.1:9333"])
+    assert _is_browser_use_invocation(
+        ["python3", "-m", "browser_use.mcp.server"])
+    assert _is_browser_use_invocation(
+        ["python3", "-m", "browser_use.mcp.cli_mcp"])
+    assert _is_browser_use_invocation(["python3", _bu_mcp])
+    assert _is_browser_use_invocation(["python3", _bu_mcp_server])
+    assert _is_browser_use_invocation(
+        ["python3",
+         "/home/x/.local/lib/python3.12/site-packages/browser_use/mcp/cli_mcp.py"])
+    assert _is_browser_use_invocation(
+        ["uv", "run", "-m", "browser_use.mcp", "--cdp-url",
+         "http://127.0.0.1:9333"])
+    assert _is_browser_use_invocation(
+        ["uvx", "--from", "browser-use", "python", "-m",
+         "browser_use.mcp"])
+    assert not _is_browser_use_invocation(
+        ["python3", "-m", "browser_use.mcp.client"])
+    assert not _is_browser_use_invocation(
+        ["python3", "-m", "browser_use.mcp.controller"])
+    assert not _is_browser_use_invocation(
+        ["python3", "-m", "browser_use.mcp_unrelated"])
+    assert not _is_browser_use_invocation(["python3", "-m", "browser_mcp"])
+    assert not _is_browser_use_invocation(["python3", "/tmp/mcp/__main__.py"])
+    assert not _is_browser_use_invocation(["python3", "/tmp/server.py"])
+    assert not _is_browser_use_invocation(
+        ["uv", "run", "pytest", "-m", "browser_use.mcp"])
     # Official leftover attach daemon (finding 148). Finding 78 / 110
     # matched browser-use / python -m browser_use. ensure_daemon
     # leaves python -m browser_harness.daemon with BU_CDP_* frozen.
@@ -6786,6 +6825,121 @@ def test_unregistered_uv_run_module_and_with_killed_on_takeover():
     assert sibling.killed == 0
     assert bash_parent.killed == 0
     assert n == 5
+
+
+def test_unregistered_browser_use_mcp_module_killed_on_takeover():
+    """Official leftover ``python -m browser_use.mcp`` hid leftover attach.
+
+    Findings 149–151 matched ``browser_use`` / ``browser_use.cli``.
+    Official leftover MCP is ``python -m browser_use.mcp``
+    (``Usage:`` in ``browser_use/mcp/__main__.py``), plus
+    ``browser_use.mcp.server`` / ``browser_use.mcp.cli_mcp``. Take
+    over left those writers typing into the jar. ``browser_use.mcp.client``,
+    ``browser_mcp``, a random ``mcp/__main__.py``, another Chrome,
+    ``uv run pytest -m``, and the bash ``-c`` parent stay up.
+    """
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    bdb.remember_dock_cdp_port(9333)
+    mcp_main = (
+        "/home/x/.local/lib/python3.12/site-packages/browser_use/mcp/__main__.py"
+    )
+    leftover = _FakeProc(
+        11160,
+        ["python3", "-m", "browser_use.mcp", "--cdp-url",
+         "http://127.0.0.1:9333"],
+    )
+    via_server = _FakeProc(
+        11161,
+        ["python3", "-m", "browser_use.mcp.server"],
+        {"BU_CDP_URL": "http://127.0.0.1:9333"},
+    )
+    via_cli_mcp = _FakeProc(
+        11162,
+        ["python3", "-m", "browser_use.mcp.cli_mcp", "--cdp-url",
+         "http://127.0.0.1:9333"],
+    )
+    via_path = _FakeProc(
+        11163,
+        ["python3", mcp_main, "--cdp-url", "http://127.0.0.1:9333"],
+    )
+    via_uv = _FakeProc(
+        11164,
+        ["uv", "run", "-m", "browser_use.mcp", "--cdp-url",
+         "http://127.0.0.1:9333"],
+    )
+    via_uvx = _FakeProc(
+        11165,
+        ["uvx", "--from", "browser-use", "python", "-m",
+         "browser_use.mcp", "--cdp-url", "http://127.0.0.1:9333"],
+    )
+    via_server_path = _FakeProc(
+        11166,
+        ["python3",
+         "/home/x/.local/lib/python3.12/site-packages/browser_use/mcp/server.py",
+         "--cdp-url", "http://127.0.0.1:9333"],
+    )
+    client = _FakeProc(
+        11167,
+        ["python3", "-m", "browser_use.mcp.client", "--cdp-url",
+         "http://127.0.0.1:9333"],
+    )
+    other_mod = _FakeProc(
+        11168,
+        ["python3", "-m", "browser_mcp", "--cdp-url",
+         "http://127.0.0.1:9333"],
+    )
+    near_miss = _FakeProc(
+        11169,
+        ["python3", "-m", "browser_use.mcp_unrelated", "--cdp-url",
+         "http://127.0.0.1:9333"],
+    )
+    random_main = _FakeProc(
+        11170,
+        ["python3", "/tmp/mcp/__main__.py", "--cdp-url",
+         "http://127.0.0.1:9333"],
+    )
+    sibling = _FakeProc(
+        11171,
+        ["python3", "-m", "browser_use.mcp", "--cdp-url",
+         "http://127.0.0.1:9222"],
+    )
+    pytest_marker = _FakeProc(
+        11172,
+        ["uv", "run", "pytest", "-m", "browser_use.mcp", "--cdp-url",
+         "http://127.0.0.1:9333"],
+    )
+    bash_parent = _FakeProc(
+        11173,
+        ["/bin/bash", "-c",
+         "python3 -m browser_use.mcp --cdp-url http://127.0.0.1:9333"],
+    )
+    lease.acquire("human")
+    n = interrupt_unregistered_dock_cli(
+        processes=[
+            leftover, via_server, via_cli_mcp, via_path, via_uv, via_uvx,
+            via_server_path, client, other_mod, near_miss, random_main,
+            sibling, pytest_marker, bash_parent,
+        ],
+        chromium_pid=9999,
+        owner_daemon_pid=9998,
+    )
+    assert leftover.killed == 1
+    assert via_server.killed == 1
+    assert via_cli_mcp.killed == 1
+    assert via_path.killed == 1
+    assert via_uv.killed == 1
+    assert via_uvx.killed == 1
+    assert via_server_path.killed == 1
+    assert client.killed == 0
+    assert other_mod.killed == 0
+    assert near_miss.killed == 0
+    assert random_main.killed == 0
+    assert sibling.killed == 0
+    assert pytest_marker.killed == 0
+    assert bash_parent.killed == 0
+    assert n == 7
 
 
 def test_stop_reserved_calls_unregistered_interrupt(monkeypatch):

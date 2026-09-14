@@ -2174,6 +2174,23 @@ _BROWSER_USE_SCRIPT_NAMES = (
     "bu",
     "browser-use-tui",
 )
+# Official leftover ``python -m`` names. ``browser_use.mcp`` is the
+# documented MCP server (``browser_use/mcp/__main__.py`` →
+# ``browser_use.mcp.server.main``). ``browser_use.mcp.cli_mcp`` is
+# ``browser-use --cli-mcp``. ``browser_use.mcp.client`` /
+# ``browser_use.mcp.controller`` are not leftover writers.
+_BROWSER_USE_MODULE_NAMES = (
+    "browser_use",
+    "browser_use.cli",
+    "browser_use.mcp",
+    "browser_use.mcp.server",
+    "browser_use.mcp.cli_mcp",
+)
+_BROWSER_USE_MCP_PATH_NAMES = frozenset({
+    "__main__.py",
+    "server.py",
+    "cli_mcp.py",
+})
 
 
 def _pep508_requirement_name(token: str) -> str:
@@ -2295,27 +2312,38 @@ def _uv_run_module(tokens: List[str]) -> Optional[str]:
 
 
 def _token_is_browser_use_module(token: str) -> bool:
-    """True when this token is official leftover ``browser_use`` / ``.cli``.
+    """True when this token is official leftover ``browser_use`` / MCP.
 
     The PyPI package's console script is ``browser-use``; its import
     name is ``browser_use`` and the entry is ``browser_use.cli:main``.
     Finding 79 matched ``python -m browser_use`` and missed
     ``python -m browser_use.cli`` / ``…/browser_use/cli.py``, so Take
-    over left that writer typing into the jar. A path named
-    ``browser_use`` is a random script. ``browser_use_cli`` /
-    ``browser_usage`` / a random ``cli.py`` are not.
+    over left that writer typing into the jar. Finding 152: official
+    leftover MCP is ``python -m browser_use.mcp`` (``Usage:`` in
+    ``browser_use/mcp/__main__.py``), plus ``browser_use.mcp.server``
+    and ``browser_use.mcp.cli_mcp``. A path named ``browser_use`` is
+    a random script. ``browser_use_cli`` / ``browser_usage`` /
+    ``browser_use.mcp.client`` / a random ``cli.py`` /
+    ``…/mcp/__main__.py`` are not.
     """
     raw = (token or "").strip().strip("\"'")
     if not raw:
         return False
     if "/" not in raw and "\\" not in raw:
-        return _token_basename_is(raw, "browser_use") or _token_basename_is(
-            raw, "browser_use.cli",
+        return any(
+            _token_basename_is(raw, name) for name in _BROWSER_USE_MODULE_NAMES
         )
     path = Path(raw)
-    if path.name.lower() != "cli.py":
+    name = path.name.lower()
+    if name == "cli.py":
+        return "browser_use" in [p.lower() for p in path.parts]
+    if name not in _BROWSER_USE_MCP_PATH_NAMES:
         return False
-    return "browser_use" in [p.lower() for p in path.parts]
+    parent = path.parent
+    return (
+        parent.name.lower() == "mcp"
+        and parent.parent.name.lower() == "browser_use"
+    )
 
 
 def _is_browser_use_invocation(tokens: List[str]) -> bool:
@@ -2334,7 +2362,9 @@ def _is_browser_use_invocation(tokens: List[str]) -> bool:
     browser_use.cli`` / ``uv run python -m browser_use.cli``.
     Finding 151: leftover ``uv run -m`` / ``--module`` (uv's own
     flag) and leftover ``uvx --with`` / ``uv run --with`` hid the
-    attach because those value flags were not consumed.
+    attach because those value flags were not consumed. Finding
+    152: leftover ``python -m browser_use.mcp`` / ``.server`` /
+    ``.cli_mcp`` (official MCP server) hid leftover attach.
     """
     if not tokens:
         return False
