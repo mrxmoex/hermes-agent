@@ -365,6 +365,29 @@ def test_agent_browser_invocation_is_token_match_not_substring():
         ["npx", "-p", "lighthouse@latest", "lighthouse", "--port", "9333"])
     assert _is_lighthouse_invocation(
         ["npx", "-p", "lighthouse", "--port", "9333"])
+    # Workspace selectors used to become the package/command (finding 104).
+    assert _is_lighthouse_invocation(
+        ["npx", "--workspace", "web", "lighthouse", "--port", "9333"])
+    assert _is_lighthouse_invocation(
+        ["npx", "-w", "web", "lighthouse", "--port", "9333"])
+    assert _is_lighthouse_invocation(
+        ["npm", "-w", "@scope/web", "exec", "lighthouse", "--port", "9333"])
+    assert _is_lighthouse_invocation(
+        ["npm", "--workspace", "@scope/web", "exec", "lighthouse", "--port", "9333"])
+    assert _is_lighthouse_invocation(
+        ["yarn", "workspace", "web", "exec", "lighthouse", "--port", "9333"])
+    assert _is_lighthouse_invocation(
+        ["yarn", "workspace", "web", "exec", "--", "lighthouse", "--port", "9333"])
+    assert _is_chrome_devtools_mcp_invocation(
+        ["yarn", "workspace", "web", "exec", "chrome-devtools-mcp",
+         "--browserUrl", "http://127.0.0.1:9333"])
+    # pnpx ``-w`` is boolean ``--workspace-root`` — do not swallow the binary.
+    assert _is_lighthouse_invocation(
+        ["pnpx", "-w", "lighthouse", "--port", "9333"])
+    assert not _is_lighthouse_invocation(
+        ["yarn", "workspace", "web", "run", "lighthouse"])
+    assert not _is_lighthouse_invocation(
+        ["yarn", "workspaces", "foreach", "exec", "lighthouse"])
     assert _is_lighthouse_invocation(
         ["node", "/home/x/node_modules/lighthouse/cli/index.js",
          "--port=9333", "https://example.com"])
@@ -1227,6 +1250,98 @@ def test_unregistered_npx_prefix_dock_cli_killed_on_takeover():
     assert playwright.killed == 1
     assert agent_browser.killed == 1
     assert pin_no_binary.killed == 1
+    assert other.killed == 0
+    assert bash_parent.killed == 0
+
+
+def test_unregistered_workspace_selector_dock_cli_killed_on_takeover():
+    """Workspace name hid leftover unwrap (npx --workspace / npm -w / yarn).
+
+    ``npx --workspace web lighthouse --port <dock>`` treated ``web`` as
+    the package. ``npm -w`` is the documented workspace short flag
+    finding 102's ``--workspace`` skip missed. ``yarn workspace web
+    exec`` never entered leftover exec. pnpx ``-w lighthouse`` must
+    stay a leftover — pnpm ``-w`` is boolean. ``yarn workspace run``
+    is not an invocation.
+    """
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    bdb.remember_dock_cdp_port(9333)
+    npx_ws = _FakeProc(
+        9800,
+        ["npx", "--workspace", "web", "lighthouse",
+         "--port", "9333", "https://example.com"],
+    )
+    npx_w = _FakeProc(
+        9801,
+        ["npx", "-w", "web", "lighthouse",
+         "--port", "9333", "https://example.com"],
+    )
+    npm_w = _FakeProc(
+        9802,
+        ["npm", "-w", "@scope/web", "exec", "lighthouse",
+         "--port", "9333", "https://example.com"],
+    )
+    yarn_ws = _FakeProc(
+        9803,
+        ["yarn", "workspace", "web", "exec", "lighthouse",
+         "--port", "9333", "https://example.com"],
+    )
+    yarn_after_sep = _FakeProc(
+        9804,
+        ["yarn", "workspace", "web", "exec", "--", "lighthouse",
+         "--port", "9333", "https://example.com"],
+    )
+    mcp = _FakeProc(
+        9805,
+        ["yarn", "workspace", "web", "exec", "chrome-devtools-mcp",
+         "--browserUrl", "http://127.0.0.1:9333"],
+    )
+    pnpx_boolean_w = _FakeProc(
+        9806,
+        ["pnpx", "-w", "lighthouse",
+         "--port", "9333", "https://example.com"],
+    )
+    run_script = _FakeProc(
+        9807,
+        ["yarn", "workspace", "web", "run", "lighthouse",
+         "--port", "9333", "https://example.com"],
+    )
+    foreach = _FakeProc(
+        9808,
+        ["yarn", "workspaces", "foreach", "exec", "lighthouse",
+         "--port", "9333", "https://example.com"],
+    )
+    other = _FakeProc(
+        9809,
+        ["npx", "--workspace", "web", "lighthouse",
+         "--port", "9222", "https://example.com"],
+    )
+    bash_parent = _FakeProc(
+        9810,
+        ["/bin/bash", "-c",
+         "yarn workspace web exec lighthouse --port 9333"],
+    )
+    lease.acquire("human")
+    n = interrupt_unregistered_dock_cli(
+        processes=[
+            npx_ws, npx_w, npm_w, yarn_ws, yarn_after_sep, mcp,
+            pnpx_boolean_w, run_script, foreach, other, bash_parent,
+        ],
+        chromium_pid=9999,
+        owner_daemon_pid=9998,
+    )
+    assert n == 7
+    assert npx_ws.killed == 1
+    assert npx_w.killed == 1
+    assert npm_w.killed == 1
+    assert yarn_ws.killed == 1
+    assert yarn_after_sep.killed == 1
+    assert mcp.killed == 1
+    assert pnpx_boolean_w.killed == 1
+    assert run_script.killed == 0
+    assert foreach.killed == 0
     assert other.killed == 0
     assert bash_parent.killed == 0
 

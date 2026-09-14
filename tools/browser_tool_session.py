@@ -1125,18 +1125,25 @@ _LAUNCHER_VALUE_FLAGS = frozenset({"--from"})
 # every workspace-dir writer. Equals form (``--dir=/tmp``) already
 # skipped as a flag. Do not put ``-p`` here — that is npm's package pin.
 _PACKAGE_EXEC_VALUE_FLAGS = frozenset({
-    "--dir", "-C", "--prefix", "--cwd", "--filter", "--workspace",
+    "--dir", "-C", "--prefix", "--cwd", "--filter", "--workspace", "-w",
 })
 _BUN_VALUE_FLAGS = frozenset({"--cwd"})
 # npx / pnpx / bunx. ``--prefix /tmp lighthouse`` used to see ``/tmp`` as
-# the package (finding 103). Do not put ``-p`` / ``--package`` here —
-# ``npx -p lighthouse --port 9333`` (no binary repeat) matches the pin.
-_NPX_VALUE_FLAGS = frozenset({"--prefix", "--cwd"})
+# the package (finding 103). ``--workspace web`` is the same shape
+# (finding 104). Do not put ``-p`` / ``--package`` here — ``npx -p
+# lighthouse --port 9333`` (no binary repeat) matches the pin. Do not
+# put ``-w`` here globally — pnpx ``-w`` is boolean ``--workspace-root``
+# and would swallow the binary. ``npx -w`` is npm's workspace pin and
+# is added only for argv0 ``npx``.
+_NPX_VALUE_FLAGS = frozenset({"--prefix", "--cwd", "--workspace"})
 
 
 def _npx_package_tokens(tokens: List[str]) -> List[str]:
-    """Operands after ``npx`` / ``pnpx`` / ``bunx``, prefix/cwd skipped."""
-    return _first_non_flag_tokens(tokens, value_flags=_NPX_VALUE_FLAGS)
+    """Operands after ``npx`` / ``pnpx`` / ``bunx``, prefix/cwd/workspace skipped."""
+    flags = _NPX_VALUE_FLAGS
+    if tokens and _launcher_basename(tokens[0]) == "npx":
+        flags = _NPX_VALUE_FLAGS | {"-w"}
+    return _first_non_flag_tokens(tokens, value_flags=flags)
 
 
 def _first_non_flag_tokens(
@@ -1183,8 +1190,11 @@ def _package_exec_parts(
     / ``npm install`` / ``yarn add`` are not invocations. ``npm x`` is
     ``npm exec``. ``--package`` / ``-p`` before a bare ``--`` are npm's
     package pins, not the child's ``-p`` port. ``--dir`` / ``-C`` /
-    ``--prefix`` / ``--cwd`` / ``--filter`` take a value — do not treat
-    that path as the command (finding 102).
+    ``--prefix`` / ``--cwd`` / ``--filter`` / ``--workspace`` / ``-w``
+    take a value — do not treat that selector as the command (findings
+    102, 104). ``yarn workspace <name> exec`` is the leftover writer
+    ``yarn exec`` misses. ``yarn workspace <name> run`` /
+    ``yarn workspaces foreach`` are not leftover exec.
     """
     if not tokens:
         return None
@@ -1198,11 +1208,16 @@ def _package_exec_parts(
     if not rest:
         return None
     sub = rest[0]
-    if name0 == "npm" and sub == "x":
-        pass
+    if name0 == "yarn" and sub == "workspace":
+        if len(rest) < 3 or rest[2] not in _PACKAGE_EXEC_SUBCOMMANDS:
+            return None
+        operands = rest[3:]
+    elif name0 == "npm" and sub == "x":
+        operands = rest[1:]
     elif sub not in _PACKAGE_EXEC_SUBCOMMANDS:
         return None
-    operands = rest[1:]
+    else:
+        operands = rest[1:]
     if operands and operands[0] == "--":
         operands = operands[1:]
     flag_pkgs: List[str] = []
@@ -1315,6 +1330,7 @@ def _package_exec_child_argv(tokens: List[str]) -> Optional[List[str]]:
     reserved = _PACKAGE_EXEC_SUBCOMMANDS | ({"x"} if name0 == "npm" else set())
     i = 1
     saw_sub = False
+    skip_workspace_name = False
     while i < len(tokens):
         raw = str(tokens[i]) if tokens[i] is not None else ""
         if raw == "--":
@@ -1334,6 +1350,14 @@ def _package_exec_child_argv(tokens: List[str]) -> Optional[List[str]]:
             i += 1
             continue
         if not saw_sub:
+            if name0 == "yarn" and raw == "workspace" and not skip_workspace_name:
+                skip_workspace_name = True
+                i += 1
+                continue
+            if skip_workspace_name:
+                skip_workspace_name = False
+                i += 1
+                continue
             if _is_package_exec_sub(name0, raw):
                 saw_sub = True
                 i += 1
