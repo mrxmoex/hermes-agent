@@ -3,6 +3,8 @@ status). Bodies are rebound onto server.py's globals at install time (method_ctx
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from .method_ctx import HandlerRegistry, bind_module
 
 _registry = HandlerRegistry()
@@ -112,6 +114,64 @@ def _cdp_swap_blocked_by_human() -> str | None:
         return cdp_swap_blocked_by_human()
     except Exception:
         return None
+
+
+def _browser_manage_owner_home(params: dict):
+    """HERMES_HOME for ``browser.manage``: explicit profile, else the live session.
+
+    TUI / Desktop send ``session_id``, not ``profile``. After a multiplex /
+    bot-session turn the process home is the launch profile. Swap fence,
+    persist, and override lookup must follow the session's bot home —
+    ``@_profile_scoped`` alone is not enough because clients never send
+    ``profile``. Unrecorded owner (no session, no profile) stays ambient.
+    """
+    if not isinstance(params, dict):
+        return None
+    profile = params.get("profile")
+    if isinstance(profile, str) and profile.strip():
+        return _profile_home(profile)
+    sid = params.get("session_id") or ""
+    if not sid:
+        return None
+    home = (_sessions.get(sid) or {}).get("profile_home")
+    if not home:
+        return None
+    try:
+        resolved = Path(home).resolve()
+    except OSError:
+        return None
+    try:
+        if resolved == Path(_hermes_home).resolve():
+            return None
+    except OSError:
+        pass
+    return resolved
+
+
+def _browser_manage(rid, params: dict) -> dict:
+    """Swap fence + persist + override lookup follow the session owner home."""
+    try:
+        home = _browser_manage_owner_home(params)
+    except FileNotFoundError as e:
+        return _err(rid, 4064, str(e))
+    token = set_hermes_home_override(home) if home is not None else None
+    try:
+        return _browser_manage_unscoped(rid, params)
+    finally:
+        if token is not None:
+            reset_hermes_home_override(token)
+
+
+def _browser_manage_unscoped(rid, params: dict) -> dict:
+    action = params.get("action", "status")
+    if action == "status":
+        url = _resolve_browser_cdp_url()
+        return _ok(rid, {"connected": bool(url), "url": url})
+    if action == "disconnect":
+        return _browser_disconnect(rid)
+    if action == "connect":
+        return _browser_connect(rid, params)
+    return _err(rid, 4015, f"unknown action: {action}")
 
 
 def _browser_connect(rid, params: dict) -> dict:
