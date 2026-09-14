@@ -946,13 +946,46 @@ def _unique_this_jar_parent(
     return parents[0] if len(parents) == 1 else None
 
 
+def _this_jar_descendant_of_chrome(
+    holder: int, chrome_pid: int, *, hops: int = 4,
+) -> bool:
+    """True when *holder*'s PPID chain reaches chrome within *hops*.
+
+    Finding 190: Chromium zygote forks GPU / utility / renderer
+    children that inherit chrome's CDP listen. Those pids name this
+    jar but their parent is zygote, not chrome. Walking PPID of
+    holders already on that listen is not a scan of every ``/proc``
+    this-jar pid and not a leftover-holder grandparent walk.
+    """
+    if not isinstance(holder, int) or holder <= 1:
+        return False
+    if holder == chrome_pid:
+        return True
+    seen: Set[int] = set()
+    pid = holder
+    for _ in range(hops):
+        if pid in seen or pid <= 1:
+            return False
+        seen.add(pid)
+        try:
+            ppid = _proc_ppid(pid)
+        except Exception:
+            return False
+        if not isinstance(ppid, int) or ppid <= 1:
+            return False
+        if ppid == chrome_pid:
+            return True
+        pid = ppid
+    return False
+
+
 def _leftover_or_chrome_family_holds(
     port: int,
     leftover_pids: Set[int],
     chrome_pid: int,
     user_data_dir: str,
 ) -> bool:
-    """True when *port* is chrome plus leftover and/or chrome's children.
+    """True when *port* is chrome plus leftover and/or chrome's family.
 
     Finding 188: leftover helpers that inherited chrome's unique CDP
     listen are this-jar inode holders of that port — holders equal
@@ -961,7 +994,9 @@ def _leftover_or_chrome_family_holds(
     jar, and leftover clients are often connect-only (inode only on
     ``DevToolsActivePort``). Holders are then chrome plus this-jar
     children of chrome; leftover file holders need not hold the
-    listen. An unrelated this-jar holder is not chrome's family.
+    listen. Finding 190: zygote-spawned grandchildren inherit the
+    same listen; their PPID is zygote, not chrome. An unrelated
+    this-jar holder is not chrome's family.
     """
     holders = _this_jar_holder_pids(port, user_data_dir)
     if chrome_pid not in holders:
@@ -969,11 +1004,7 @@ def _leftover_or_chrome_family_holds(
     for holder in holders:
         if holder == chrome_pid or holder in leftover_pids:
             continue
-        try:
-            ppid = _proc_ppid(holder)
-        except Exception:
-            return False
-        if ppid != chrome_pid:
+        if not _this_jar_descendant_of_chrome(holder, chrome_pid):
             return False
     return True
 
@@ -993,8 +1024,10 @@ def _leftover_inherited_chrome_listen(
     DevTools. Finding 189: leftover-shared equality missed when
     chrome's children also hold that listen, or leftover is
     connect-only. Exactly one other listen whose this-jar holders
-    are chrome plus leftover and/or chrome's this-jar children is
-    not a guess among ports. Several such listens stay unknown (85).
+    are chrome plus leftover and/or chrome's this-jar family is
+    not a guess among ports. Finding 190: zygote grandchildren
+    that inherit that listen are still that family. Several such
+    listens stay unknown (85).
     """
     if not leftover_pids or not isinstance(chrome_pid, int) or chrome_pid <= 1:
         return None
@@ -1043,7 +1076,9 @@ def unique_lock_chrome_hidden_by_leftover_file(
     and leftover clients often only connect to DevTools — they
     are not inode holders of chrome. Chrome plus this-jar
     children of chrome is still chrome; leftover need not hold
-    that listen. Several such listens stay unknown. No HTTP.
+    that listen. Finding 190: zygote grandchildren that inherit
+    that listen are still chrome's family. Several such listens
+    stay unknown. No HTTP.
     """
     if user_data_dir is None:
         user_data_dir = str(profile_dir())
@@ -1090,7 +1125,8 @@ def unique_lock_chrome_hidden_by_leftover_file(
     # leftover that inherited chrome's unique listen make n==1
     # miss; leftover-shared with that parent is still chrome.
     # Finding 189: leftover connect-only plus chrome's children
-    # on that listen is the same class.
+    # on that listen is the same class. Finding 190: zygote
+    # grandchildren on that listen are still chrome's family.
     chrome = []
     scan_pids: list[int] = []
     for holder_pid in leftover_pids:
