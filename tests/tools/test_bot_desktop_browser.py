@@ -6022,6 +6022,7 @@ def test_leftover_fill_and_cri_devtools_grandchild_persist_does_not_hide_sibling
             out[leftover_cri] = {7}
         if 9 in want:
             out[leftover_py] = {9}
+            out[leftover_cri] = out.get(leftover_cri, set()) | {9}
         return out
 
     monkeypatch.setattr(browser, "_pids_holding_socket_inodes", _leftover_only)
@@ -6037,8 +6038,10 @@ def test_leftover_fill_and_cri_devtools_grandchild_persist_does_not_hide_sibling
     )
     monkeypatch.setattr(
         browser, "_loopback_listen_ports_for_pid",
-        lambda pid: {40141} if pid in {leftover_fill, leftover_cri} else (
-            {18888} if pid == leftover_py else set()
+        lambda pid: {40141, 18888} if pid == leftover_cri else (
+            {40141} if pid == leftover_fill else (
+                {18888} if pid == leftover_py else set()
+            )
         ),
     )
     monkeypatch.setattr(
