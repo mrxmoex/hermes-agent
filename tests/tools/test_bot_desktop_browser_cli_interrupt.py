@@ -1320,6 +1320,70 @@ def test_unregistered_python_module_browser_use_killed_on_takeover():
     assert bash_parent.killed == 0
 
 
+def test_unregistered_cli_whatwg_ipv4_shorthand_killed_on_takeover():
+    """``--cdp-url http://127.1:9333`` hid leftover attach.
+
+    Finding 72 recognized 127/8 and IPv4-mapped hosts via ``ipaddress``.
+    Chromium / leftover CLIs also accept WHATWG dotted shorthand
+    (``127.1``, ``0``, ``2130706433``). Those never extracted a port, so
+    Take over left the writer typing into the jar. LAN shorthand and
+    another loopback port stay up.
+    """
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    bdb.remember_dock_cdp_port(9333)
+    leftover = _FakeProc(
+        8640,
+        ["python3", "-m", "browser_use", "--cdp-url",
+         "http://127.1:9333", "exec"],
+    )
+    three = _FakeProc(
+        8641,
+        ["python3", "-m", "browser_use", "--cdp-url",
+         "http://127.0.1:9333", "exec"],
+    )
+    zero = _FakeProc(
+        8642,
+        ["python3", "-m", "browser_use", "--cdp-url",
+         "http://0:9333", "exec"],
+    )
+    packed = _FakeProc(
+        8643,
+        ["lighthouse", "https://example.com", "--port", "9333",
+         "--hostname", "127.1"],
+    )
+    mapped = _FakeProc(
+        8646,
+        ["python3", "-m", "browser_use", "--cdp-url",
+         "ws://[::ffff:127.1]:9333/devtools/browser/x", "exec"],
+    )
+    other = _FakeProc(
+        8644,
+        ["python3", "-m", "browser_use", "--cdp-url",
+         "http://127.1:9222", "exec"],
+    )
+    lan = _FakeProc(
+        8645,
+        ["python3", "-m", "browser_use", "--cdp-url",
+         "http://10.1:9333", "exec"],
+    )
+    lease.acquire("human")
+    n = interrupt_unregistered_dock_cli(
+        processes=[leftover, three, zero, packed, mapped, other, lan],
+        chromium_pid=9999,
+        owner_daemon_pid=9998,
+    )
+    assert n == 5
+    assert leftover.killed == 1
+    assert three.killed == 1
+    assert zero.killed == 1
+    assert packed.killed == 1
+    assert mapped.killed == 1
+    assert other.killed == 0
+    assert lan.killed == 0
+
+
 def test_unregistered_cli_uses_session_owner_home_after_multiplex(tmp_path):
     """``interrupt_unregistered_dock_cli()`` used ambient ``human_holds()``.
 

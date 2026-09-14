@@ -749,6 +749,74 @@ def _ip_is_this_machine_loopback(addr) -> bool:
     return bool(mapped and (mapped.is_loopback or mapped.is_unspecified))
 
 
+# Last-part width for 1..4 dotted decimal IPv4 pieces (WHATWG).
+_IPV4_LAST_PART_LIMIT = (0xFFFFFFFF, 0xFFFFFF, 0xFFFF, 0xFF)
+
+
+def _parse_decimal_ipv4(text: str):
+    """WHATWG decimal IPv4, including dotted shorthand. No octal / hex.
+
+    Chromium and leftover CLIs accept ``http://127.1:9333`` /
+    ``http://0:9333`` as 127.0.0.1 / 0.0.0.0. ``ipaddress`` does not, so
+    leftover identity treated those as another Chrome (admit None) on
+    the jar a human is typing into. LAN shorthand (``10.1``) stays LAN.
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    parts = raw.split(".")
+    n = len(parts)
+    if n < 1 or n > 4:
+        return None
+    values: list[int] = []
+    for i, part in enumerate(parts):
+        if not part or not part.isascii() or not part.isdigit():
+            return None
+        try:
+            value = int(part, 10)
+        except ValueError:
+            return None
+        limit = 0xFF if i < n - 1 else _IPV4_LAST_PART_LIMIT[n - 1]
+        if value > limit:
+            return None
+        values.append(value)
+    if n == 1:
+        packed = values[0]
+    elif n == 2:
+        packed = (values[0] << 24) | values[1]
+    elif n == 3:
+        packed = (values[0] << 24) | (values[1] << 16) | values[2]
+    else:
+        packed = (values[0] << 24) | (values[1] << 16) | (values[2] << 8) | values[3]
+    return ipaddress.IPv4Address(packed)
+
+
+def _parse_cdp_ip(text: str):
+    """Parse a CDP host as an IP, including WHATWG IPv4 shorthand.
+
+    ``ipaddress`` first (127/8, ``::1``, ``::ffff:127.0.0.1``). Then
+    dotted / 32-bit decimal shorthand and IPv4-mapped ``::ffff:127.1``.
+    Hostnames stay ``None`` — no DNS.
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    try:
+        return ipaddress.ip_address(raw)
+    except ValueError:
+        pass
+    mapped_prefix = "::ffff:"
+    if raw.lower().startswith(mapped_prefix):
+        v4 = _parse_decimal_ipv4(raw[len(mapped_prefix):])
+        if v4 is None:
+            return None
+        try:
+            return ipaddress.IPv6Address(f"::ffff:{v4}")
+        except ValueError:
+            return None
+    return _parse_decimal_ipv4(raw)
+
+
 def _parse_loopback_hosts_text(text: str) -> set[str]:
     """Names whose hosts-file address is this machine's loopback.
 
@@ -836,11 +904,13 @@ def _is_loopback_cdp_host(host: str) -> bool:
 
     A closed hostname set missed Debian's ``127.0.1.1``, ``::ffff:127.0.0.1``,
     this process's own hostname, and extra ``/etc/hosts`` loopback aliases
-    (``127.0.0.1 dock-chrome``). Leftover attach then treated the dock as
-    another Chrome (admit None) even after ``dock-cdp-port`` was stamped —
-    persist cannot match a port it never extracted. Remote / LAN / other
-    hostnames stay another browser. Do not resolve DNS here: leftover
-    identity must stay a local parse.
+    (``127.0.0.1 dock-chrome``). WHATWG / Chromium dotted shorthand
+    (``127.1``, ``127.0.1``, ``0``, ``2130706433``) is the same miss:
+    leftover ``--cdp-url http://127.1:9333`` never extracted a port, so
+    persist could not match and attach was another Chrome (admit None)
+    on the jar a human is typing into. Remote / LAN / other hostnames
+    stay another browser. Do not resolve DNS here: leftover identity
+    must stay a local parse.
     """
     text = (host or "").strip().lower().strip("[]").rstrip(".")
     if not text:
@@ -852,11 +922,46 @@ def _is_loopback_cdp_host(host: str) -> bool:
         return True
     if _is_this_machine_hostname(text) or _is_loopback_hosts_alias(text):
         return True
-    try:
-        addr = ipaddress.ip_address(text)
-    except ValueError:
+    addr = _parse_cdp_ip(text)
+    if addr is None:
         return False
     return _ip_is_this_machine_loopback(addr)
+
+
+def _cdp_url_host_port(url: str) -> Tuple[str, Optional[int]]:
+    """Host + port from a CDP URL. Never raises on Chromium shorthand.
+
+    ``urllib.parse`` validates bracketed hosts with ``ipaddress``, so
+    ``ws://[::ffff:127.1]:9333`` — a mapped WHATWG form leftover CLIs
+    can pass through — aborted leftover interrupt instead of fencing.
+    """
+    text = (url or "").strip()
+    if not text:
+        return "", None
+    raw = text if "://" in text else f"http://{text}"
+    from urllib.parse import urlparse
+    try:
+        parsed = urlparse(raw)
+        return (parsed.hostname or "").lower(), parsed.port
+    except ValueError:
+        pass
+    rest = raw.split("://", 1)[-1]
+    netloc = rest.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
+    if netloc.startswith("["):
+        end = netloc.find("]")
+        if end < 0:
+            return "", None
+        host = netloc[1:end].lower()
+        tail = netloc[end + 1:]
+        if tail.startswith(":") and tail[1:].isdigit():
+            return host, int(tail[1:])
+        return host, None
+    if "@" in netloc:
+        netloc = netloc.rsplit("@", 1)[-1]
+    host, sep, port_text = netloc.rpartition(":")
+    if sep and port_text.isdigit() and host and ":" not in host:
+        return host.lower(), int(port_text)
+    return netloc.lower(), None
 
 
 def _loopback_cdp_port(url: str) -> Optional[int]:
@@ -871,12 +976,9 @@ def _loopback_cdp_port(url: str) -> Optional[int]:
     if text.isdigit():
         port = int(text)
         return port if 1 <= port <= 65535 else None
-    from urllib.parse import urlparse
-    parsed = urlparse(text if "://" in text else f"http://{text}")
-    host = (parsed.hostname or "").lower()
+    host, port = _cdp_url_host_port(text)
     if not _is_loopback_cdp_host(host):
         return None
-    port = parsed.port
     return port if port is not None and 1 <= port <= 65535 else None
 
 
