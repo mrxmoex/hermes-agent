@@ -1128,6 +1128,15 @@ _PACKAGE_EXEC_VALUE_FLAGS = frozenset({
     "--dir", "-C", "--prefix", "--cwd", "--filter", "--workspace",
 })
 _BUN_VALUE_FLAGS = frozenset({"--cwd"})
+# npx / pnpx / bunx. ``--prefix /tmp lighthouse`` used to see ``/tmp`` as
+# the package (finding 103). Do not put ``-p`` / ``--package`` here —
+# ``npx -p lighthouse --port 9333`` (no binary repeat) matches the pin.
+_NPX_VALUE_FLAGS = frozenset({"--prefix", "--cwd"})
+
+
+def _npx_package_tokens(tokens: List[str]) -> List[str]:
+    """Operands after ``npx`` / ``pnpx`` / ``bunx``, prefix/cwd skipped."""
+    return _first_non_flag_tokens(tokens, value_flags=_NPX_VALUE_FLAGS)
 
 
 def _first_non_flag_tokens(
@@ -1402,7 +1411,7 @@ def _is_agent_browser_invocation(tokens: List[str]) -> bool:
     if via is not None:
         return via
     if name0 in _NPX_LAUNCHERS:
-        rest = _first_non_flag_tokens(tokens)
+        rest = _npx_package_tokens(tokens)
         return bool(rest) and _token_basename_is_agent_browser(rest[0])
     if name0 in _NODE_LAUNCHERS:
         return any(_token_is_agent_browser_script(t) for t in _first_non_flag_tokens(tokens))
@@ -1496,7 +1505,7 @@ def _is_playwright_invocation(tokens: List[str]) -> bool:
     if via is not None:
         return via
     if name0 in _NPX_LAUNCHERS:
-        rest = _first_non_flag_tokens(tokens)
+        rest = _npx_package_tokens(tokens)
         return bool(rest) and _token_basename_is(rest[0], "playwright")
     if name0 in _NODE_LAUNCHERS:
         return any(_token_is_playwright_script(t) for t in _first_non_flag_tokens(tokens))
@@ -1613,7 +1622,7 @@ def _is_chrome_remote_interface_invocation(tokens: List[str]) -> bool:
     if via is not None:
         return via
     if name0 in _NPX_LAUNCHERS:
-        rest = _first_non_flag_tokens(tokens)
+        rest = _npx_package_tokens(tokens)
         return bool(rest) and _token_is_chrome_remote_interface(rest[0])
     if name0 in _NODE_LAUNCHERS:
         return any(_token_is_chrome_remote_interface(t) for t in _first_non_flag_tokens(tokens))
@@ -1644,7 +1653,7 @@ def _is_playwright_mcp_invocation(tokens: List[str]) -> bool:
     if via is not None:
         return via
     if name0 in _NPX_LAUNCHERS:
-        rest = _first_non_flag_tokens(tokens)
+        rest = _npx_package_tokens(tokens)
         return bool(rest) and _token_is_playwright_mcp(rest[0])
     if name0 in _NODE_LAUNCHERS:
         return any(_token_is_playwright_mcp(t) for t in _first_non_flag_tokens(tokens))
@@ -1699,7 +1708,7 @@ def _is_chrome_devtools_mcp_invocation(tokens: List[str]) -> bool:
     if via is not None:
         return via
     if name0 in _NPX_LAUNCHERS:
-        rest = _first_non_flag_tokens(tokens)
+        rest = _npx_package_tokens(tokens)
         return bool(rest) and _token_is_chrome_devtools_mcp(rest[0])
     if name0 in _NODE_LAUNCHERS:
         return any(_token_is_chrome_devtools_mcp(t) for t in _first_non_flag_tokens(tokens))
@@ -1750,7 +1759,7 @@ def _is_lighthouse_invocation(tokens: List[str]) -> bool:
     if via is not None:
         return via
     if name0 in _NPX_LAUNCHERS:
-        rest = _first_non_flag_tokens(tokens)
+        rest = _npx_package_tokens(tokens)
         return bool(rest) and _token_is_lighthouse(rest[0])
     if name0 in _NODE_LAUNCHERS:
         return any(_token_is_lighthouse(t) for t in _first_non_flag_tokens(tokens))

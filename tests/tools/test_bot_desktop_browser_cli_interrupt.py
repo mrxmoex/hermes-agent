@@ -344,6 +344,28 @@ def test_agent_browser_invocation_is_token_match_not_substring():
     assert _is_lighthouse_invocation(
         ["npx", "-y", "lighthouse@latest", "--port", "9333", "https://example.com"])
     assert _is_lighthouse_invocation(
+        ["npx", "--prefix", "/tmp/ws", "lighthouse",
+         "--port", "9333", "https://example.com"])
+    assert _is_lighthouse_invocation(
+        ["npx", "-y", "--prefix", "/tmp/ws", "lighthouse@latest",
+         "--port", "9333"])
+    assert _is_lighthouse_invocation(
+        ["pnpx", "--prefix", "/tmp/ws", "lighthouse", "--port", "9333"])
+    assert _is_lighthouse_invocation(
+        ["bunx", "--cwd", "/tmp/ws", "lighthouse", "--port", "9333"])
+    assert _is_chrome_devtools_mcp_invocation(
+        ["npx", "--prefix", "/tmp/ws", "chrome-devtools-mcp",
+         "--browserUrl", "http://127.0.0.1:9333"])
+    assert _is_playwright_invocation(
+        ["npx", "--prefix", "/tmp/ws", "playwright", "codegen"])
+    assert _is_agent_browser_invocation(
+        ["npx", "--prefix", "/tmp/ws", "agent-browser", "fill"])
+    # ``-p`` is the package pin, not a prefix. Do not swallow the binary.
+    assert _is_lighthouse_invocation(
+        ["npx", "-p", "lighthouse@latest", "lighthouse", "--port", "9333"])
+    assert _is_lighthouse_invocation(
+        ["npx", "-p", "lighthouse", "--port", "9333"])
+    assert _is_lighthouse_invocation(
         ["node", "/home/x/node_modules/lighthouse/cli/index.js",
          "--port=9333", "https://example.com"])
     assert _is_lighthouse_invocation(
@@ -1122,6 +1144,89 @@ def test_unregistered_package_exec_dir_flag_dock_cli_killed_on_takeover():
     assert corepack_dir.killed == 1
     assert filter_pkg.killed == 1
     assert run_dir.killed == 0
+    assert other.killed == 0
+    assert bash_parent.killed == 0
+
+
+def test_unregistered_npx_prefix_dock_cli_killed_on_takeover():
+    """``npx --prefix /tmp lighthouse --port <dock>`` missed leftover unwrap.
+
+    ``_first_non_flag_tokens`` treated the prefix as the package, so
+    invocation was false and Take over left the writer running. Equals
+    ``--prefix=/tmp`` already matched. ``npx -p lighthouse --port``
+    (no binary repeat) must stay a leftover — do not swallow ``-p``.
+    """
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    bdb.remember_dock_cdp_port(9333)
+    npx_prefix = _FakeProc(
+        9700,
+        ["npx", "--prefix", "/tmp/ws", "lighthouse",
+         "--port", "9333", "https://example.com"],
+    )
+    npx_yes = _FakeProc(
+        9701,
+        ["npx", "-y", "--prefix", "/tmp/ws", "lighthouse@latest",
+         "--port", "9333", "https://example.com"],
+    )
+    pnpx_prefix = _FakeProc(
+        9702,
+        ["pnpx", "--prefix", "/tmp/ws", "lighthouse",
+         "--port=9333", "https://example.com"],
+    )
+    bunx_cwd = _FakeProc(
+        9703,
+        ["bunx", "--cwd", "/tmp/ws", "lighthouse",
+         "--port", "9333", "https://example.com"],
+    )
+    mcp = _FakeProc(
+        9704,
+        ["npx", "--prefix", "/tmp/ws", "chrome-devtools-mcp",
+         "--browserUrl", "http://127.0.0.1:9333"],
+    )
+    playwright = _FakeProc(
+        9705,
+        ["npx", "--prefix", "/tmp/ws", "playwright", "codegen",
+         "--cdp-endpoint", "http://127.0.0.1:9333"],
+    )
+    agent_browser = _FakeProc(
+        9706,
+        ["npx", "--prefix", "/tmp/ws", "agent-browser",
+         "--cdp", "http://127.0.0.1:9333", "fill"],
+    )
+    pin_no_binary = _FakeProc(
+        9707,
+        ["npx", "-p", "lighthouse", "--port", "9333", "https://example.com"],
+    )
+    other = _FakeProc(
+        9708,
+        ["npx", "--prefix", "/tmp/ws", "lighthouse",
+         "--port", "9222", "https://example.com"],
+    )
+    bash_parent = _FakeProc(
+        9709,
+        ["/bin/bash", "-c",
+         "npx --prefix /tmp/ws lighthouse --port 9333"],
+    )
+    lease.acquire("human")
+    n = interrupt_unregistered_dock_cli(
+        processes=[
+            npx_prefix, npx_yes, pnpx_prefix, bunx_cwd, mcp, playwright,
+            agent_browser, pin_no_binary, other, bash_parent,
+        ],
+        chromium_pid=9999,
+        owner_daemon_pid=9998,
+    )
+    assert n == 8
+    assert npx_prefix.killed == 1
+    assert npx_yes.killed == 1
+    assert pnpx_prefix.killed == 1
+    assert bunx_cwd.killed == 1
+    assert mcp.killed == 1
+    assert playwright.killed == 1
+    assert agent_browser.killed == 1
+    assert pin_no_binary.killed == 1
     assert other.killed == 0
     assert bash_parent.killed == 0
 
