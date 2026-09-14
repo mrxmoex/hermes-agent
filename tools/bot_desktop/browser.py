@@ -843,13 +843,18 @@ def lock_listed_persist_port(user_data_dir: Optional[str] = None) -> Optional[in
         return None
     # Finding 179: no this-jar lock pid. Do not file-first inode-list
     # leftover helpers — that reopens 178. Memory that this jar still
-    # inode-listens on is chrome. No TCP (finding 166).
+    # inode-listens on is chrome. No TCP (finding 166). Finding 192:
+    # leftover memory (pre-191 stamp / identity) still has leftover
+    # helper hosts. That must not hide leftover-holder sibling chrome.
     if isinstance(memory, int) and 1 <= memory <= 65535:
         try:
             hosts = _this_jar_listen_connect_hosts(memory)
         except Exception:
             hosts = ()
         if hosts:
+            hidden = _hidden_leftover_holder_chrome()
+            if hidden is not None and hidden != memory:
+                return hidden
             return memory
     # Finding 181: process restart cleared memory. Persist file that
     # this jar still inode-listens on is the last live stamp. File
