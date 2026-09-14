@@ -8101,6 +8101,130 @@ def test_unregistered_memory_only_persist_does_not_stamp_file_helpers(
     assert _last_dock_cdp_port.get(hermes_home_key()) == 9333
 
 
+def test_unregistered_poisoned_persist_file_does_not_stamp_helpers(
+    monkeypatch, tmp_path,
+):
+    """Finding 178: persist_live must not restamp leftover file helpers.
+
+    Interrupt calls persist_live first. A poisoned persist file
+    (leftover helpers, not on the lock) plus lock-listed memory
+    used to make attach prefer the file. Kill leftover writers;
+    keep memory. Persist file stays the leftover stamp — do not
+    overwrite it with another helper listen. 9222, the other
+    family, LAN, unpinned lighthouse, and the bash ``-c`` parent
+    stay up.
+    """
+    from hermes_constants import hermes_home_key
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import (
+        _last_dock_cdp_port,
+        interrupt_unregistered_dock_cli,
+    )
+
+    monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path)
+    monkeypatch.setattr(bdb, "profile_dir", lambda: tmp_path)
+    monkeypatch.setattr(bdb, "_lock_pid", lambda d: 4240)
+    monkeypatch.setattr(
+        bdb,
+        "_chromium_cmdline_tokens",
+        lambda pid: ["chrome", f"--user-data-dir={tmp_path}"],
+    )
+    monkeypatch.setattr(
+        bdb, "_loopback_listen_ports_for_pid", lambda pid: {9333, 40142},
+    )
+    monkeypatch.setattr(
+        bdb,
+        "_loopback_listen_targets_for_pid",
+        lambda pid: {("::1", 9333), ("::1", 40142)},
+    )
+    monkeypatch.setattr(bdb, "_recover_cdp_port_from_singleton", lambda *a, **k: None)
+    monkeypatch.setattr(
+        bdb,
+        "_loopback_listen_inodes_for_port",
+        lambda port: {7: {"::1"}} if port == 40141 else {},
+    )
+    monkeypatch.setattr(
+        bdb,
+        "_pids_holding_socket_inodes",
+        lambda want: {4242: {7}, 4243: {7}} if 7 in want else {},
+    )
+    monkeypatch.setattr(
+        bdb,
+        "_cdp_port_reachable",
+        lambda port, hosts: port == 40141 and "::1" in hosts,
+    )
+    monkeypatch.setattr(
+        bdb, "_configured_cdp_override_url", lambda: "http://[::1]:40141",
+    )
+    (tmp_path / "DevToolsActivePort").write_text(
+        "40141\n/devtools/browser/abc\n", encoding="utf-8",
+    )
+    bdb.remember_dock_cdp_port(40141)
+    _last_dock_cdp_port[hermes_home_key()] = 9333
+    leftover_lh = _FakeProc(
+        11311,
+        ["npx", "lighthouse", "https://example.com", "--port", "40141"],
+    )
+    leftover_lh_host = _FakeProc(
+        11312,
+        ["npx", "lighthouse", "--hostname", "::1", "--port", "40141"],
+    )
+    leftover_cri = _FakeProc(
+        11313,
+        ["npx", "chrome-remote-interface", "--port", "40141", "inspect"],
+    )
+    leftover_cdp = _FakeProc(
+        11314,
+        ["agent-browser", "--cdp", "http://[::1]:40141", "fill"],
+    )
+    leftover_persist = _FakeProc(
+        11315,
+        ["agent-browser", "--cdp", "http://[::1]:9333", "fill"],
+    )
+    sibling = _FakeProc(
+        11316,
+        ["npx", "lighthouse", "--port", "9222", "https://example.com"],
+    )
+    leftover_v4 = _FakeProc(
+        11317,
+        ["npx", "lighthouse", "--hostname", "127.0.0.1", "--port", "40141"],
+    )
+    unpinned = _FakeProc(
+        11318,
+        ["npx", "lighthouse", "https://example.com"],
+    )
+    lan = _FakeProc(
+        11319,
+        ["npx", "lighthouse", "--hostname", "10.0.0.5", "--port", "40141"],
+    )
+    bash_parent = _FakeProc(
+        11320,
+        ["/bin/bash", "-c", "npx lighthouse --port 40141 https://example.com"],
+    )
+    lease.acquire("human")
+    n = interrupt_unregistered_dock_cli(
+        processes=[
+            leftover_lh, leftover_lh_host, leftover_cri, leftover_cdp,
+            leftover_persist, sibling, leftover_v4, unpinned, lan, bash_parent,
+        ],
+        chromium_pid=9999,
+        owner_daemon_pid=9998,
+    )
+    assert leftover_lh.killed == 1
+    assert leftover_lh_host.killed == 1
+    assert leftover_cri.killed == 1
+    assert leftover_cdp.killed == 1
+    assert leftover_persist.killed == 1
+    assert sibling.killed == 0
+    assert leftover_v4.killed == 0
+    assert unpinned.killed == 0
+    assert lan.killed == 0
+    assert bash_parent.killed == 0
+    assert n == 5
+    assert bdb.last_known_dock_cdp_port() == 40141
+    assert _last_dock_cdp_port.get(hermes_home_key()) == 9333
+
+
 def test_unregistered_stale_lock_pid_does_not_spare_leftover(monkeypatch):
     """Finding 157: Take over skipped the raw SingletonLock pid.
 

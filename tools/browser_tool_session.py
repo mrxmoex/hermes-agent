@@ -5311,7 +5311,14 @@ def _remembered_dock_attach_port(*, exclude_session: Optional[str] = None) -> Op
     ``DevToolsActivePort`` is Chromium's current advertisement —
     prefer it when it differs, unless the lock pid still lists
     persist and not the file (file is then the inherited leftover
-    listen; persist is current chrome). ``exclude_session`` stays
+    listen; persist is current chrome). Finding 178: a poisoned
+    persist *file* (leftover helpers, not on the lock) must not
+    hide lock-listed memory. ``remember_dock_cdp_port`` writes the
+    file only, so pre-177 persist_live left ``dock-cdp-port`` on
+    the leftover while ``_last_dock_cdp_port`` still named chrome.
+    Put lock-listed persist first; finding 172's file-named
+    tie-break still runs. Candidate order for leftover identity
+    stays file-then-memory (finding 169). ``exclude_session`` stays
     None when that session owns the lock pid (``--cdp`` would close
     its own browser). A holder of one candidate does not hide the
     other. Do not stamp persist. 9222 stays unknown unless this
@@ -5320,6 +5327,12 @@ def _remembered_dock_attach_port(*, exclude_session: Optional[str] = None) -> Op
     from tools.bot_desktop import browser as _bd_browser
 
     candidates = _remembered_dock_port_candidates()
+    try:
+        listed = _bd_browser.lock_listed_persist_port()
+    except Exception:
+        listed = None
+    if isinstance(listed, int) and 1 <= listed <= 65535:
+        candidates = [listed] + [c for c in candidates if c != listed]
     try:
         named = _bd_browser.file_named_dock_listen_port()
     except Exception:

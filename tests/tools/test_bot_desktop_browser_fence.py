@@ -2351,6 +2351,106 @@ def test_memory_only_persist_does_not_shop_file_helpers(
     assert _last_dock_cdp_port.get(hermes_home_key()) == 9333
 
 
+def test_poisoned_persist_file_does_not_hide_lock_listed_attach(
+    monkeypatch, tmp_path,
+):
+    """Finding 178: poisoned persist file must not attach leftover helpers.
+
+    Pre-177 persist_live left ``dock-cdp-port`` on leftover file
+    helpers while memory still named lock-listed chrome. Finding
+    177 stops new stamps; attach still preferred the file.
+    Identify leftover on those helpers; attach chrome. 9222 and
+    the other family stay unknown.
+    """
+    import tools.bot_desktop.browser as bdb
+    from hermes_constants import hermes_home_key
+    from tools.browser_tool_session import (
+        _cdp_url_is_bot_desktop_browser,
+        _last_dock_cdp_port,
+        _leftover_cdp_aims_at_dock,
+        _leftover_host_port_aims_at_dock,
+        _remembered_dock_attach_port,
+        _reset_dock_port_memory_for_tests,
+        _unregistered_cli_aims_at_dock,
+    )
+
+    monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path)
+    monkeypatch.setattr(bdb, "profile_dir", lambda: tmp_path)
+    monkeypatch.setattr(bdb, "_lock_pid", lambda d: 4240)
+    monkeypatch.setattr(
+        bdb,
+        "_chromium_cmdline_tokens",
+        lambda pid: ["chrome", f"--user-data-dir={tmp_path}"],
+    )
+    monkeypatch.setattr(
+        bdb, "_loopback_listen_ports_for_pid", lambda pid: {9333, 40142},
+    )
+    monkeypatch.setattr(
+        bdb,
+        "_loopback_listen_targets_for_pid",
+        lambda pid: {("::1", 9333), ("::1", 40142)},
+    )
+    monkeypatch.setattr(bdb, "_recover_cdp_port_from_singleton", lambda *a, **k: None)
+    monkeypatch.setattr(
+        bdb,
+        "_loopback_listen_inodes_for_port",
+        lambda port: {7: {"::1"}} if port == 40141 else {},
+    )
+    monkeypatch.setattr(
+        bdb,
+        "_pids_holding_socket_inodes",
+        lambda want: {4242: {7}, 4243: {7}} if 7 in want else {},
+    )
+    monkeypatch.setattr(
+        bdb,
+        "_cdp_port_reachable",
+        lambda port, hosts: port == 40141 and "::1" in hosts,
+    )
+    monkeypatch.setattr(bdb, "_configured_cdp_override_url", lambda: "")
+    _reset_dock_port_memory_for_tests()
+    bdb.remember_dock_cdp_port(40141)
+    _last_dock_cdp_port[hermes_home_key()] = 9333
+    (tmp_path / "DevToolsActivePort").write_text(
+        "40141\n/devtools/browser/abc\n", encoding="utf-8",
+    )
+    assert bdb.last_known_dock_cdp_port() == 40141
+    assert bdb.lock_listed_persist_port() == 9333
+    assert bdb.running_instance_cdp_port(str(tmp_path)) is None
+    assert bdb.persist_live_dock_cdp_port() is None
+    assert bdb.last_known_dock_cdp_port() == 40141
+    assert _last_dock_cdp_port.get(hermes_home_key()) == 9333
+    assert _remembered_dock_attach_port() == 9333
+    assert _cdp_url_is_bot_desktop_browser("http://[::1]:40141") is True
+    assert _cdp_url_is_bot_desktop_browser("40141") is True
+    assert _cdp_url_is_bot_desktop_browser("http://[::1]:9333") is True
+    assert _cdp_url_is_bot_desktop_browser("http://127.0.0.1:40141") is False
+    assert _cdp_url_is_bot_desktop_browser("9222") is False
+    assert _leftover_cdp_aims_at_dock("http://[::1]:40141", 9333) is True
+    assert _leftover_host_port_aims_at_dock(None, 40141, 9333) is True
+    assert _leftover_host_port_aims_at_dock("::1", 40141, 9333) is True
+    assert _leftover_host_port_aims_at_dock("127.0.0.1", 40141, 9333) is False
+    assert _leftover_host_port_aims_at_dock(None, 9222, 9333) is False
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "lighthouse", "https://example.com", "--port", "40141"],
+        {}, tmp_path, 9333,
+    ) is True
+    assert _unregistered_cli_aims_at_dock(
+        ["agent-browser", "--cdp", "http://[::1]:40141", "fill"],
+        {}, tmp_path, 9333,
+    ) is True
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "chrome-remote-interface", "--port", "40141", "inspect"],
+        {}, tmp_path, 9333,
+    ) is True
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "lighthouse", "--port", "9222", "https://example.com"],
+        {}, tmp_path, 9333,
+    ) is False
+    assert _remembered_dock_attach_port() == 9333
+    assert bdb.last_known_dock_cdp_port() == 40141
+    assert _last_dock_cdp_port.get(hermes_home_key()) == 9333
+
+
 def test_stale_lock_pid_is_not_this_jar_chromium(monkeypatch, tmp_path):
     """Finding 157: a leftover pid on SingletonLock is not the dock.
 
