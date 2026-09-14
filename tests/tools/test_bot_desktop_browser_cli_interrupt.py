@@ -345,6 +345,7 @@ def test_agent_browser_invocation_is_token_match_not_substring():
     # PLAYWRIGHT_MCP_USER_DATA_DIR / --config browser.userDataDir /
     # cdpEndpoint. Regular Playwright CLI does not read those keys.
     _mcp_cfg = _jar.parent / "pw-mcp-dock.json"
+    _mcp_cfg.parent.mkdir(parents=True, exist_ok=True)
     _mcp_cfg.write_text(json.dumps({"browser": {"userDataDir": str(_jar)}}))
     _mcp_cdp = _jar.parent / "pw-mcp-cdp.json"
     _mcp_cdp.write_text(json.dumps({
@@ -3269,6 +3270,7 @@ def test_unregistered_playwright_mcp_env_and_config_killed_on_takeover():
 
     profile = bdb.profile_dir()
     cfg = profile.parent / "pw-mcp-dock.json"
+    cfg.parent.mkdir(parents=True, exist_ok=True)
     cfg.write_text(json.dumps({"browser": {"userDataDir": str(profile)}}))
     cdp_cfg = profile.parent / "pw-mcp-cdp.json"
     cdp_cfg.write_text(json.dumps({
