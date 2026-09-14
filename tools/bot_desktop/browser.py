@@ -792,7 +792,9 @@ def lock_listed_persist_port(user_data_dir: Optional[str] = None) -> Optional[in
     persist with chrome. Leftover daemon holds neither
     leftover persist nor chrome's own CDP. Chrome's own
     listen is the inherited listen leftover file holders
-    do not inode-hold.
+    do not inode-hold. Finding 200: leftover python / CRI
+    that inherited chrome's CDP but is not a leftover
+    file holder hid that chrome listen.
     Finding 185: persist never stamped and
     the lock is already gone. Leftover holders that inherited
     chrome's DevTools fd still name chrome's other unique
@@ -1084,21 +1086,26 @@ def _unique_listen_family_root(extra: Set[int]) -> Optional[int]:
     advertised listen (holders minus leftover file holders) have
     one browser-process root. Several roots stay unknown. A zygote
     root (chrome dropped the inode) is not chrome.
+    Finding 200: leftover python / CRI / fill that inherited
+    chrome's CDP but is not a ``DevToolsActivePort`` file
+    holder is extra — not leftover file holders and not a
+    chrome descendant. That leftover sibling is not a
+    competing browser root. Non-browser extras stay leftover.
+    Several browser roots stay unknown. Leftover-only extras
+    stay unknown (86).
     """
-    if not extra:
+    browsers = {pid for pid in extra if _pid_is_chromium_browser(pid)}
+    if not browsers:
         return None
     roots: list[int] = []
-    for pid in extra:
+    for pid in browsers:
         if any(
             other != pid and _this_jar_descendant_of_chrome(pid, other)
-            for other in extra
+            for other in browsers
         ):
             continue
         roots.append(pid)
-    if len(roots) != 1:
-        return None
-    root = roots[0]
-    return root if _pid_is_chromium_browser(root) else None
+    return roots[0] if len(roots) == 1 else None
 
 
 def _this_jar_children(parent: int, user_data_dir: str) -> Set[int]:
@@ -1156,13 +1163,19 @@ def _leftover_or_chrome_family_holds(
     is a unique this-jar listen. That leftover persist is
     not chrome just because leftover helpers' parent holds
     it. Leftover daemon / CRI / python are not chrome.
-    An unrelated this-jar holder is not chrome's family.
+    Finding 200: leftover python / CRI / fill that inherited
+    chrome's CDP but is not a leftover file holder is extra,
+    not an unrelated second Chrome. Non-browser extras stay
+    leftover. An unrelated this-jar *browser* is not chrome's
+    family.
     """
     holders = _this_jar_holder_pids(port, user_data_dir)
     extra = holders - leftover_pids
     if chrome_pid in holders and _pid_is_chromium_browser(chrome_pid):
         for holder in holders:
             if holder == chrome_pid or holder in leftover_pids:
+                continue
+            if not _pid_is_chromium_browser(holder):
                 continue
             if not _this_jar_descendant_of_chrome(holder, chrome_pid):
                 return False
@@ -1216,7 +1229,12 @@ def _leftover_inherited_chrome_listen(
     leftover file holders do not inode-hold — that is
     chrome's own CDP. Several such listens stay unknown
     (85). Do not guess when leftover helpers' parent is
-    chrome (lock-present / 186).
+    chrome (lock-present / 186). Finding 200: leftover
+    python / CRI / fill that inherited chrome's CDP but
+    is not a leftover file holder used to be a competing
+    extra root, so leftover-shared / leftover-file-miss
+    missed chrome's own CDP. Non-browser extras stay
+    leftover. Several browser roots stay unknown.
     """
     if not leftover_pids or not isinstance(chrome_pid, int) or chrome_pid <= 1:
         return None
@@ -1286,7 +1304,10 @@ def unique_lock_chrome_hidden_by_leftover_file(
     inherited leftover persist with chrome still hides
     sibling chrome when leftover daemon holds neither
     listen — prefer chrome's own CDP leftover fill does
-    not inode-hold. Finding 185: when the lock is gone,
+    not inode-hold. Finding 200: leftover python / CRI
+    that inherited chrome's CDP but is not a leftover
+    file holder is extra, not a competing browser root.
+    Finding 185: when the lock is gone,
     leftover holders that inherited chrome's DevTools fd still
     advertise that unique listen. Finding 186: leftover this-jar
     helpers that are no longer leftover holders of chrome still
@@ -1721,6 +1742,10 @@ def _this_jar_chromium_pid(user_data_dir: Optional[str] = None) -> Optional[int]
     daemon that spawned chrome.     Unique holder of that hidden
     chrome is not a guess among leftover helpers. Finding 197:
     unique leftover daemon on stale DevTools is not chrome.
+    Finding 200: leftover python / CRI that inherited
+    chrome's CDP but is not a leftover file holder is
+    extra — unique browser-process root of extra is
+    still chrome.
     Finding 188:
     leftover that inherited chrome's unique listen make that
     holder several. Lock pid or the unique leftover-file parent
