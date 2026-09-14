@@ -727,8 +727,9 @@ def lock_listed_persist_port(user_data_dir: Optional[str] = None) -> Optional[in
     listen this pid still holds — that is not a guess. Finding 175:
     leftover identity must not stamp a different this-jar listen
     (stale file helpers) over that persist after a persist TCP miss.
-    File still on the lock is finding 172. A recycled lock pid is not
-    this jar. No HTTP.
+    Finding 176: persist_live's configured fallback must not stamp
+    those helpers either. File still on the lock is finding 172. A
+    recycled lock pid is not this jar. No HTTP.
     """
     if user_data_dir is None:
         user_data_dir = str(profile_dir())
@@ -1000,7 +1001,21 @@ def _configured_listen_port_for_this_jar() -> Optional[int]:
         return None
     if want is None:
         return None
-    return want if _this_jar_listens_on_port(want) else None
+    if not _this_jar_listens_on_port(want):
+        return None
+    # Finding 176: persist is still on the lock pid after a 174
+    # persist-TCP miss. A configured / ``/browser connect`` /
+    # ``BROWSER_CDP_URL`` URL that names leftover ``DevToolsActivePort``
+    # helpers is a this-jar listen (finding 86), but it is the
+    # inherited leftover — not the current chrome. Identity already
+    # refuses to stamp that listen (finding 175); persist_live must
+    # not fall through to the same URL and overwrite lock-listed
+    # persist. Finding 86 still stamps configured when persist is
+    # *not* on the lock.
+    listed = lock_listed_persist_port()
+    if listed is not None and listed != want:
+        return None
+    return want
 
 
 def persist_live_dock_cdp_port() -> Optional[int]:
@@ -1012,6 +1027,9 @@ def persist_live_dock_cdp_port() -> Optional[int]:
 
     When unique-listen recover is ambiguous, a loopback override that
     this jar actually listens on is still this profile's DevTools port.
+    Finding 176: persist_live must not fall through to a configured
+    listen that names leftover file helpers while persist is still
+    on the lock.
     """
     try:
         port = running_instance_cdp_port(str(profile_dir()))

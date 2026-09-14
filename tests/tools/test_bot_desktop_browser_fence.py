@@ -2221,6 +2221,18 @@ def test_named_listen_does_not_stamp_over_lock_listed_persist(
     assert bdb.last_known_dock_cdp_port() == 9333
     assert _remembered_dock_attach_port() == 9333
 
+    # Finding 176: persist_live must not fall through to a configured
+    # leftover file-helper listen and overwrite lock-listed persist.
+    monkeypatch.setattr(
+        bdb, "_configured_cdp_override_url", lambda: "http://[::1]:40141",
+    )
+    assert bdb._configured_listen_port_for_this_jar() is None
+    assert bdb.persist_live_dock_cdp_port() is None
+    assert bdb.last_known_dock_cdp_port() == 9333
+    assert _remembered_dock_attach_port() == 9333
+    assert _cdp_url_is_bot_desktop_browser("http://[::1]:40141") is True
+    assert bdb.last_known_dock_cdp_port() == 9333
+
 
 def test_stale_lock_pid_is_not_this_jar_chromium(monkeypatch, tmp_path):
     """Finding 157: a leftover pid on SingletonLock is not the dock.
