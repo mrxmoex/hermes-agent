@@ -1999,6 +1999,8 @@ def _token_is_playwright_script(token: str) -> bool:
         token, "playwright-cli",
     ):
         return True
+    if _token_is_playwright_cli_package(token):
+        return True
     raw = (token or "").strip().strip("\"'")
     if not raw:
         return False
@@ -2014,19 +2016,52 @@ def _token_is_playwright_script(token: str) -> bool:
     return name in _PLAYWRIGHT_NODE_ENTRYPOINTS
 
 
+def _token_is_playwright_cli_package(token: str) -> bool:
+    """True when this token is official leftover ``@playwright/cli``.
+
+    Finding 109 matched argv0 ``playwright-cli`` / ``…/playwright-cli/``.
+    Official leftover also ships the scoped package
+    ``npx @playwright/cli`` / ``node …/@playwright/cli/cli.js`` — Path
+    parts are ``@playwright`` + ``cli``, not ``playwright`` or
+    ``playwright-cli``, so Take over never saw that writer.
+    ``@playwright/mcp`` and ``cat cli.log`` are not.
+    """
+    raw = (token or "").strip().strip("\"'")
+    if not raw:
+        return False
+    lower = raw.lower()
+    if lower.startswith("@playwright/cli"):
+        rest = lower[len("@playwright/cli"):]
+        return rest == "" or rest.startswith("@")
+    path = Path(raw)
+    parts = [p.lower() for p in path.parts]
+    if "@playwright" not in parts:
+        return False
+    idx = parts.index("@playwright")
+    if idx + 1 >= len(parts):
+        return False
+    if parts[idx + 1].split("@", 1)[0] != "cli":
+        return False
+    return path.name.lower() in _PLAYWRIGHT_NODE_ENTRYPOINTS or path.name.lower() in {
+        "playwright-cli", "playwright-cli.js",
+    }
+
+
 def _is_playwright_invocation(tokens: List[str]) -> bool:
     """True when argv launches the Playwright CLI (binary, npx, shebang node).
 
     Token-match only. ``npx playwright install`` is an invocation; it is
     not dock-aimed unless ``--cdp-endpoint`` / ``PW_TEST_CONNECT_*`` pin
-    this jar. ``playwright-cli attach --cdp=<dock>`` is leftover attach
-    (finding 109). Do not match ``@playwright/mcp`` or ``playwright-core``
-    by substring.
+    this jar.     ``playwright-cli attach --cdp=<dock>`` / ``npx @playwright/cli``
+    are leftover Agent CLI (finding 109 / 136). Do not match
+    ``@playwright/mcp`` or ``playwright-core`` by substring.
     """
     if not tokens:
         return False
-    if _token_basename_is(tokens[0], "playwright") or _token_basename_is(
-        tokens[0], "playwright-cli",
+    if (
+        _token_basename_is(tokens[0], "playwright")
+        or _token_basename_is(tokens[0], "playwright-cli")
+        or _token_is_playwright_cli_package(tokens[0])
     ):
         return True
     name0 = _launcher_basename(tokens[0])
@@ -2244,14 +2279,18 @@ def _is_chrome_remote_interface_invocation(tokens: List[str]) -> bool:
 
 
 def _token_is_bundled_playwright_cli(token: str) -> bool:
-    """Playwright CLI binary/script, not Agent ``playwright-cli`` / ``@playwright/mcp``.
+    """Playwright CLI binary/script, not Agent CLI / ``@playwright/mcp``.
 
     Official leftover Playwright 1.62+ is ``npx playwright mcp`` — the
-    bundled MCP server. ``playwright-cli`` is the Agent CLI leftover
-    (finding 109). ``@playwright/mcp`` is the standalone package
-    (finding 87 / 127).
+    bundled MCP server. ``playwright-cli`` / ``@playwright/cli`` are
+    the Agent CLI leftover (finding 109 / 136). ``@playwright/mcp`` is
+    the standalone package (finding 87 / 127).
     """
-    if _token_is_playwright_mcp(token) or _token_basename_is(token, "playwright-cli"):
+    if (
+        _token_is_playwright_mcp(token)
+        or _token_is_playwright_cli_package(token)
+        or _token_basename_is(token, "playwright-cli")
+    ):
         return False
     raw = (token or "").strip().strip("\"'")
     if raw and "playwright-cli" in [p.lower() for p in Path(raw).parts]:
@@ -2274,7 +2313,10 @@ def _playwright_cli_mcp_subcommand(tokens: List[str]) -> bool:
     if _token_basename_is(tokens[0], "playwright"):
         rest = _first_non_flag_tokens(tokens, skip=1)
         return bool(rest) and rest[0] == "mcp"
-    if _token_basename_is(tokens[0], "playwright-cli"):
+    if (
+        _token_basename_is(tokens[0], "playwright-cli")
+        or _token_is_playwright_cli_package(tokens[0])
+    ):
         return False
     name0 = _launcher_basename(tokens[0])
     if name0 in _ENV_LAUNCHERS:
@@ -2364,6 +2406,96 @@ def _is_playwright_mcp_invocation(tokens: List[str]) -> bool:
         if node_pm:
             return _is_playwright_mcp_invocation(node_pm)
         return any(_token_is_playwright_mcp(t) for t in _first_non_flag_tokens(tokens))
+    return False
+
+
+def _is_playwright_cli_agent_invocation(tokens: List[str]) -> bool:
+    """True when leftover is official Playwright Agent CLI.
+
+    ``playwright-cli``, ``npx @playwright/cli``,
+    ``node …/@playwright/cli/cli.js``, or ``npx playwright cli``.
+    Finding 109 matched argv0 ``playwright-cli`` / ``--cdp`` only.
+    Official leftover also pins ``PLAYWRIGHT_MCP_USER_DATA_DIR`` /
+    ``--config`` / ``~/.playwright/cli.config.json`` /
+    ``.playwright/cli.config.json`` (finding 136). ``npx playwright mcp``
+    / ``codegen`` / ``test`` and ``@playwright/mcp`` are not Agent CLI.
+    """
+    if not tokens:
+        return False
+    if (
+        _token_basename_is(tokens[0], "playwright-cli")
+        or _token_is_playwright_cli_package(tokens[0])
+    ):
+        return True
+    if _token_basename_is(tokens[0], "playwright"):
+        rest = _first_non_flag_tokens(tokens, skip=1)
+        return bool(rest) and rest[0] == "cli"
+    name0 = _launcher_basename(tokens[0])
+    if name0 in _ENV_LAUNCHERS:
+        return _is_playwright_cli_agent_invocation(_env_command_tokens(tokens))
+    if name0 in _COREPACK_LAUNCHERS:
+        rest = _corepack_command_tokens(tokens)
+        return bool(rest) and _is_playwright_cli_agent_invocation(rest)
+    via = _invocation_via_package_exec(tokens, _is_playwright_cli_agent_invocation)
+    if via is not None:
+        if via:
+            return True
+        parts = _package_exec_parts(tokens)
+        if parts:
+            flag_pkgs, operands = parts
+            if (
+                flag_pkgs
+                and _token_basename_is(flag_pkgs[-1], "playwright")
+                and operands
+                and operands[0] == "cli"
+            ):
+                return True
+        return False
+    via = _invocation_via_bun_x(tokens, _is_playwright_cli_agent_invocation)
+    if via is not None:
+        return via
+    if name0 in _NPX_LAUNCHERS:
+        rest = _npx_package_tokens(tokens)
+        if rest and (
+            _token_is_playwright_cli_package(rest[0])
+            or _token_basename_is(rest[0], "playwright-cli")
+        ):
+            return True
+        if rest and _token_is_bundled_playwright_cli(rest[0]):
+            return _is_playwright_cli_agent_invocation(rest)
+        pins = _npx_package_pins(tokens)
+        if pins and (
+            _token_is_playwright_cli_package(pins[-1])
+            or _token_basename_is(pins[-1], "playwright-cli")
+        ):
+            return True
+        child = _npx_child_argv(tokens)
+        if (
+            child
+            and pins
+            and _token_basename_is(pins[-1], "playwright")
+            and child[0] == "cli"
+        ):
+            return True
+        return False
+    if name0 in _NODE_LAUNCHERS:
+        node_pm = _node_package_manager_argv(tokens)
+        if node_pm:
+            return _is_playwright_cli_agent_invocation(node_pm)
+        operands = _first_non_flag_tokens(tokens)
+        for i, tok in enumerate(operands):
+            if (
+                _token_is_playwright_cli_package(tok)
+                or _token_basename_is(tok, "playwright-cli")
+            ):
+                return True
+            if _token_is_bundled_playwright_cli(tok):
+                rest = operands[i + 1:]
+                return bool(rest) and rest[0] == "cli"
+        return False
+    if _is_python_launcher(name0):
+        rest = _first_non_flag_tokens(tokens)
+        return bool(rest) and _is_playwright_cli_agent_invocation(rest)
     return False
 
 
@@ -2632,9 +2764,19 @@ def _unregistered_cli_aims_at_dock(
     Finding 111 only checked ``--user-data-dir``. Official leftover
     Playwright 1.62+ is also ``npx playwright mcp`` (finding 135) —
     finding 127 only matched ``@playwright/mcp``, so env / ``--config``
-    on the bundled subcommand stayed unknown. Regular Playwright CLI
-    (``codegen`` / ``test``) does not read those MCP keys.
-    ``--isolated`` / no pin stays unknown.
+    on the bundled subcommand stayed unknown. Official leftover Agent
+    CLI (finding 136) is ``playwright-cli`` / ``npx @playwright/cli`` /
+    ``npx playwright cli`` and reads the same env keys plus
+    ``~/.playwright/cli.config.json`` (writer HOME) and
+    ``.playwright/cli.config.json`` (writer cwd), replaced by
+    ``--config`` / ``PLAYWRIGHT_MCP_CONFIG``. Finding 109 / 111 only
+    checked argv ``--cdp`` / ``--profile``, so Take over left
+    ``npx @playwright/cli --config {browser.userDataDir}`` and
+    ``npx @playwright/cli attach --cdp`` running. Regular Playwright
+    CLI (``codegen`` / ``test``) does not read those Agent / MCP keys.
+    ``--isolated`` / no pin stays unknown. A set argv ``--profile``
+    skips env / config dir. Gateway cwd / ``Path.home()`` must not
+    decide a relative or global Agent CLI file.
     """
     env = environ or {}
     if _is_browser_use_invocation(tokens) and not _is_agent_browser_invocation(tokens):
@@ -2675,6 +2817,33 @@ def _unregistered_cli_aims_at_dock(
             pinned = _flag_value(tokens, ("--user-data-dir", "--profile"))
             if _leftover_profile_pin_aims_at_dock(pinned, profile, cwd):
                 return True
+            # Official Agent CLI leftover also pins off argv (finding
+            # 136): ``PLAYWRIGHT_MCP_USER_DATA_DIR`` and
+            # ``--config`` / auto ``cli.config.json``
+            # ``browser.userDataDir`` / ``cdpEndpoint``. Finding 109 /
+            # 111 only checked argv ``--cdp`` / ``--profile``.
+            # ``codegen`` / ``test`` do not read those keys. A set
+            # argv profile skips env / config dir.
+            if _is_playwright_cli_agent_invocation(tokens):
+                argv_dir_set = bool((pinned or "").strip())
+                env_dir = (env.get("PLAYWRIGHT_MCP_USER_DATA_DIR") or "").strip()
+                if not argv_dir_set and _leftover_profile_pin_aims_at_dock(
+                    env_dir, profile, cwd,
+                ):
+                    return True
+                cfg_cdp, cfg_dir = _playwright_cli_config_pins(
+                    tokens, env, cwd,
+                )
+                if cfg_cdp:
+                    if _cdp_url_is_bot_desktop_browser(cfg_cdp):
+                        return True
+                    port = _loopback_cdp_port(cfg_cdp)
+                    return dock_port is not None and port == dock_port
+                if argv_dir_set or env_dir:
+                    return False
+                return _leftover_profile_pin_aims_at_dock(
+                    cfg_dir, profile, cwd,
+                )
             # Official MCP leftover launch / attach also lives in env
             # and ``--config`` JSON (finding 127 / 135). Finding 111
             # only checked argv ``--user-data-dir``. Finding 127 only
@@ -2997,6 +3166,101 @@ def _playwright_mcp_config_pins(
         pinned = None
     else:
         pinned = pinned.strip()
+    return cdp, pinned
+
+
+def _playwright_cli_resolve_config_path(
+    text: str, cwd: Optional[Path],
+) -> Optional[Path]:
+    path = Path(text)
+    if path.is_absolute():
+        return path
+    if cwd is None:
+        return None
+    return cwd / path
+
+
+def _playwright_cli_browser_pins_from_path(
+    path: Path,
+) -> Tuple[Optional[str], Optional[str]]:
+    """``(cdpEndpoint, userDataDir)`` from one leftover Agent CLI JSON file."""
+    try:
+        if path.stat().st_size > _PLAYWRIGHT_MCP_CONFIG_MAX_BYTES:
+            return None, None
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
+        return None, None
+    if not isinstance(data, dict):
+        return None, None
+    browser = data.get("browser")
+    if not isinstance(browser, dict):
+        return None, None
+    cdp = browser.get("cdpEndpoint")
+    pinned = browser.get("userDataDir")
+    if not isinstance(cdp, str) or not cdp.strip():
+        cdp = None
+    else:
+        cdp = cdp.strip()
+    if not isinstance(pinned, str) or not pinned.strip():
+        pinned = None
+    else:
+        pinned = pinned.strip()
+    return cdp, pinned
+
+
+def _playwright_cli_config_pins(
+    tokens: List[str],
+    environ: Dict[str, str],
+    cwd: Optional[Path],
+) -> Tuple[Optional[str], Optional[str]]:
+    """Merge leftover Agent CLI config: global HOME then ``--config`` / cwd auto.
+
+    Official leftover, lowest → highest: ``~/.playwright/cli.config.json``
+    (writer HOME), then ``.playwright/cli.config.json`` (writer cwd)
+    replaced by ``--config`` / ``PLAYWRIGHT_MCP_CONFIG``. Env and CLI
+    flags are applied by the caller. Finding 109 / 111 only checked
+    argv ``--cdp`` / ``--profile``. Relative ``--config`` and the
+    project auto file resolve against the leftover writer cwd —
+    gateway cwd must not decide the pin. Global file uses leftover
+    ``HOME`` / ``USERPROFILE``, not ``Path.home()``. Unreadable /
+    oversized / non-JSON stays unknown. ``remoteEndpoint`` is
+    Playwright protocol, not CDP. Do not apply these auto files to
+    ``@playwright/mcp`` or ``codegen``.
+    """
+    cdp: Optional[str] = None
+    pinned: Optional[str] = None
+    home = (environ.get("HOME") or "").strip()
+    if not home:
+        home = (environ.get("USERPROFILE") or "").strip()
+    if home:
+        global_cdp, global_dir = _playwright_cli_browser_pins_from_path(
+            Path(home) / ".playwright" / "cli.config.json",
+        )
+        if global_cdp:
+            cdp = global_cdp
+        if global_dir:
+            pinned = global_dir
+    path_text = _flag_value(tokens, ("--config",))
+    if not path_text:
+        path_text = (environ.get("PLAYWRIGHT_MCP_CONFIG") or "").strip()
+    text = (path_text or "").strip()
+    if text:
+        path = _playwright_cli_resolve_config_path(text, cwd)
+        if path is not None:
+            expl_cdp, expl_dir = _playwright_cli_browser_pins_from_path(path)
+            if expl_cdp is not None:
+                cdp = expl_cdp
+            if expl_dir is not None:
+                pinned = expl_dir
+        return cdp, pinned
+    if cwd is not None:
+        auto_cdp, auto_dir = _playwright_cli_browser_pins_from_path(
+            cwd / ".playwright" / "cli.config.json",
+        )
+        if auto_cdp is not None:
+            cdp = auto_cdp
+        if auto_dir is not None:
+            pinned = auto_dir
     return cdp, pinned
 
 

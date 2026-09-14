@@ -540,6 +540,156 @@ def test_agent_browser_invocation_is_token_match_not_substring():
          "--cdp-endpoint", "http://127.0.0.1:9222"],
         {"PLAYWRIGHT_MCP_USER_DATA_DIR": str(_jar)}, _jar, 9333,
     )
+    # Official leftover Agent CLI also pins off argv (finding 136).
+    # playwright-cli / @playwright/cli / npx playwright cli read
+    # PLAYWRIGHT_MCP_USER_DATA_DIR, --config / PLAYWRIGHT_MCP_CONFIG,
+    # ~/.playwright/cli.config.json (writer HOME), and
+    # .playwright/cli.config.json (writer cwd). Finding 109 / 111
+    # only checked argv --cdp / --profile. codegen does not read
+    # those keys. Gateway cwd / Path.home() must not decide a
+    # relative or global file.
+    from tools.browser_tool_session import _is_playwright_cli_agent_invocation
+    assert _is_playwright_invocation(
+        ["npx", "@playwright/cli", "attach", "--cdp",
+         "http://127.0.0.1:9333"])
+    assert _is_playwright_invocation(
+        ["npx", "@playwright/cli@latest", "attach", "--cdp",
+         "http://127.0.0.1:9333"])
+    assert _is_playwright_invocation(
+        ["node", "/home/x/node_modules/@playwright/cli/cli.js",
+         "attach", "--cdp", "http://127.0.0.1:9333"])
+    assert _is_playwright_cli_agent_invocation(
+        ["playwright-cli", "open", f"--profile={_jar}"])
+    assert _is_playwright_cli_agent_invocation(
+        ["npx", "@playwright/cli", "attach", "--cdp",
+         "http://127.0.0.1:9333"])
+    assert _is_playwright_cli_agent_invocation(
+        ["npx", "playwright", "cli", "--config", "cli.config.json"])
+    assert _is_playwright_cli_agent_invocation(
+        ["npx", "--package=@playwright/cli", "--", "attach",
+         "--cdp", "http://127.0.0.1:9333"])
+    assert not _is_playwright_cli_agent_invocation(
+        ["npx", "playwright", "codegen"])
+    assert not _is_playwright_cli_agent_invocation(
+        ["npx", "playwright", "mcp"])
+    assert not _is_playwright_cli_agent_invocation(
+        ["npx", "@playwright/mcp"])
+    assert not _is_playwright_mcp_invocation(
+        ["npx", "@playwright/cli", "mcp"])
+    assert not _is_playwright_mcp_invocation(
+        ["node", "/home/x/node_modules/@playwright/cli/cli.js", "mcp"])
+    _pw_cli_cfg = _jar.parent / "pw-cli-dock.json"
+    _pw_cli_cfg.parent.mkdir(parents=True, exist_ok=True)
+    _pw_cli_cfg.write_text(json.dumps({"browser": {"userDataDir": str(_jar)}}))
+    _pw_cli_cdp = _jar.parent / "pw-cli-cdp.json"
+    _pw_cli_cdp.write_text(json.dumps({
+        "browser": {"cdpEndpoint": "http://127.0.0.1:9333"},
+    }))
+    _pw_cli_other = _jar.parent / "pw-cli-other.json"
+    _pw_cli_other.write_text(json.dumps({
+        "browser": {"userDataDir": "/tmp/other-chrome"},
+    }))
+    _pw_cli_auto_dir = _jar.parent / ".playwright"
+    _pw_cli_auto_dir.mkdir(parents=True, exist_ok=True)
+    (_pw_cli_auto_dir / "cli.config.json").write_text(json.dumps({
+        "browser": {"userDataDir": str(_jar)},
+    }))
+    from hermes_constants import get_hermes_home as _cli_home
+    _pw_cli_home = {"HOME": str(_cli_home())}
+    _pw_cli_global = Path(_cli_home()) / ".playwright"
+    _pw_cli_global.mkdir(parents=True, exist_ok=True)
+    (_pw_cli_global / "cli.config.json").write_text(json.dumps({
+        "browser": {"userDataDir": str(_jar)},
+    }))
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "@playwright/cli", "attach", "--cdp",
+         "http://127.0.0.1:9333"],
+        {}, None, 9333,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["node", "/home/x/node_modules/@playwright/cli/cli.js",
+         "attach", "--cdp", "http://127.0.0.1:9333"],
+        {}, None, 9333,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["playwright-cli", "--config", str(_pw_cli_cfg)],
+        {}, _jar, None,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "playwright", "cli", "--config", str(_pw_cli_cfg)],
+        {}, _jar, None,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "@playwright/cli"],
+        {"PLAYWRIGHT_MCP_CONFIG": str(_pw_cli_cfg)}, _jar, None,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["playwright-cli"],
+        {"PLAYWRIGHT_MCP_USER_DATA_DIR": str(_jar)}, _jar, None,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "@playwright/cli", "--config", "pw-cli-dock.json"],
+        {}, _jar, None, cwd=_jar.parent,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["playwright-cli"],
+        {}, _jar, None, cwd=_jar.parent,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "@playwright/cli"],
+        _pw_cli_home, _jar, None, cwd=_jar.parent / "other-cwd",
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["playwright-cli", "--config", str(_pw_cli_cdp)],
+        {}, _jar, 9333,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["npx", "playwright", "codegen", "--config", str(_pw_cli_cfg)],
+        {}, _jar, None,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["playwright-cli"],
+        {"PLAYWRIGHT_MCP_USER_DATA_DIR": "/tmp/other-chrome"}, _jar, None,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["playwright-cli", "--config", str(_pw_cli_other)],
+        {}, _jar, None,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["playwright-cli", "--isolated"],
+        {}, _jar, None,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["playwright-cli", "attach", "--cdp", "chrome"],
+        {}, _jar, 9333,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["playwright-cli", "attach", "--extension"],
+        {}, _jar, 9333,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["playwright-cli", "--profile", "/tmp/other-chrome"],
+        {"PLAYWRIGHT_MCP_USER_DATA_DIR": str(_jar)}, _jar, None,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["playwright-cli", "attach", "--cdp", "http://127.0.0.1:9222"],
+        {}, _jar, 9333,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["/bin/bash", "-c",
+         f"playwright-cli --config {_pw_cli_cfg}"],
+        {}, _jar, None,
+    )
+    # Missing leftover cwd must not use gateway cwd for a relative
+    # --config or the project auto file.
+    assert not _unregistered_cli_aims_at_dock(
+        ["playwright-cli", "--config", "pw-cli-dock.json"],
+        {}, _jar, None,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["playwright-cli"],
+        {}, _jar, None,
+    )
     # Leftover daemon freezes AGENT_BROWSER_CDP; connect <port> is the
     # in-flight attach (finding 112). --auto-connect cannot prove this jar.
     assert _unregistered_cli_aims_at_dock(
@@ -4213,7 +4363,9 @@ def test_unregistered_playwright_cli_mcp_env_and_config_killed_on_takeover():
     as ``@playwright/mcp``. Finding 127 only matched the scoped package,
     so Take over left this writer typing into the jar. Regular
     Playwright CLI, another jar, ``--isolated``, argv CDP to another
-    Chrome, ``playwright-cli``, and the bash ``-c`` parent stay up.
+    Chrome, and the bash ``-c`` parent stay up. Agent CLI
+    (``playwright-cli`` / ``@playwright/cli``) env / config pins are
+    finding 136.
     """
     from tools.bot_desktop import browser as bdb
     from tools.browser_tool_session import interrupt_unregistered_dock_cli
@@ -4274,11 +4426,6 @@ def test_unregistered_playwright_cli_mcp_env_and_config_killed_on_takeover():
         ["npx", "playwright", "mcp"],
         {"PLAYWRIGHT_MCP_USER_DATA_DIR": "/tmp/other-chrome"},
     )
-    agent_cli = _FakeProc(
-        10110,
-        ["playwright-cli", "mcp"],
-        {"PLAYWRIGHT_MCP_USER_DATA_DIR": str(profile)},
-    )
     cdp_wins = _FakeProc(
         10111,
         ["npx", "playwright", "mcp",
@@ -4294,7 +4441,7 @@ def test_unregistered_playwright_cli_mcp_env_and_config_killed_on_takeover():
     n = interrupt_unregistered_dock_cli(
         processes=[
             leftover, via_cfg, via_cfg_env, via_cdp, shebang, via_npm,
-            via_pin, codegen, isolated, other, agent_cli, cdp_wins,
+            via_pin, codegen, isolated, other, cdp_wins,
             bash_parent,
         ],
         chromium_pid=9999,
@@ -4311,8 +4458,171 @@ def test_unregistered_playwright_cli_mcp_env_and_config_killed_on_takeover():
     assert codegen.killed == 0
     assert isolated.killed == 0
     assert other.killed == 0
-    assert agent_cli.killed == 0
     assert cdp_wins.killed == 0
+    assert bash_parent.killed == 0
+
+
+def test_unregistered_playwright_cli_agent_env_and_config_killed_on_takeover():
+    """terminal() playwright-cli / @playwright/cli env / config leftover hid pins.
+
+    Official leftover Agent CLI reads ``PLAYWRIGHT_MCP_USER_DATA_DIR``,
+    ``--config`` / ``PLAYWRIGHT_MCP_CONFIG`` ``browser.userDataDir`` /
+    ``cdpEndpoint``, ``~/.playwright/cli.config.json`` (writer HOME),
+    and ``.playwright/cli.config.json`` (writer cwd). Finding 109 /
+    111 only checked argv ``--cdp`` / ``--profile``, so Take over left
+    those writers typing into the jar. ``codegen``, another jar,
+    ``--isolated``, ``--cdp chrome``, ``--extension``, argv
+    ``--profile`` / ``--cdp`` to another Chrome, missing leftover cwd,
+    and the bash ``-c`` parent stay up.
+    """
+    from hermes_constants import get_hermes_home
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    profile = bdb.profile_dir()
+    cwd = profile.parent
+    cwd.mkdir(parents=True, exist_ok=True)
+    cfg = cwd / "pw-agent-dock.json"
+    cfg.write_text(json.dumps({"browser": {"userDataDir": str(profile)}}))
+    cdp_cfg = cwd / "pw-agent-cdp.json"
+    cdp_cfg.write_text(json.dumps({
+        "browser": {"cdpEndpoint": "http://127.0.0.1:9333"},
+    }))
+    other_cfg = cwd / "pw-agent-other.json"
+    other_cfg.write_text(json.dumps({
+        "browser": {"userDataDir": "/tmp/other-chrome"},
+    }))
+    auto_dir = cwd / ".playwright"
+    auto_dir.mkdir(parents=True, exist_ok=True)
+    (auto_dir / "cli.config.json").write_text(json.dumps({
+        "browser": {"userDataDir": str(profile)},
+    }))
+    home = get_hermes_home()
+    global_dir = home / ".playwright"
+    global_dir.mkdir(parents=True, exist_ok=True)
+    (global_dir / "cli.config.json").write_text(json.dumps({
+        "browser": {"userDataDir": str(profile)},
+    }))
+    other_cwd = cwd / "pw-agent-other-cwd"
+    other_cwd.mkdir(parents=True, exist_ok=True)
+    bdb.remember_dock_cdp_port(9333)
+    leftover = _FakeProc(
+        10200,
+        ["npx", "@playwright/cli", "attach", "--cdp",
+         "http://127.0.0.1:9333"],
+    )
+    via_node = _FakeProc(
+        10201,
+        ["node", "/home/x/node_modules/@playwright/cli/cli.js",
+         "attach", "--cdp", "http://127.0.0.1:9333"],
+    )
+    via_cfg = _FakeProc(
+        10202,
+        ["playwright-cli", "--config", str(cfg)],
+    )
+    via_bundled = _FakeProc(
+        10203,
+        ["npx", "playwright", "cli", "--config", str(cfg)],
+    )
+    via_cfg_env = _FakeProc(
+        10204,
+        ["npx", "@playwright/cli"],
+        {"PLAYWRIGHT_MCP_CONFIG": str(cfg)},
+    )
+    via_env_dir = _FakeProc(
+        10205,
+        ["playwright-cli"],
+        {"PLAYWRIGHT_MCP_USER_DATA_DIR": str(profile)},
+    )
+    via_rel = _FakeProc(
+        10206,
+        ["npx", "@playwright/cli", "--config", "pw-agent-dock.json"],
+        cwd=cwd,
+    )
+    via_auto = _FakeProc(
+        10207,
+        ["playwright-cli"],
+        cwd=cwd,
+    )
+    via_home = _FakeProc(
+        10208,
+        ["npx", "@playwright/cli"],
+        {"HOME": str(home)},
+        cwd=other_cwd,
+    )
+    via_cdp = _FakeProc(
+        10209,
+        ["playwright-cli", "--config", str(cdp_cfg)],
+    )
+    codegen = _FakeProc(
+        10210,
+        ["npx", "playwright", "codegen", "--config", str(cfg)],
+    )
+    other = _FakeProc(
+        10211,
+        ["playwright-cli"],
+        {"PLAYWRIGHT_MCP_USER_DATA_DIR": "/tmp/other-chrome"},
+    )
+    isolated = _FakeProc(
+        10212,
+        ["playwright-cli", "--isolated"],
+        cwd=other_cwd,
+    )
+    channel = _FakeProc(
+        10213,
+        ["playwright-cli", "attach", "--cdp", "chrome"],
+    )
+    extension = _FakeProc(
+        10214,
+        ["playwright-cli", "attach", "--extension"],
+    )
+    argv_profile_wins = _FakeProc(
+        10215,
+        ["playwright-cli", "--profile", "/tmp/other-chrome"],
+        {"PLAYWRIGHT_MCP_USER_DATA_DIR": str(profile)},
+    )
+    other_cdp = _FakeProc(
+        10216,
+        ["playwright-cli", "attach", "--cdp", "http://127.0.0.1:9222"],
+    )
+    missing_cwd = _FakeProc(
+        10217,
+        ["playwright-cli", "--config", "pw-agent-dock.json"],
+    )
+    bash_parent = _FakeProc(
+        10218,
+        ["/bin/bash", "-c", f"playwright-cli --config {cfg}"],
+    )
+    lease.acquire("human")
+    n = interrupt_unregistered_dock_cli(
+        processes=[
+            leftover, via_node, via_cfg, via_bundled, via_cfg_env,
+            via_env_dir, via_rel, via_auto, via_home, via_cdp,
+            codegen, other, isolated, channel, extension,
+            argv_profile_wins, other_cdp, missing_cwd, bash_parent,
+        ],
+        chromium_pid=9999,
+        owner_daemon_pid=9998,
+    )
+    assert n == 10
+    assert leftover.killed == 1
+    assert via_node.killed == 1
+    assert via_cfg.killed == 1
+    assert via_bundled.killed == 1
+    assert via_cfg_env.killed == 1
+    assert via_env_dir.killed == 1
+    assert via_rel.killed == 1
+    assert via_auto.killed == 1
+    assert via_home.killed == 1
+    assert via_cdp.killed == 1
+    assert codegen.killed == 0
+    assert other.killed == 0
+    assert isolated.killed == 0
+    assert channel.killed == 0
+    assert extension.killed == 0
+    assert argv_profile_wins.killed == 0
+    assert other_cdp.killed == 0
+    assert missing_cwd.killed == 0
     assert bash_parent.killed == 0
 
 
