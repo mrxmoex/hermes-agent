@@ -2357,6 +2357,142 @@ def test_stop_reserved_does_not_kill_owner_when_unique_leftover_fill_devtools(
         bt._active_sessions.update(saved)
 
 
+def test_stop_reserved_does_not_kill_owner_when_leftover_fill_inherited_persist(
+    monkeypatch, tmp_path,
+):
+    """Finding 199: leftover fill inherited leftover persist hid sibling chrome.
+
+    Leftover fill uniquely held stale ``DevToolsActivePort`` and
+    also inherited leftover persist with chrome. Take over treated
+    chrome pid None as leftover and tree-killed the Browser a
+    human is typing into. Sibling chrome keeps that daemon
+    reserved.
+    """
+    import tools.bot_desktop.browser as bdb
+    from hermes_constants import hermes_home_key
+    from tools import browser_tool as bt
+    from tools.browser_tool_session import _last_dock_cdp_port
+    from tools.browser_tool_supervisor_lease import stop_reserved_supervisors
+
+    leftover_fill = 4242
+    leftover_cri = 4244
+
+    monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path)
+    monkeypatch.setattr(bdb, "profile_dir", lambda: tmp_path)
+    monkeypatch.setattr(bdb, "_lock_pid", lambda d: None)
+    monkeypatch.setattr(
+        bdb,
+        "_chromium_cmdline_tokens",
+        lambda pid: (
+            ["chrome", "--type=zygote", f"--user-data-dir={tmp_path}"]
+            if pid == 4241 else
+            ["chrome", "--type=utility", f"--user-data-dir={tmp_path}"]
+            if pid == 4245 else
+            ["agent-browser", "daemon", f"--user-data-dir={tmp_path}"]
+            if pid == 4300 else
+            ["agent-browser", "fill", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_fill else
+            ["agent-browser", "cri", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_cri else
+            ["chrome", f"--user-data-dir={tmp_path}"]
+        ),
+    )
+    monkeypatch.setattr(
+        bdb,
+        "_proc_ppid",
+        lambda pid: {
+            4240: 4300, 4241: 4240, 4245: 4241,
+            leftover_fill: 4300, leftover_cri: 4300,
+        }.get(pid),
+    )
+    monkeypatch.setattr(
+        bdb,
+        "_launched_by_session",
+        lambda pid: "h_review" if pid == 4240 else None,
+    )
+    monkeypatch.setattr(bdb, "_recover_cdp_port_from_singleton", lambda *a, **k: None)
+    monkeypatch.setattr(
+        bdb, "_this_jar_children",
+        lambda parent, user_data_dir: (
+            {4240, leftover_fill, leftover_cri} if parent == 4300 else set()
+        ),
+    )
+
+    def _inodes(port):
+        if port == 40141:
+            return {7: {"::1"}}
+        if port == 9333:
+            return {8: {"::1"}}
+        if port == 18888:
+            return {9: {"::1"}}
+        return {}
+
+    def _holders(want):
+        out = {}
+        if 7 in want:
+            out[leftover_fill] = {7}
+        if 8 in want:
+            out[4240] = {8}
+            out[4241] = {8}
+            out[4245] = {8}
+        if 9 in want:
+            out[leftover_fill] = {9}
+            out[4240] = {9}
+        return out
+
+    monkeypatch.setattr(bdb, "_loopback_listen_inodes_for_port", _inodes)
+    monkeypatch.setattr(bdb, "_pids_holding_socket_inodes", _holders)
+    monkeypatch.setattr(
+        bdb, "_loopback_listen_ports_for_pid",
+        lambda pid: {40141, 18888} if pid == leftover_fill else (
+            {9333, 18888} if pid == 4240 else (
+                {9333} if pid in {4241, 4245} else set()
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        bdb, "_loopback_listen_targets_for_pid",
+        lambda pid: {("::1", 40141), ("::1", 18888)} if pid == leftover_fill else (
+            {("::1", 9333), ("::1", 18888)} if pid == 4240 else (
+                {("::1", 9333)} if pid in {4241, 4245} else set()
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        bdb,
+        "_cdp_port_reachable",
+        lambda port, hosts: port in (9333, 40141, 18888) and "::1" in hosts,
+    )
+    monkeypatch.setattr(bdb, "_configured_cdp_override_url", lambda: "")
+    (tmp_path / "DevToolsActivePort").write_text(
+        "40141\n/devtools/browser/abc\n", encoding="utf-8",
+    )
+    (tmp_path / "dock-cdp-port").write_text("18888\n", encoding="utf-8")
+    assert bdb.lock_listed_persist_port() == 9333
+    assert bdb._this_jar_chromium_pid(str(tmp_path)) == 4240
+    assert bdb.shared_chromium_owner_session() == "h_review"
+    assert _last_dock_cdp_port.get(hermes_home_key()) is None
+
+    killed = []
+    monkeypatch.setattr(
+        "tools.browser_tool_lifecycle._kill_verified_daemon",
+        lambda socket_dir, name: killed.append(name) or True,
+    )
+    saved = bt._active_sessions.copy()
+    try:
+        bt._active_sessions.clear()
+        bt._active_sessions["review"] = {
+            "session_name": "h_review", "features": {"local": True},
+        }
+        lease.acquire("human-viewer")
+        stop_reserved_supervisors()
+        assert killed == []
+        assert "review" in bt._active_sessions
+    finally:
+        bt._active_sessions.clear()
+        bt._active_sessions.update(saved)
+
+
 def test_stop_reserved_does_not_kill_daemon_that_spawned_dock_chromium(monkeypatch):
     """Tree-killing the parent daemon would kill the Browser the human is using."""
     import tools.bot_desktop.browser as bdb
