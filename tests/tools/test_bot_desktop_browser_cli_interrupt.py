@@ -385,6 +385,32 @@ def test_agent_browser_invocation_is_token_match_not_substring():
     assert not _is_browser_use_invocation(["uvx", "browser[cli]"])
     assert not _is_browser_use_invocation(["uvx", "python", "-m", "ruff"])
     assert not _is_browser_use_invocation(["uv", "run", "ruff"])
+    # Finding 151: official leftover ``uv run -m`` / ``--module``
+    # (uv's own flag) and leftover ``--with`` value flags.
+    # ``uv run pytest -m browser_use`` is pytest's marker.
+    # ``uvx -m`` / ``uv tool run -m`` are not uv-run's module flag.
+    assert _is_browser_use_invocation(
+        ["uv", "run", "-m", "browser_use.cli", "--cdp-url",
+         "http://127.0.0.1:9333"])
+    assert _is_browser_use_invocation(
+        ["uv", "run", "--module", "browser_use"])
+    assert _is_browser_use_invocation(
+        ["uv", "run", "--module=browser_use.cli"])
+    assert _is_browser_use_invocation(
+        ["uv", "run", "--with", "ruff", "-m", "browser_use.cli"])
+    assert _is_browser_use_invocation(
+        ["uv", "run", "--with", "ruff", "python", "-m",
+         "browser_use.cli"])
+    assert _is_browser_use_invocation(
+        ["uvx", "--with", "ruff", "browser-use", "--cdp-url",
+         "http://127.0.0.1:9333"])
+    assert not _is_browser_use_invocation(["uv", "run", "-m", "ruff"])
+    assert not _is_browser_use_invocation(
+        ["uv", "run", "pytest", "-m", "browser_use"])
+    assert not _is_browser_use_invocation(["uvx", "-m", "browser_use.cli"])
+    assert not _is_browser_use_invocation(
+        ["uv", "tool", "run", "-m", "browser_use.cli"])
+    assert not _is_browser_use_invocation(["uvx", "--with", "ruff", "ruff"])
     # Official leftover attach daemon (finding 148). Finding 78 / 110
     # matched browser-use / python -m browser_use. ensure_daemon
     # leaves python -m browser_harness.daemon with BU_CDP_* frozen.
@@ -6667,6 +6693,99 @@ def test_unregistered_uvx_pep508_and_uv_python_module_killed_on_takeover():
     assert bash_parent.killed == 0
     assert bare_browser_extra.killed == 0
     assert n == 6
+
+
+def test_unregistered_uv_run_module_and_with_killed_on_takeover():
+    """Official leftover ``uv run -m browser_use.cli`` hid leftover attach.
+
+    Finding 150 matched ``uv run python -m``. Official leftover
+    ``uv run --module`` / ``-m`` is uv's own flag, and leftover
+    ``uvx --with`` / ``uv run --with`` hid the command. Take over
+    left those writers typing into the jar. ``uv run -m ruff``,
+    ``uv run pytest -m browser_use``, ``uvx -m``, ``uv tool run
+    -m``, another Chrome, and the bash ``-c`` parent stay up.
+    """
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    bdb.remember_dock_cdp_port(9333)
+    via_m = _FakeProc(
+        11149,
+        ["uv", "run", "-m", "browser_use.cli", "--cdp-url",
+         "http://127.0.0.1:9333"],
+    )
+    via_module = _FakeProc(
+        11150,
+        ["uv", "run", "--module", "browser_use"],
+        {"BU_CDP_URL": "http://127.0.0.1:9333"},
+    )
+    via_eq = _FakeProc(
+        11151,
+        ["uv", "run", "--module=browser_use.cli", "--cdp-url",
+         "http://127.0.0.1:9333"],
+    )
+    via_with_m = _FakeProc(
+        11152,
+        ["uv", "run", "--with", "ruff", "-m", "browser_use.cli",
+         "--cdp-url", "http://127.0.0.1:9333"],
+    )
+    via_uvx_with = _FakeProc(
+        11153,
+        ["uvx", "--with", "ruff", "browser-use", "--cdp-url",
+         "http://127.0.0.1:9333"],
+    )
+    other_mod = _FakeProc(
+        11154,
+        ["uv", "run", "-m", "ruff", "--cdp-url",
+         "http://127.0.0.1:9333"],
+    )
+    pytest_marker = _FakeProc(
+        11155,
+        ["uv", "run", "pytest", "-m", "browser_use", "--cdp-url",
+         "http://127.0.0.1:9333"],
+    )
+    uvx_dash_m = _FakeProc(
+        11156,
+        ["uvx", "-m", "browser_use.cli", "--cdp-url",
+         "http://127.0.0.1:9333"],
+    )
+    tool_dash_m = _FakeProc(
+        11157,
+        ["uv", "tool", "run", "-m", "browser_use.cli", "--cdp-url",
+         "http://127.0.0.1:9333"],
+    )
+    sibling = _FakeProc(
+        11158,
+        ["uv", "run", "-m", "browser_use.cli", "--cdp-url",
+         "http://127.0.0.1:9222"],
+    )
+    bash_parent = _FakeProc(
+        11159,
+        ["/bin/bash", "-c",
+         "uv run -m browser_use.cli --cdp-url http://127.0.0.1:9333"],
+    )
+    lease.acquire("human")
+    n = interrupt_unregistered_dock_cli(
+        processes=[
+            via_m, via_module, via_eq, via_with_m, via_uvx_with,
+            other_mod, pytest_marker, uvx_dash_m, tool_dash_m,
+            sibling, bash_parent,
+        ],
+        chromium_pid=9999,
+        owner_daemon_pid=9998,
+    )
+    assert via_m.killed == 1
+    assert via_module.killed == 1
+    assert via_eq.killed == 1
+    assert via_with_m.killed == 1
+    assert via_uvx_with.killed == 1
+    assert other_mod.killed == 0
+    assert pytest_marker.killed == 0
+    assert uvx_dash_m.killed == 0
+    assert tool_dash_m.killed == 0
+    assert sibling.killed == 0
+    assert bash_parent.killed == 0
+    assert n == 5
 
 
 def test_stop_reserved_calls_unregistered_interrupt(monkeypatch):

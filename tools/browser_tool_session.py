@@ -1207,6 +1207,16 @@ _BUN_PACKAGE_VERBS = frozenset({
     "create", "repl", "pm", "patch",
 })
 _UVX_LAUNCHERS = frozenset({"uvx", "uv"})
+# Official leftover ``uv run`` / ``uvx`` value flags before the command.
+# ``--from`` is already in ``_LAUNCHER_VALUE_FLAGS``. Finding 151:
+# leftover ``uv run --with ruff -m browser_use.cli`` / ``uvx --with
+# ruff browser-use`` hid the attach because ``--with`` was treated as
+# a bare flag and the dependency became the command.
+_UV_VALUE_FLAGS = frozenset({
+    "--from", "--with", "--with-requirements", "--with-editable",
+    "--directory", "--project", "--package", "--python",
+    "--extra", "--group", "--env-file",
+})
 _NODE_LAUNCHERS = frozenset({"node", "nodejs", "iojs"})
 _ENV_LAUNCHERS = frozenset({"env"})
 _COREPACK_LAUNCHERS = frozenset({"corepack"})
@@ -2227,6 +2237,63 @@ def _uv_browser_use_command(cmd_tokens: List[str]) -> bool:
     return False
 
 
+def _uv_run_module(tokens: List[str]) -> Optional[str]:
+    """Official leftover ``uv run -m`` / ``--module`` name, or None.
+
+    Finding 150 matched ``uv run python -m browser_use.cli``. Official
+    leftover ``uv run --module`` / ``-m`` is uv's own flag
+    (equivalent to ``python -m``). ``_first_non_flag_tokens`` drops
+    ``-m``, so the module looked like a command named
+    ``browser_use.cli``. ``uv run pytest -m browser_use`` is pytest's
+    marker: ``-m`` after a leftover command operand is not uv's
+    module. ``uvx -m`` / ``uv tool run -m`` are not this flag.
+    """
+    if not tokens or _launcher_basename(tokens[0]) != "uv":
+        return None
+    known = _LAUNCHER_VALUE_FLAGS | _UV_VALUE_FLAGS
+    expect_value = False
+    run_idx = None
+    for i, tok in enumerate(tokens[1:], start=1):
+        raw = str(tok) if tok is not None else ""
+        if expect_value:
+            expect_value = False
+            continue
+        if raw == "--":
+            return None
+        if raw.startswith("-"):
+            key = raw.split("=", 1)[0]
+            if key in known and "=" not in raw:
+                expect_value = True
+            continue
+        run_idx = i
+        break
+    if run_idx is None or str(tokens[run_idx]) != "run":
+        return None
+    expect_value = False
+    for i, tok in enumerate(tokens[run_idx + 1:], start=run_idx + 1):
+        raw = str(tok) if tok is not None else ""
+        if expect_value:
+            expect_value = False
+            continue
+        if raw == "--":
+            return None
+        if raw.startswith("-"):
+            key, _, eq = raw.partition("=")
+            if key in {"-m", "--module"}:
+                if eq:
+                    return eq or None
+                if i + 1 < len(tokens):
+                    nxt = str(tokens[i + 1]) if tokens[i + 1] is not None else ""
+                    if nxt and not nxt.startswith("-"):
+                        return nxt
+                return None
+            if key in known and not eq:
+                expect_value = True
+            continue
+        return None
+    return None
+
+
 def _token_is_browser_use_module(token: str) -> bool:
     """True when this token is official leftover ``browser_use`` / ``.cli``.
 
@@ -2265,6 +2332,9 @@ def _is_browser_use_invocation(tokens: List[str]) -> bool:
     stays unknown. Finding 150: leftover ``uvx 'browser-use[cli]'`` /
     ``uvx browser-use==ver`` and ``uvx --from … python -m
     browser_use.cli`` / ``uv run python -m browser_use.cli``.
+    Finding 151: leftover ``uv run -m`` / ``--module`` (uv's own
+    flag) and leftover ``uvx --with`` / ``uv run --with`` hid the
+    attach because those value flags were not consumed.
     """
     if not tokens:
         return False
@@ -2290,11 +2360,14 @@ def _is_browser_use_invocation(tokens: List[str]) -> bool:
         )
     if name0 not in _UVX_LAUNCHERS:
         return False
-    rest = _first_non_flag_tokens(tokens)
+    rest = _first_non_flag_tokens(tokens, value_flags=_UV_VALUE_FLAGS)
     if not rest:
         return False
     if name0 == "uvx":
         return _uv_browser_use_command(rest)
+    mod = _uv_run_module(tokens)
+    if mod and _token_is_browser_use_module(mod):
+        return True
     # uv tool run browser-use / uv run browser-use
     if rest[0] == "tool" and len(rest) >= 3 and rest[1] == "run":
         return _uv_browser_use_command(rest[2:])
@@ -3158,6 +3231,8 @@ def _unregistered_cli_aims_at_dock(
     Finding 150: leftover ``uvx 'browser-use[cli]'`` /
     ``uvx browser-use==ver`` and ``uvx --from … python -m
     browser_use.cli`` / ``uv run python -m browser_use.cli``.
+    Finding 151: leftover ``uv run -m`` / ``--module`` and
+    leftover ``uvx --with`` / ``uv run --with``.
     Argv0 ``browser`` / ``browser[cli]`` stay unknown. Official leftover also leaves
     ``python -m browser_harness.daemon`` detached with those same
     env pins (finding 148) — finding 78 / 110 only matched the
