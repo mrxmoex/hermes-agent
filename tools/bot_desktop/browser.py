@@ -766,7 +766,12 @@ def lock_listed_persist_port(user_data_dir: Optional[str] = None) -> Optional[in
     ``DevToolsActivePort`` helpers (several holders) must not
     overwrite that chrome (unique holder). A different
     file-named live listen with leftover persist holders is
-    still finding 172. Finding 185: persist never stamped and
+    still finding 172. Finding 193: leftover identity can
+    stamp a *different* unique leftover listen (CRI / ``--cdp``)
+    into that persist file. Unique leftover persist + leftover
+    DevTools several then matched 181 and hid sibling chrome.
+    Hidden chrome that differs from leftover persist is chrome.
+    Finding 185: persist never stamped and
     the lock is already gone. Leftover holders that inherited
     chrome's DevTools fd still name chrome's other unique
     listen — that is the first persist, not those helpers.
@@ -861,12 +866,17 @@ def lock_listed_persist_port(user_data_dir: Optional[str] = None) -> Optional[in
     # equal to DevTools stays None so 86 / 164 can recover leftover
     # helpers. Persist unique + DevTools several is leftover helpers
     # hiding chrome. Persist several + DevTools unique is finding 172.
+    # Finding 193: leftover persist unique is not chrome when leftover
+    # holders hide a different sibling chrome listen.
     if isinstance(persist, int) and 1 <= persist <= 65535:
         try:
             hosts = _this_jar_listen_connect_hosts(persist)
         except Exception:
             hosts = ()
         if hosts:
+            hidden = _hidden_leftover_holder_chrome()
+            if hidden is not None and hidden != persist:
+                return hidden
             named = None
             try:
                 with open(
