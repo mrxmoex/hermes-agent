@@ -1320,6 +1320,119 @@ def test_unregistered_python_module_browser_use_killed_on_takeover():
     assert bash_parent.killed == 0
 
 
+def test_unregistered_cli_uses_session_owner_home_after_multiplex(tmp_path):
+    """``interrupt_unregistered_dock_cli()`` used ambient ``human_holds()``.
+
+    The 0.25s watch / ``stop_reserved_supervisors()`` pass no home. After
+    a multiplex turn that is the launch bot: missing file fail-opens as
+    agent, so leftover ``python -m browser_use --cdp-url <sibling dock>``
+    kept typing. Inflight CLI already walks per-entry homes. Re-enter
+    recorded session-owner homes when ``home`` is omitted.
+    """
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.bot_desktop import browser as bdb
+    from tools.bot_desktop.lease import _path
+    from tools import browser_tool as bt
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    launch = tmp_path / "launch"
+    bot = tmp_path / "bot"
+    launch.mkdir()
+    bot.mkdir()
+    saved = dict(bt._session_owner_homes)
+
+    leftover = _FakeProc(
+        8630,
+        ["python3", "-m", "browser_use", "--cdp-url",
+         "http://127.0.0.1:9333", "exec"],
+    )
+    other = _FakeProc(
+        8631,
+        ["python3", "-m", "browser_use", "--cdp-url",
+         "http://127.0.0.1:9222"],
+    )
+    token_bot = set_hermes_home_override(str(bot))
+    try:
+        bdb.remember_dock_cdp_port(9333)
+        lease.acquire("human-viewer")
+        bt._session_owner_homes.clear()
+        bt._session_owner_homes["review"] = str(bot)
+    finally:
+        reset_hermes_home_override(token_bot)
+
+    token_launch = set_hermes_home_override(str(launch))
+    try:
+        assert lease.human_holds() is False
+        n = interrupt_unregistered_dock_cli(
+            processes=[leftover, other],
+            chromium_pid=9999,
+            owner_daemon_pid=9998,
+        )
+        assert n == 1
+        assert leftover.killed == 1
+        assert other.killed == 0
+    finally:
+        reset_hermes_home_override(token_launch)
+        bt._session_owner_homes.clear()
+        bt._session_owner_homes.update(saved)
+        for home in (launch, bot):
+            for f in (_path(str(home)), _path(str(home)).with_suffix(".lock")):
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+
+
+def test_unregistered_cli_does_not_kill_on_the_launch_profile_lease(tmp_path):
+    """A human on the launch bot must not drop leftover aimed at a sibling jar."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.bot_desktop import browser as bdb
+    from tools.bot_desktop.lease import _path
+    from tools import browser_tool as bt
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    launch = tmp_path / "launch"
+    bot = tmp_path / "bot"
+    launch.mkdir()
+    bot.mkdir()
+    saved = dict(bt._session_owner_homes)
+
+    leftover = _FakeProc(
+        8632,
+        ["python3", "-m", "browser_use", "--cdp-url",
+         "http://127.0.0.1:9333", "exec"],
+    )
+    token_bot = set_hermes_home_override(str(bot))
+    try:
+        bdb.remember_dock_cdp_port(9333)
+        bt._session_owner_homes.clear()
+        bt._session_owner_homes["review"] = str(bot)
+    finally:
+        reset_hermes_home_override(token_bot)
+
+    token_launch = set_hermes_home_override(str(launch))
+    try:
+        bdb.remember_dock_cdp_port(9222)
+        lease.acquire("human-viewer")
+        n = interrupt_unregistered_dock_cli(
+            processes=[leftover],
+            chromium_pid=9999,
+            owner_daemon_pid=9998,
+        )
+        assert n == 0
+        assert leftover.killed == 0
+    finally:
+        reset_hermes_home_override(token_launch)
+        bt._session_owner_homes.clear()
+        bt._session_owner_homes.update(saved)
+        for home in (launch, bot):
+            for f in (_path(str(home)), _path(str(home)).with_suffix(".lock")):
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+
+
 def test_unregistered_playwright_dock_cdp_killed_on_takeover():
     """terminal() npx playwright --cdp-endpoint / PW_TEST_CONNECT_* is leftover action."""
     from tools.bot_desktop import browser as bdb

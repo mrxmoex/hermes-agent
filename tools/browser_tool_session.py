@@ -2419,6 +2419,82 @@ def _live_scan_unregistered_dock_cli_allowed() -> bool:
     return not os.environ.get("PYTEST_CURRENT_TEST")
 
 
+def _known_unregistered_cli_homes() -> list[Optional[str]]:
+    """Homes a ``home=None`` leftover scan must re-enter after multiplex.
+
+    Inflight CLI / harness already walk per-entry homes. Unregistered
+    ``terminal()`` leftover has no row. The 0.25s watch calls
+    ``interrupt_unregistered_dock_cli()`` with no home — ambient is the
+    launch bot, missing ``lease.json`` fail-opens as agent, and leftover
+    ``python -m browser_use --cdp-url <sibling dock>`` kept typing.
+    Session owners, cua backends, inflight / harness / supervisor homes,
+    and served profiles are the same set leftover persist already walks.
+    Unrecorded owner stays ambient-only.
+    """
+    homes: list[Optional[str]] = [None]
+    try:
+        homes.extend(
+            h for h in _bt._session_owner_homes.values()
+            if isinstance(h, str) and h
+        )
+    except Exception:
+        pass
+    try:
+        from tools.computer_use.tool import _backend_homes
+        homes.extend(h for h in _backend_homes.values() if isinstance(h, str) and h)
+    except Exception:
+        pass
+    with _inflight_dock_cli_lock:
+        for entry in _inflight_dock_cli:
+            h = entry.get("home")
+            if isinstance(h, str) and h:
+                homes.append(h)
+    with _reserved_dock_harness_lock:
+        for entry in _reserved_dock_harness:
+            h = entry.get("home")
+            if isinstance(h, str) and h:
+                homes.append(h)
+    try:
+        from tools.browser_supervisor import SUPERVISOR_REGISTRY
+        from tools.browser_tool_supervisor_lease import _supervisor_home
+        with SUPERVISOR_REGISTRY._lock:
+            items = list(SUPERVISOR_REGISTRY._by_task.items())
+        for raw_key, sup in items:
+            stored_id = getattr(sup, "task_id", None)
+            task_id = stored_id if isinstance(stored_id, str) and stored_id else raw_key
+            h = _supervisor_home(sup, task_id if isinstance(task_id, str) else None)
+            if isinstance(h, str) and h:
+                homes.append(h)
+    except Exception:
+        pass
+    try:
+        from hermes_cli.profiles import profiles_to_serve
+        for _name, path in profiles_to_serve(True):
+            homes.append(str(path))
+    except Exception:
+        pass
+    try:
+        from tui_gateway.methods_display_watch import _served_profile_homes
+        for path in list(_served_profile_homes):
+            homes.append(str(path))
+    except Exception:
+        pass
+    return homes
+
+
+def _unique_hermes_homes(homes: list[Optional[str]]) -> list[Optional[str]]:
+    from hermes_constants import hermes_home_key
+    seen: set[str] = set()
+    out: list[Optional[str]] = []
+    for home in homes:
+        key = hermes_home_key(home) if home else hermes_home_key()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(home)
+    return out
+
+
 def interrupt_unregistered_dock_cli(
     home: Optional[str] = None,
     *,
@@ -2444,7 +2520,43 @@ def interrupt_unregistered_dock_cli(
     that spawned it (finding 40). Skip already-registered inflight PIDs
     (they already got the finding-42 SIGINT). Other Chrome ``--cdp 9222``,
     LAN CDP, and a sibling profile's jar stay up.
+
+    ``home=None`` (watch / ``stop_reserved_supervisors``) re-enters each
+    known leftover home. After a multiplex turn ambient is the launch
+    bot; a human on a sibling must still drop writers aimed at that jar.
+    An explicit ``home`` stays single-profile (in-process acquire).
     """
+    homes = [home] if home else _unique_hermes_homes(_known_unregistered_cli_homes())
+    shared = processes
+    if shared is None:
+        if not _live_scan_unregistered_dock_cli_allowed():
+            return 0
+        try:
+            import psutil
+            shared = list(psutil.process_iter(attrs=["pid"]))
+        except Exception:
+            return 0
+    killed = 0
+    skip_pids: set[int] = set()
+    for candidate in homes:
+        killed += _interrupt_unregistered_dock_cli_at(
+            candidate,
+            processes=shared,
+            chromium_pid=chromium_pid,
+            owner_daemon_pid=owner_daemon_pid,
+            skip_pids=skip_pids,
+        )
+    return killed
+
+
+def _interrupt_unregistered_dock_cli_at(
+    home: Optional[str],
+    *,
+    processes,
+    chromium_pid: Optional[int],
+    owner_daemon_pid: Optional[int],
+    skip_pids: set[int],
+) -> int:
     from hermes_constants import hermes_home_key, reset_hermes_home_override, set_hermes_home_override
     from tools.bot_desktop import browser as _bd_browser
     from tools.bot_desktop import lease as _bd_lease
@@ -2477,28 +2589,22 @@ def interrupt_unregistered_dock_cli(
                 dock_port = None
         if dock_port is None:
             dock_port = _last_dock_cdp_port.get(hermes_home_key())
-        if chromium_pid is None and profile is not None:
-            chromium_pid = _singleton_lock_pid(str(profile))
-        if owner_daemon_pid is None and type(chromium_pid) is int and chromium_pid > 1:
+        live_chromium = chromium_pid
+        live_daemon = owner_daemon_pid
+        if live_chromium is None and profile is not None:
+            live_chromium = _singleton_lock_pid(str(profile))
+        if live_daemon is None and type(live_chromium) is int and live_chromium > 1:
             try:
-                if _bd_browser._launched_by_session(chromium_pid):
-                    owner_daemon_pid = _proc_ppid(chromium_pid)
+                if _bd_browser._launched_by_session(live_chromium):
+                    live_daemon = _proc_ppid(live_chromium)
             except Exception:
-                owner_daemon_pid = None
-        skip = {os.getpid(), os.getppid()}
-        if type(chromium_pid) is int and chromium_pid > 1:
-            skip.add(chromium_pid)
-        if type(owner_daemon_pid) is int and owner_daemon_pid > 1:
-            skip.add(owner_daemon_pid)
+                live_daemon = None
+        skip = {os.getpid(), os.getppid()} | skip_pids
+        if type(live_chromium) is int and live_chromium > 1:
+            skip.add(live_chromium)
+        if type(live_daemon) is int and live_daemon > 1:
+            skip.add(live_daemon)
         skip |= _inflight_dock_cli_pids()
-        if processes is None:
-            if not _live_scan_unregistered_dock_cli_allowed():
-                return 0
-            try:
-                import psutil
-                processes = list(psutil.process_iter(attrs=["pid"]))
-            except Exception:
-                return 0
         for proc in processes:
             try:
                 pid = int(getattr(proc, "pid", 0) or 0)
@@ -2545,6 +2651,8 @@ def interrupt_unregistered_dock_cli(
                 else:
                     os.kill(pid, signal.SIGKILL)
                 killed += 1
+                skip_pids.add(pid)
+                skip.add(pid)
             except (ProcessLookupError, PermissionError, OSError):
                 continue
             except Exception:
