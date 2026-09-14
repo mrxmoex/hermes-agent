@@ -738,7 +738,12 @@ def running_instance_cdp_port(user_data_dir: str, *, exclude_session: Optional[s
     and recover is unknown, helpers that still name this jar and
     inode-hold the file port are that port (finding 164). If the lock
     pid still lists that number and TCP to its family failed, do not
-    stamp another family's holder (finding 165). An instance
+    stamp another family's holder (finding 165). If recover is unknown
+    because Chromium has several specific loopbacks (finding 85) and
+    the lock pid still lists stamped persist — not the file — persist
+    is current chrome (finding 172 / 174). Do not let 164 overwrite
+    that stamp with a stale ``DevToolsActivePort`` helpers still hold.
+    An instance
     agent-browser launched for ``exclude_session`` itself is reported as ``None``:
     its daemon already owns that browser, and handing it ``--cdp`` would make it
     close the browser as a config change and then attach to the port that just died with it.
@@ -786,15 +791,44 @@ def running_instance_cdp_port(user_data_dir: str, *, exclude_session: Optional[s
                 hosts = _listen_connect_hosts(pid, candidate)
                 if hosts and _cdp_port_reachable(candidate, hosts):
                     port = candidate
+        lock_ports = _loopback_listen_ports_for_pid(pid)
+        persist = None
+        try:
+            persist = last_known_dock_cdp_port()
+        except Exception:
+            persist = None
+        persist_on_lock = (
+            isinstance(persist, int)
+            and 1 <= persist <= 65535
+            and persist in lock_ports
+        )
         if port is None:
             recovered = _recover_cdp_port_from_singleton(user_data_dir, pid)
             if (
                 recovered is not None
-                and recovered in _loopback_listen_ports_for_pid(pid)
+                and recovered in lock_ports
             ):
                 hosts = _listen_connect_hosts(pid, recovered)
                 if hosts and _cdp_port_reachable(recovered, hosts):
                     port = recovered
+        if (
+            port is None
+            and persist_on_lock
+            and not lock_still_lists_file_port
+        ):
+            # Finding 174: unique-listen recover stays unknown when
+            # Chromium has several specific loopbacks (finding 85).
+            # Persist already named a listen this pid still holds —
+            # that is not a guess. Finding 164 then persisted a stale
+            # file-named helper listen (inherited leftover fd) and
+            # overwrote ``dock-cdp-port``. Finding 172's attach
+            # tie-break never ran because recover / 164 succeeded.
+            # Lock listing persist and the file is finding 172 (file
+            # TCP already tried). Do not shop helpers on the file
+            # while persist is still on this pid.
+            hosts = _listen_connect_hosts(pid, persist)
+            if hosts and _cdp_port_reachable(persist, hosts):
+                port = persist
         if port is None and port_line.isdigit() and not lock_still_lists_file_port:
             # Finding 164: lock pid is still this jar but no longer holds
             # the file listen (fork inherit). Helpers that name this jar
@@ -802,10 +836,13 @@ def running_instance_cdp_port(user_data_dir: str, *, exclude_session: Optional[s
             # Finding 165: if this pid still lists that number and TCP to
             # its family failed, do not shop other holders' families —
             # a sibling squat on 127.0.0.1 after ::1 died used to stamp.
+            # Finding 174: if this pid still lists persist, the file is
+            # the inherited leftover — do not overwrite that stamp.
             # Do not guess when the file is gone too.
-            port = _file_named_this_jar_listen_port(
-                int(port_line), user_data_dir, exclude_session=exclude_session,
-            )
+            if not persist_on_lock:
+                port = _file_named_this_jar_listen_port(
+                    int(port_line), user_data_dir, exclude_session=exclude_session,
+                )
         if port is None:
             return None
     try:
