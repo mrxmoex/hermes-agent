@@ -7242,6 +7242,111 @@ def test_unregistered_uv_wrapped_harness_daemon_killed_on_takeover():
     assert n == 6
 
 
+def test_unregistered_named_listen_killed_when_persist_and_override_miss(monkeypatch):
+    """Finding 155: leftover already named a listen this jar holds.
+
+    Unique-listen recover stays unknown with two specific loopbacks.
+    Persist never ran and ``/browser connect`` is unset, so
+    ``dock_port`` stayed None and leftover ``--cdp-url`` /
+    ``BU_CDP_*`` survived Take over. A named port this pid
+    inode-listens on is not a guess. 9222, an unpinned leftover,
+    another family squat, LAN, and the bash ``-c`` parent stay up.
+    Persist still does not stamp an arbitrary listen.
+    """
+    import os
+    import socket
+
+    from tools.bot_desktop import browser as bdb
+    from tools.bot_desktop import runtime
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+    profile = bdb.profile_dir()
+    profile.mkdir(parents=True, exist_ok=True)
+    lock = profile / "SingletonLock"
+    if lock.exists() or lock.is_symlink():
+        lock.unlink()
+    os.symlink(f"host-{os.getpid()}", lock)
+    monkeypatch.setattr(runtime, "state_dir", lambda: profile.parent)
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: None)
+    monkeypatch.setattr(
+        bdb,
+        "_chromium_cmdline_tokens",
+        lambda pid: ["chrome", f"--user-data-dir={profile}"],
+    )
+    monkeypatch.setattr(bdb, "_loopback_listen_ports_for_pid", lambda pid: {port, port + 1})
+    monkeypatch.setattr(
+        bdb,
+        "_loopback_listen_targets_for_pid",
+        lambda pid: {("127.0.0.1", port), ("::1", port + 1)},
+    )
+    monkeypatch.setattr(bdb, "_configured_cdp_override_url", lambda: "")
+    dock = f"http://127.0.0.1:{port}"
+    try:
+        assert bdb.last_known_dock_cdp_port() is None
+        leftover_ab = _FakeProc(
+            11202,
+            ["agent-browser", "--cdp", dock, "fill"],
+        )
+        leftover_bu = _FakeProc(
+            11203,
+            ["browser-use", "--cdp-url", dock],
+        )
+        leftover_daemon = _FakeProc(
+            11204,
+            ["python", "-m", "browser_harness.daemon"],
+            {"BU_CDP_URL": dock},
+        )
+        leftover_port = _FakeProc(
+            11205,
+            ["agent-browser", "--cdp", str(port), "fill"],
+        )
+        sibling = _FakeProc(
+            11206,
+            ["agent-browser", "--cdp", "http://127.0.0.1:9222", "fill"],
+        )
+        leftover_v4_other = _FakeProc(
+            11207,
+            ["agent-browser", "--cdp", f"http://127.0.0.1:{port + 1}", "fill"],
+        )
+        unpinned = _FakeProc(
+            11208,
+            ["browser-use"],
+        )
+        lan = _FakeProc(
+            11209,
+            ["agent-browser", "--cdp", f"http://10.0.0.5:{port}", "fill"],
+        )
+        bash_parent = _FakeProc(
+            11210,
+            ["/bin/bash", "-c", f"browser-use --cdp-url {dock}"],
+        )
+        lease.acquire("human")
+        n = interrupt_unregistered_dock_cli(
+            processes=[
+                leftover_ab, leftover_bu, leftover_daemon, leftover_port,
+                sibling, leftover_v4_other, unpinned, lan, bash_parent,
+            ],
+            chromium_pid=9999,
+            owner_daemon_pid=9998,
+        )
+        assert leftover_ab.killed == 1
+        assert leftover_bu.killed == 1
+        assert leftover_daemon.killed == 1
+        assert leftover_port.killed == 1
+        assert sibling.killed == 0
+        assert leftover_v4_other.killed == 0
+        assert unpinned.killed == 0
+        assert lan.killed == 0
+        assert bash_parent.killed == 0
+        assert n == 4
+    finally:
+        listener.close()
+
+
 def test_stop_reserved_calls_unregistered_interrupt(monkeypatch):
     from tools.browser_tool_session import interrupt_unregistered_dock_cli as real
     from tools.browser_tool_supervisor_lease import stop_reserved_supervisors

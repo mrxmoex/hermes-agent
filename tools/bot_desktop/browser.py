@@ -567,6 +567,34 @@ def _configured_cdp_override_url() -> str:
         return ""
 
 
+def _this_jar_listens_on_port(want: Optional[int]) -> bool:
+    """True when this profile's Chromium inode-listens on ``want``.
+
+    Unique-listen recover stays unknown when Chromium has several
+    *specific* loopbacks — do not guess among them. A caller that
+    already named ``want`` (leftover ``--cdp-url`` / vault attach /
+    ``/browser connect``) is not a guess. Stamp only if SingletonLock's
+    pid holds that listen and cmdline names this ``user-data-dir``.
+    A sibling on 9222, empty inodes, and a recycled pid are not.
+    No HTTP.
+    """
+    if not isinstance(want, int) or not (1 <= want <= 65535):
+        return False
+    user_data_dir = str(profile_dir())
+    pid = _lock_pid(user_data_dir)
+    if pid is None:
+        return False
+    listed = _listed_user_data_dir(pid)
+    if not listed or not _paths_same_user_data_dir(
+        listed, user_data_dir, cwd=_proc_cwd(pid),
+    ):
+        return False
+    if want not in _loopback_listen_ports_for_pid(pid):
+        return False
+    hosts = _listen_connect_hosts(pid, want)
+    return bool(hosts) and _cdp_port_reachable(want, hosts)
+
+
 def _configured_listen_port_for_this_jar() -> Optional[int]:
     """Override port when this profile's Chromium listens on it.
 
@@ -586,20 +614,7 @@ def _configured_listen_port_for_this_jar() -> Optional[int]:
         return None
     if want is None:
         return None
-    user_data_dir = str(profile_dir())
-    pid = _lock_pid(user_data_dir)
-    if pid is None:
-        return None
-    listed = _listed_user_data_dir(pid)
-    if not listed or not _paths_same_user_data_dir(
-        listed, user_data_dir, cwd=_proc_cwd(pid),
-    ):
-        return None
-    if want not in _loopback_listen_ports_for_pid(pid):
-        return None
-    if not _cdp_port_reachable(want, _listen_connect_hosts(pid, want)):
-        return None
-    return want
+    return want if _this_jar_listens_on_port(want) else None
 
 
 def persist_live_dock_cdp_port() -> Optional[int]:

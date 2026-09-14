@@ -4829,6 +4829,11 @@ def _cdp_url_is_bot_desktop_browser(cdp_url: str) -> bool:
     consult the same lock-pid + cmdline + listen guard persist uses. Do not
     treat every configured loopback as the dock.
 
+    Finding 155: leftover / vault / attach already name a port. That is
+    not a guess — if this jar inode-listens there, the URL is the dock
+    even when persist and the override both miss. Do not stamp an
+    arbitrary connected loopback; do not skip the family check.
+
     Persist is family-correct (finding 144). A leftover URL on the other
     loopback family of the same port is a sibling squat, not this jar
     (finding 145). Port-only / localhost stay unknown-family.
@@ -4844,6 +4849,16 @@ def _cdp_url_is_bot_desktop_browser(cdp_url: str) -> bool:
         _last_dock_cdp_port[key] = live
         _bd_browser.remember_dock_cdp_port(live)
         return live == want and _leftover_cdp_host_matches_this_jar(cdp_url, live)
+    # Named port this jar still listens on beats a stale persist file
+    # and does not need the operator override (finding 155).
+    try:
+        named = _bd_browser._this_jar_listens_on_port(want)
+    except Exception:
+        named = False
+    if named:
+        _last_dock_cdp_port[key] = want
+        _bd_browser.remember_dock_cdp_port(want)
+        return _leftover_cdp_host_matches_this_jar(cdp_url, want)
     remembered = _last_dock_cdp_port.get(key)
     if remembered is None:
         remembered = _bd_browser.last_known_dock_cdp_port()
