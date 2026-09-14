@@ -678,6 +678,11 @@ def _force_reap_browser_session(task_id: str) -> None:
 
     Janitor last resort after repeated cleanup failures (#100738).
     """
+    with _session_owner_scope(task_id):
+        _force_reap_browser_session_unscoped(task_id)
+
+
+def _force_reap_browser_session_unscoped(task_id: str) -> None:
     with _bt._cleanup_lock:
         session_info = _bt._active_sessions.get(task_id)
     if session_info and _session._local_browser_reserved_by_human(session_info):
@@ -704,7 +709,18 @@ def _cleanup_single_browser_session(task_id: str, *, force: bool = False) -> Non
     ``close``; without this guard the ``_release_session_resources`` tail
     (and ``cleanup_all_browsers``'s unconditional ``force=True``) still
     tree-killed the dock Browser.
+
+    Re-enter ``_session_owner_homes[task_id]`` before the reserved check.
+    ``cleanup_all_browsers`` (``/browser connect``, shutdown) walks every
+    session under whatever home the caller wrapped. After a multiplex turn
+    that is the launch bot: missing file fail-opens as agent, so force-reap
+    tree-killed the sibling jar a human held. Unrecorded owner stays ambient.
     """
+    with _session_owner_scope(task_id):
+        _cleanup_single_browser_session_unscoped(task_id, force=force)
+
+
+def _cleanup_single_browser_session_unscoped(task_id: str, *, force: bool = False) -> None:
     with _bt._cleanup_lock:
         reserved = _bt._active_sessions.get(task_id)
     if reserved and _session._local_browser_reserved_by_human(reserved):

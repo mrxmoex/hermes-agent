@@ -2244,6 +2244,118 @@ def _sibling_homes(tmp_path):
     return launch, bot
 
 
+def test_cleanup_all_browsers_defers_owner_session_after_multiplex_turn(
+    monkeypatch, tmp_path,
+):
+    """``cleanup_all_browsers`` used ambient ``human_holds()``. After a
+    multiplex turn / finding 118's session wrap that is the launch
+    lease — tree-kill of the Chromium a human holds on the bot.
+    ``/browser connect`` and gateway shutdown walk every session.
+    """
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.bot_desktop.lease import _path
+    from tools import browser_tool as bt
+    from tools import browser_tool_lifecycle as life
+
+    launch, bot = _sibling_homes(tmp_path)
+    released: list = []
+    saved = _session_state()[1]
+    monkeypatch.setattr(
+        life, "_release_session_resources", lambda *a, **k: released.append("release")
+    )
+    monkeypatch.setattr(
+        "tools.browser_tool_session._run_browser_command",
+        lambda *a, **k: released.append("close"),
+    )
+    token_bot = set_hermes_home_override(str(bot))
+    try:
+        for name in saved:
+            getattr(bt, name).clear()
+        bt._active_sessions["review"] = {
+            "session_name": "h_review",
+            "features": {"local": True},
+            "bb_session_id": None,
+        }
+        bt._session_owner_homes["review"] = str(bot)
+        lease.acquire("human-viewer")
+    finally:
+        reset_hermes_home_override(token_bot)
+
+    token_launch = set_hermes_home_override(str(launch))
+    try:
+        assert lease.human_holds() is False
+        life.cleanup_all_browsers()
+        assert "review" in bt._active_sessions
+        assert released == []
+    finally:
+        reset_hermes_home_override(token_launch)
+        for home in (launch, bot):
+            for f in (_path(str(home)), _path(str(home)).with_suffix(".lock")):
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+        _restore_session_state(bt, saved)
+
+
+def test_cleanup_all_browsers_does_not_defer_on_the_launch_profile_lease(
+    monkeypatch, tmp_path,
+):
+    """A human on the launch bot must not keep a sibling session reserved."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.bot_desktop.lease import _path
+    from tools import browser_tool as bt
+    from tools import browser_tool_lifecycle as life
+
+    launch, bot = _sibling_homes(tmp_path)
+    released: list = []
+    saved = _session_state()[1]
+
+    def _release(task_id, session_info):
+        released.append("release")
+        bt._active_sessions.pop(task_id, None)
+
+    monkeypatch.setattr(life, "_release_session_resources", _release)
+    monkeypatch.setattr(
+        "tools.browser_tool_session._run_browser_command",
+        lambda *a, **k: {"success": True},
+    )
+    token_launch = set_hermes_home_override(str(launch))
+    try:
+        lease.acquire("human-viewer")
+    finally:
+        reset_hermes_home_override(token_launch)
+
+    token_bot = set_hermes_home_override(str(bot))
+    try:
+        for name in saved:
+            getattr(bt, name).clear()
+        bt._active_sessions["review"] = {
+            "session_name": "h_review",
+            "features": {"local": True},
+            "bb_session_id": None,
+        }
+        bt._session_owner_homes["review"] = str(bot)
+    finally:
+        reset_hermes_home_override(token_bot)
+
+    token_launch = set_hermes_home_override(str(launch))
+    try:
+        assert lease.human_holds() is True
+        life.cleanup_all_browsers()
+        assert "review" not in bt._active_sessions
+        assert "release" in released
+    finally:
+        reset_hermes_home_override(token_launch)
+        for home in (launch, bot):
+            for f in (_path(str(home)), _path(str(home)).with_suffix(".lock")):
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+        _restore_session_state(bt, saved)
+
+
 def test_admit_task_shared_browser_uses_session_owner_lease_after_multiplex_turn(
     monkeypatch, tmp_path,
 ):
