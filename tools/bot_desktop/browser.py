@@ -771,6 +771,10 @@ def lock_listed_persist_port(user_data_dir: Optional[str] = None) -> Optional[in
     into that persist file. Unique leftover persist + leftover
     DevTools several then matched 181 and hid sibling chrome.
     Hidden chrome that differs from leftover persist is chrome.
+    Finding 195: leftover daemon that inherited leftover
+    CRI / ``--cdp`` is a unique this-jar listen. That
+    leftover persist is not hidden chrome — sibling
+    chrome is still a this-jar child of leftover daemon.
     Finding 185: persist never stamped and
     the lock is already gone. Leftover holders that inherited
     chrome's DevTools fd still name chrome's other unique
@@ -1035,6 +1039,25 @@ def _pid_is_chromium_browser(pid: int) -> bool:
     return exe in _CHROMIUM_BROWSER_EXES
 
 
+def _unique_chromium_browser_holder(
+    port: int, user_data_dir: str,
+) -> Optional[int]:
+    """Unique this-jar holder of *port* when that pid is chrome, or ``None``.
+
+    Finding 195: leftover daemon that inherited leftover CRI /
+    ``--cdp`` is a unique this-jar listen. The lock-gone n==1
+    scan used to treat that leftover persist as hidden chrome
+    and never reach sibling chrome via leftover daemon's
+    children. Leftover CRI / ``agent-browser`` / python are
+    not chrome.
+    """
+    holders = _this_jar_holder_pids(port, user_data_dir)
+    if len(holders) != 1:
+        return None
+    holder = next(iter(holders))
+    return holder if _pid_is_chromium_browser(holder) else None
+
+
 def _unique_listen_family_root(extra: Set[int]) -> Optional[int]:
     """Unique browser-process ancestor of *extra* listen holders, or ``None``.
 
@@ -1111,11 +1134,15 @@ def _leftover_or_chrome_family_holds(
     leftover helpers' this-jar parent is leftover daemon, not
     chrome, so chrome is absent from that parent check. A unique
     browser-process root of the extra holders is still chrome.
+    Finding 195: leftover daemon that inherited leftover CRI
+    is a unique this-jar listen. That leftover persist is
+    not chrome just because leftover helpers' parent holds
+    it. Leftover daemon / CRI / python are not chrome.
     An unrelated this-jar holder is not chrome's family.
     """
     holders = _this_jar_holder_pids(port, user_data_dir)
     extra = holders - leftover_pids
-    if chrome_pid in holders:
+    if chrome_pid in holders and _pid_is_chromium_browser(chrome_pid):
         for holder in holders:
             if holder == chrome_pid or holder in leftover_pids:
                 continue
@@ -1206,8 +1233,12 @@ def unique_lock_chrome_hidden_by_leftover_file(
     are not inode holders of chrome. Chrome plus this-jar
     children of chrome is still chrome; leftover need not hold
     that listen. Finding 190: zygote grandchildren that inherit
-    that listen are still chrome's family. Several such listens
-    stay unknown. No HTTP.
+    that listen are still chrome's family. Finding 195:
+    leftover daemon that inherited leftover CRI / ``--cdp``
+    is a unique this-jar listen. That leftover persist is
+    not chrome — sibling chrome is still a this-jar child
+    of leftover daemon. Several such listens stay unknown.
+    No HTTP.
     """
     if user_data_dir is None:
         user_data_dir = str(profile_dir())
@@ -1232,11 +1263,7 @@ def unique_lock_chrome_hidden_by_leftover_file(
         for port in lock_ports:
             if port == named:
                 continue
-            try:
-                n = len(_this_jar_listen_holders(port, user_data_dir))
-            except Exception:
-                continue
-            if n == 1:
+            if _unique_chromium_browser_holder(port, user_data_dir) is not None:
                 chrome.append(port)
         if len(chrome) == 1:
             return chrome[0]
@@ -1281,11 +1308,7 @@ def unique_lock_chrome_hidden_by_leftover_file(
         for port in ports:
             if port == named or port in seen:
                 continue
-            try:
-                n = len(_this_jar_listen_holders(port, user_data_dir))
-            except Exception:
-                continue
-            if n == 1:
+            if _unique_chromium_browser_holder(port, user_data_dir) is not None:
                 seen.add(port)
                 chrome.append(port)
     if len(chrome) == 1:
