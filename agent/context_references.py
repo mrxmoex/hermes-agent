@@ -306,13 +306,51 @@ def _run_quiet(cmd: list[str], cwd: Path, timeout: int, env: dict | None = None)
                           timeout=timeout, stdin=subprocess.DEVNULL, **popen_kwargs, **({} if env is None else {"env": env}))
 
 
+_GIT_EXCLUDE_BOT_DESKTOP = (
+    ":(glob,exclude)**/bot-desktop",
+    ":(glob,exclude)**/bot-desktop/**",
+)
+_GIT_DIFF_OK = {0, 1}
+
+
+def _sensitive_git_rel(cwd: Path, rel: str) -> bool:
+    """True when a git pathspec would dump a credential / Bot Screen store."""
+    from agent.file_safety import is_sensitive_managed_path
+    if is_sensitive_managed_path(rel):
+        return True
+    try:
+        return is_sensitive_managed_path(str(cwd / rel))
+    except (OSError, ValueError):
+        return True
+
+
 def _expand_git_reference(ref: ContextReference, cwd: Path, args: list[str], label: str) -> Expansion:
     try:
         # Repo-supplied config/attributes must never execute code (GHSA-7x36-8jrh-v4pw).
-        result = _run_quiet(["git", *harden_git_argv(args)], cwd, 30, env=noninteractive_git_env())
+        run_args = list(args)
+        ok_codes = {0}
+        if run_args and run_args[0] == "diff":
+            # git diff exits 1 when files differ — that is the success path.
+            # Name-only first so bot-desktop/ (cookie jar + lease) never reaches
+            # a content dump; @file: already uses file_safety, @diff did not.
+            names = _run_quiet(
+                ["git", *harden_git_argv([*run_args, "--name-only"])],
+                cwd, 30, env=noninteractive_git_env(),
+            )
+            if names.returncode not in _GIT_DIFF_OK:
+                return f"{ref.raw}: {(names.stderr or '').strip() or 'git command failed'}", None
+            safe = [p for p in names.stdout.splitlines() if p.strip() and not _sensitive_git_rel(cwd, p)]
+            if not safe:
+                content = "(no output)"
+                return None, f"🧾 {label} ({estimate_tokens_rough(content)} tokens)\n```diff\n{content}\n```"
+            run_args = [*run_args, "--", *safe]
+            ok_codes = _GIT_DIFF_OK
+        elif run_args and run_args[0] == "log":
+            run_args = [*run_args, "--", ".", *_GIT_EXCLUDE_BOT_DESKTOP]
+        result = _run_quiet(["git", *harden_git_argv(run_args)], cwd, 30, env=noninteractive_git_env())
     except subprocess.TimeoutExpired:
         return f"{ref.raw}: git command timed out (30s)", None
-    if result.returncode != 0:
+    if result.returncode not in ok_codes:
         return f"{ref.raw}: {(result.stderr or '').strip() or 'git command failed'}", None
     content = result.stdout.strip() or "(no output)"
     return None, f"🧾 {label} ({estimate_tokens_rough(content)} tokens)\n```diff\n{content}\n```"

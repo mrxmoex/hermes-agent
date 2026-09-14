@@ -728,7 +728,14 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
                     "cloud for public URLs; set browser.auto_local_for_private_urls: false to disable)",
                     url, type(_cloud._get_cloud_provider()).__name__ if _cloud._get_cloud_provider() else "none")
 
-    session_info = _session._get_session_info(nav_session_key)
+    try:
+        session_info = _session._get_session_info(nav_session_key)
+    except Exception as e:
+        from tools.bot_desktop.lease import HumanHasControl
+
+        if isinstance(e, HumanHasControl):
+            return _dumps(_err(str(e), code="human_has_control"))
+        raise
     is_first_nav = session_info.get("_first_nav", True)
     if is_first_nav:
         session_info["_first_nav"] = False
@@ -801,11 +808,18 @@ def browser_snapshot(
     # Merge supervisor state (pending dialogs + frame tree) when a CDP supervisor is
     # attached. See website/docs/developer-guide/browser-supervisor.md.
     try:
+        from tools.bot_desktop.lease import HumanHasControl
         from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
         _supervisor = SUPERVISOR_REGISTRY.get(effective_task_id)
         if _supervisor is not None:
+            try:
+                admitted = _session._admit_leftover_io(_supervisor, effective_task_id)
+            except HumanHasControl:
+                _supervisor = None
+                admitted = None
+        if _supervisor is not None:
             _sv_snap = _supervisor.snapshot()
-            if _sv_snap.active:
+            if not _session._lease_moved_result(admitted) and _sv_snap.active:
                 response.update(_snapshot._redact_browser_output(_sv_snap.to_dict()))
     except Exception as _sv_exc:
         logger.debug("supervisor snapshot merge failed: %s", _sv_exc)
@@ -1011,11 +1025,19 @@ def _eval_supervisor_fast_path(effective_task_id: str, expression: str) -> Optio
     JS-side exception — NOT retried via subprocess, that would just reproduce it slower);
     None to fall through to the subprocess path."""
     try:
+        from tools.bot_desktop.lease import HumanHasControl
         from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
         supervisor = SUPERVISOR_REGISTRY.get(effective_task_id)
         if supervisor is None:
             return None
+        try:
+            admitted = _session._admit_leftover_io(supervisor, effective_task_id)
+        except HumanHasControl as e:
+            return json.dumps({"success": False, "error": str(e), "code": "human_has_control"})
         sup_result = supervisor.evaluate_runtime(expression)
+        moved = _session._lease_moved_result(admitted)
+        if moved:
+            return json.dumps(moved)
         if sup_result.get("ok"):
             return _eval_result_or_blocked(
                 effective_task_id, _parse_eval_value(sup_result.get("result")), {}, method="cdp_supervisor")
@@ -1100,11 +1122,79 @@ def _camofox_eval(expression: str, task_id: Optional[str] = None) -> str:
         return tool_error(str(e), success=False)
 
 
+_recording_lease_listener = None
+
+
+def _session_recording_matches_home(task_id: str, home: Optional[str] = None) -> bool:
+    """True when this session belongs to ``home`` (or the current profile).
+
+    One serve/gateway process can hold sessions for several multiplexed
+    profiles; a takeover on bot A must not stop bot B's WebM.
+    """
+    want = hermes_home_key(home) if home is not None else hermes_home_key()
+    owner = _session_owner_homes.get(task_id)
+    if owner is None:
+        return home is None or hermes_home_key() == want
+    return hermes_home_key(owner) == want
+
+
+def stop_local_browser_recordings(home: Optional[str] = None) -> None:
+    """Stop WebM recordings of the shared local browser.
+
+    ``browser.record_sessions`` is opt-in, but once started the daemon keeps
+    writing after Take over — the same observation the lease fence refuses
+    on ``browser_snapshot`` / ``browser_vision``. Called when a handoff is
+    requested or a human already holds. ``record stop`` is lease-safe.
+    Scoped to ``home`` (a HERMES_HOME / ``hermes_home_key``) so a multiplex
+    takeover does not cease a sibling profile's capture.
+    """
+    _install_recording_lease_hook()
+    with _cleanup_lock:
+        ids = list(_recording_sessions)
+    for tid in ids:
+        if not _session_recording_matches_home(tid, home):
+            continue
+        info = _active_sessions.get(tid) or {}
+        if info and not _session._is_shared_bot_desktop_session(info):
+            continue
+        _maybe_stop_recording(tid)
+    try:
+        from tools.browser_tool_supervisor_lease import stop_reserved_supervisors
+        stop_reserved_supervisors(home=home)
+    except Exception:
+        logger.debug("reserved supervisor sweep from recording stop failed", exc_info=True)
+
+
+def _install_recording_lease_hook() -> None:
+    """Stop this process's local WebMs the moment *this* process writes HUMAN.
+
+    Cross-process takeovers (Desktop acquire, gateway idle) are picked up by
+    the janitor's reserved-recording scan. ``lease._reset_for_tests`` drops
+    listeners, so we re-subscribe when the callback is gone.
+    """
+    global _recording_lease_listener
+    from tools.bot_desktop import lease as _bd_lease
+    if _recording_lease_listener is not None and _recording_lease_listener in _bd_lease._listeners:
+        return
+
+    def _on_lease(profile_key: str, lease) -> None:
+        if lease.holder != _bd_lease.HUMAN:
+            return
+        stop_local_browser_recordings(home=profile_key)
+
+    _recording_lease_listener = _on_lease
+    _bd_lease.on_change(_on_lease)
+
+
 def _maybe_start_recording(task_id: str):
     """Start recording if browser.record_sessions is enabled in config."""
+    _install_recording_lease_hook()
     with _cleanup_lock:
         if task_id in _recording_sessions:
             return
+        existing = _active_sessions.get(task_id)
+    if existing is not None and _session._local_browser_reserved_by_human(existing):
+        return
     try:
         from hermes_cli.config import read_raw_config
         hermes_home = get_hermes_home()
@@ -1179,6 +1269,15 @@ from tools import browser_tool_vision as _vision
 def _capture_vision_screenshot(effective_task_id: str, annotate: bool, screenshot_path: Path, lp_prerouted: bool):
     """Take (or adopt the pre-routed) screenshot; returns ``(result, path, error_json_or_None)``."""
     if lp_prerouted and screenshot_path.exists():
+        from tools.bot_desktop.lease import HumanHasControl
+        try:
+            admitted = _session._admit_task_shared_browser(effective_task_id)
+        except HumanHasControl as e:
+            refused = {"success": False, "code": "human_has_control", "error": str(e)}
+            return refused, screenshot_path, json.dumps(refused)
+        moved = _session._lease_moved_result(admitted)
+        if moved:
+            return moved, screenshot_path, json.dumps(moved)
         result = _lp._annotate_lightpanda_fallback(
             {"success": True, "data": {"path": str(screenshot_path)}}, _LP_VISION_FALLBACK_REASON)
     else:

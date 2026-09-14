@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 
-import { resolveDirectoryForIpc } from './hardening'
+import { resolveDirectoryForIpc, sensitiveFileBlockReason } from './hardening'
 import { resolveLocalReadPath } from './wsl-path-bridge'
 
 const FS_READDIR_STAT_CONCURRENCY = 16
@@ -95,9 +95,19 @@ async function readDirForIpc(dirPath, options: any = {}) {
     return { entries: [], error: error?.code || 'read-error' }
   }
 
+  if (sensitiveFileBlockReason(resolved)) {
+    return { entries: [], error: 'EACCES' }
+  }
+
   try {
     const dirents = await fsImpl.promises.readdir(resolved, { withFileTypes: true })
-    const visibleDirents = dirents.filter(dirent => !FS_READDIR_HIDDEN.has(dirent.name))
+    const visibleDirents = dirents.filter(dirent => {
+      if (FS_READDIR_HIDDEN.has(dirent.name)) {
+        return false
+      }
+
+      return !sensitiveFileBlockReason(path.join(resolved, dirent.name))
+    })
     const entries = await mapWithStatConcurrency(visibleDirents, dirent => entryForDirent(dirent, resolved, fsImpl))
 
     entries.sort((a, b) => Number(b.isDirectory) - Number(a.isDirectory) || a.name.localeCompare(b.name))

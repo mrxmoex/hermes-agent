@@ -56,7 +56,23 @@ def reset_edit_approval_requester(token: Token) -> None:
     _EDIT_APPROVAL_REQUESTER.reset(token)
 
 
+def _deny_protected_edit(path: str) -> None:
+    """Refuse to read or propose an edit on a file_safety-blocked path.
+
+    ACP builds a diff for the editor *before* write_file/patch run. Without
+    this, ``_read_text_if_exists`` embeds ``bot-desktop/lease.json`` (raw
+    viewer_id) or the cookie jar in the permission UI, even when the later
+    write is denied. Same always-on class as pairing/ / sessions/.
+    """
+    from agent.file_safety import get_read_block_error, get_write_denied_error
+
+    blocked = get_write_denied_error(path) or get_read_block_error(path)
+    if blocked:
+        raise PermissionError(blocked)
+
+
 def _read_text_if_exists(path: str) -> str | None:
+    _deny_protected_edit(path)
     p = Path(path).expanduser()
     if p.is_file():
         return p.read_text(encoding="utf-8", errors="replace")
@@ -112,6 +128,8 @@ def _proposal_for_patch_v4a(arguments: dict[str, Any]) -> EditProposal:
     paths = _extract_v4a_patch_paths(patch_body)
     if not paths:
         raise ValueError("no file paths found in V4A patch")
+    for path in paths:
+        _deny_protected_edit(path)
     single = len(paths) == 1
     # ACP only supports a single diff payload: surface the exact V4A patch as new_text so
     # patch-mode calls are permissioned and denied patches cannot mutate.
@@ -137,7 +155,7 @@ def build_edit_proposal(tool_name: str, arguments: dict[str, Any]) -> EditPropos
 
 def _is_sensitive_auto_approve_path(path: str) -> bool:
     lowered = {part.lower() for part in Path(path).expanduser().parts}
-    return bool(lowered & {".git", ".ssh"}) or Path(path).name.lower() in SENSITIVE_AUTO_APPROVE_NAMES
+    return bool(lowered & {".git", ".ssh", "bot-desktop"}) or Path(path).name.lower() in SENSITIVE_AUTO_APPROVE_NAMES
 
 
 def should_auto_approve_edit(proposal: EditProposal, policy: str, cwd: str | None = None) -> bool:

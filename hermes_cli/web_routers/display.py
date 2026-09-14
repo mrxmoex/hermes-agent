@@ -26,12 +26,46 @@ router = APIRouter()
 
 _READ_CHUNK = 64 * 1024
 _CLOSE_CONTROL_TAKEN = 4000
+# 1000/1001 = the viewer closed the pane on purpose. 4002 = this window replaced
+# its own stream (Reconnect). A code-less close is 1005; a dropped link is 1006.
+# Only the first pair hands the screen back to the agent.
 _CLEAN_CLOSE = frozenset({1000, 1001})
 _CLOSE_DESKTOP_GONE = 4001
+_CLOSE_STREAM_REPLACE = 4002
 _CLOSE_BAD_TICKET = 4401
 _CLOSE_NOT_ALLOWED = 4403
 _CLOSE_PROTOCOL = 1003
 _LEASE_REFRESH_S = 0.25
+# One live RFB socket per (profile home, viewer_id). observe remints a ticket
+# for the same viewer; without this a second accept shares the lease input gate.
+_live_streams: dict[tuple[str, str], object] = {}
+
+
+def _live_stream_key(hermes_home: str, viewer_id: str) -> tuple[str, str]:
+    return (hermes_home, viewer_id)
+
+
+async def _replace_live_stream(ws, hermes_home: str, viewer_id: str) -> tuple[str, str]:
+    """Register *ws* as the live stream for this viewer; evict a previous one with 4002
+    (same viewer replacing itself — keep the lease; 4000 would paint control-taken)."""
+    key = _live_stream_key(hermes_home, viewer_id)
+    previous = _live_streams.get(key)
+    _live_streams[key] = ws
+    if previous is not None and previous is not ws:
+        try:
+            await previous.close(code=_CLOSE_STREAM_REPLACE, reason="stream-replaced")
+        except Exception:
+            pass
+    return key
+
+
+def _forget_live_stream(key: tuple[str, str], ws) -> None:
+    if _live_streams.get(key) is ws:
+        del _live_streams[key]
+
+
+def _reset_live_streams_for_tests() -> None:
+    _live_streams.clear()
 
 
 def _should_evict(held: dict, lease, viewer_id: str) -> bool:
@@ -55,10 +89,18 @@ def _consume_display_ticket(ws: WebSocket) -> Optional[dict]:
     if not ticket:
         return None
     try:
-        info = consume_ticket(ticket)
+        # Provider is checked BEFORE the pop: a gateway login ticket presented
+        # here must stay redeemable on /api/ws (the inverse of that door
+        # refusing a display ticket as a login).
+        info = consume_ticket(ticket, provider="bot-desktop")
     except TicketInvalid:
         return None
-    if info.get("provider") != "bot-desktop" or not info.get("hermes_home"):
+    # Both pins are required. A ticket with a home but no viewer used to fall
+    # through to user_id or the literal "viewer" — every such stream then
+    # shared one input-gate identity.
+    if (info.get("provider") != "bot-desktop"
+            or not info.get("hermes_home")
+            or not str(info.get("viewer_id") or "").strip()):
         return None
     return info
 
@@ -85,7 +127,10 @@ async def _bridge(ws: WebSocket, info: dict) -> None:
     sock = Path(info["hermes_home"]) / "bot-desktop" / "rfb.sock"
     profile_home = str(info["hermes_home"])
     profile_key = hermes_home_key(profile_home)
-    viewer_id = str(info.get("viewer_id") or info.get("user_id") or "viewer")
+    viewer_id = str(info.get("viewer_id") or "").strip()
+    if not viewer_id:
+        await ws.close(code=_CLOSE_BAD_TICKET, reason="display ticket missing viewer")
+        return
     if not sock.exists():
         await ws.close(code=_CLOSE_DESKTOP_GONE, reason="Bot Desktop is not running")
         return
@@ -97,6 +142,7 @@ async def _bridge(ws: WebSocket, info: dict) -> None:
         return
 
     await ws.accept()
+    live_key = await _replace_live_stream(ws, profile_home, viewer_id)
     loop = asyncio.get_running_loop()
     evicted = asyncio.Event()
     held = {"ever": _lease.viewer_may_send_input(viewer_id, profile_key=profile_home)}
@@ -110,6 +156,11 @@ async def _bridge(ws: WebSocket, info: dict) -> None:
             lease = _lease.get(profile_key=profile_home)
         allowed["input"] = lease.holder == _lease.HUMAN and lease.viewer_id == viewer_id
         allowed["at"] = loop.time()
+        # Eviction used to run only on in-process on_change. A takeover written by
+        # another process (CLI, gateway, second serve) never fired that callback, so
+        # the previous holder kept the RFB stream and watched the new human type.
+        if _should_evict(held, lease, viewer_id):
+            evicted.set()
 
     def _may_send_input() -> bool:
         if loop.time() - allowed["at"] > _LEASE_REFRESH_S:
@@ -120,8 +171,6 @@ async def _bridge(ws: WebSocket, info: dict) -> None:
         if key != profile_key:
             return
         loop.call_soon_threadsafe(_refresh_allowed, lease)
-        if _should_evict(held, lease, viewer_id):
-            loop.call_soon_threadsafe(evicted.set)
     unsubscribe = _lease.on_change(_on_lease)
 
     rfb_filter = RfbClientFilter(_may_send_input)
@@ -160,8 +209,18 @@ async def _bridge(ws: WebSocket, info: dict) -> None:
         await evicted.wait()
         await ws.close(code=_CLOSE_CONTROL_TAKEN, reason="control-taken")
 
+    async def poll_lease() -> None:
+        # _refresh_allowed used to run only on in-process on_change or when the
+        # viewer sent input (the filter consults allow_input for Key/Pointer only).
+        # A cross-process takeover plus an idle or viewOnly holder never hit
+        # either path, so the previous viewer kept the framebuffer. Drive the
+        # same disk refresh on a timer so eviction does not depend on input.
+        while True:
+            await asyncio.sleep(_LEASE_REFRESH_S)
+            _refresh_allowed()
+
     tasks = [asyncio.create_task(rfb_to_ws()), asyncio.create_task(ws_to_rfb()),
-             asyncio.create_task(watch_eviction())]
+             asyncio.create_task(watch_eviction()), asyncio.create_task(poll_lease())]
     try:
         done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         for t in pending:
@@ -171,6 +230,7 @@ async def _bridge(ws: WebSocket, info: dict) -> None:
             if exc and not isinstance(exc, (WebSocketDisconnect, ConnectionError)):
                 _log.debug("display ws ended: %r", exc)
     finally:
+        _forget_live_stream(live_key, ws)
         unsubscribe()
         writer.close()
         # Closing the viewer window hands control back. A DROPPED link (laptop lid, Wi-Fi, 1006)

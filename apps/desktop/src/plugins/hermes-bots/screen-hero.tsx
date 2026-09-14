@@ -68,6 +68,15 @@ function useLiveThumbnail(bot: RosterRow, running: boolean) {
       void displayRequest<DisplayThumbnail>(bot, 'display.thumbnail')
         .then(result => {
           if (!cancelled) {
+            if (result.data_url == null && result.suppressed !== 'human_has_control') {
+              // Running but no frame (crashed launcher, grab failed): keep the
+              // last picture and age into "Last seen" — do not reset misses.
+              setSuppressed(false)
+              setMisses(prev => prev + 1)
+
+              return
+            }
+
             setDataUrl(result.data_url)
             setSuppressed(result.suppressed === 'human_has_control')
             setMisses(0)

@@ -14,7 +14,8 @@ LAUNCHER = Path(__file__).resolve().parents[2] / "tools" / "bot_desktop" / "laun
 pytestmark = pytest.mark.linux_only
 
 
-def _seed(tmp_path: Path, fake_bins: list[str], browser_exec: str = "") -> Path:
+def _seed(tmp_path: Path, fake_bins: list[str], browser_exec: str = "",
+          browser_bin: str = "", browser_profile: str = "") -> Path:
     bindir = tmp_path / "bin"
     bindir.mkdir()
     for name in fake_bins:
@@ -36,6 +37,8 @@ def _seed(tmp_path: Path, fake_bins: list[str], browser_exec: str = "") -> Path:
         "HERMES_BD_ENV_FILE": str(tmp_path / "env"), "HERMES_BD_CONFIG_HOME": str(cfg),
         "HERMES_BD_SEED_ONLY": "1",
         **({"HERMES_BD_BROWSER_EXEC": browser_exec} if browser_exec else {}),
+        **({"HERMES_BD_BROWSER_BIN": browser_bin} if browser_bin else {}),
+        **({"HERMES_BD_BROWSER_PROFILE": browser_profile} if browser_profile else {}),
     }
     subprocess.run(["bash", str(LAUNCHER)], env=env, check=True, stdin=subprocess.DEVNULL, capture_output=True, timeout=30)
     return cfg
@@ -53,6 +56,71 @@ def test_dock_lists_only_programs_present_on_path(tmp_path):
         if line.startswith("Exec=")
     )
     assert execs == [f"{chrome} --user-data-dir={tmp_path}/bp", "xfce4-terminal"]
+
+
+def test_xauth_cookie_is_not_passed_on_argv(tmp_path):
+    """The MIT-MAGIC-COOKIE-1 used to be the last xauth argv token. Every
+    local user can read that via ps; the cookie belongs on stdin."""
+    import re
+
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    argv_log = tmp_path / "xauth-argv"
+    stdin_log = tmp_path / "xauth-stdin"
+    (bindir / "xauth").write_text(
+        f'#!/bin/sh\nprintf "%s\\n" "$@" > "{argv_log}"\ncat > "{stdin_log}"\n',
+        encoding="utf-8",
+    )
+    (bindir / "xauth").chmod(0o755)
+    for tool in ("mkdir", "sed", "cat", "printf", "dirname", "bash", "sh", "rm",
+                 "ln", "touch", "chmod", "od", "tr", "awk"):
+        real = shutil.which(tool)
+        if real and not (bindir / tool).exists():
+            (bindir / tool).symlink_to(real)
+    env = {
+        "PATH": str(bindir),
+        "HOME": str(tmp_path),
+        "HERMES_BD_PROFILE": "t", "HERMES_BD_DISPLAY_NUM": "99",
+        "HERMES_BD_SOCKET": str(tmp_path / "rfb.sock"),
+        "HERMES_BD_XAUTH": str(tmp_path / "Xauthority"),
+        "HERMES_BD_ENV_FILE": str(tmp_path / "env"),
+        "HERMES_BD_CONFIG_HOME": str(tmp_path / "xdg"),
+        "HERMES_BD_SEED_ONLY": "1",
+    }
+    subprocess.run(
+        ["bash", str(LAUNCHER)], env=env, check=True,
+        stdin=subprocess.DEVNULL, capture_output=True, timeout=30,
+    )
+    argv = argv_log.read_text(encoding="utf-8")
+    stdin = stdin_log.read_text(encoding="utf-8")
+    assert "source" in argv.split()
+    assert "MIT-MAGIC-COOKIE-1" not in argv
+    assert not re.search(r"\b[0-9a-fA-F]{32}\b", argv)
+    assert "MIT-MAGIC-COOKIE-1" in stdin
+    assert re.search(r"\b[0-9a-fA-F]{32}\b", stdin)
+
+
+def test_dock_browser_exec_keeps_a_profile_dir_that_contains_spaces(tmp_path):
+    """BIN+PROFILE must become one Exec= argv even when the profile path has spaces;
+    otherwise takeover opens a truncated user-data-dir and a different cookie jar."""
+    import shlex
+    chrome = tmp_path / "bin" / "chrome"
+    profile = tmp_path / "My Home" / "bp"
+    profile.mkdir(parents=True)
+    cfg = _seed(tmp_path, ["xfce4-terminal", "chrome"],
+                browser_bin=str(chrome), browser_profile=str(profile))
+    panel = ET.parse(cfg / "xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml")
+    launcher_ids = [str(p.get("name")) for p in panel.iter("property") if p.get("value") == "launcher"]
+    execs = [
+        line.split("=", 1)[1]
+        for pid in launcher_ids
+        for line in (cfg / "xfce4/panel" / pid.replace("plugin-", "launcher-") / "hermes.desktop").read_text(encoding="utf-8").splitlines()
+        if line.startswith("Exec=")
+    ]
+    browser_exec = next(e for e in execs if "chrome" in e)
+    parts = shlex.split(browser_exec)
+    assert parts[0] == str(chrome)
+    assert parts[1] == f"--user-data-dir={profile}"
 
 
 def test_look_is_seeded_with_wallpaper_and_theme(tmp_path):

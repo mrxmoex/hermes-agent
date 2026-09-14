@@ -129,5 +129,5 @@ def test_missing_thread_and_loop_attrs_trigger_recreate(
 
     fresh = isolated_registry.get_or_start(task_id="t4", cdp_url=cdp_url)
     assert fresh is not broken
-    assert isolated_registry._by_task["t4"] is fresh
+    assert isolated_registry.get("t4") is fresh
     fresh.stop()

@@ -291,6 +291,13 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
     if not token:
         return "no_credential", "none"
     if hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode()):
+        # Loopback / --insecure: the process-lifetime session token is the only
+        # credential. Do NOT stamp auth_identity — _is_authenticated_identity
+        # treats any non-internal {user_id, provider} as a dashboard controller.
+        # mint_identity keys Bot Screen viewer-id mints across /api/ws replaces
+        # (a new WSTransport is not a new person on this token).
+        ws._hermes_mint_identity = {
+            "user_id": "loopback-session", "provider": "token"}
         return None, "token"
     return "token_mismatch", "token"
 

@@ -14,6 +14,7 @@ import os
 import re
 import sys
 import threading
+import time
 import uuid
 from collections import namedtuple
 from functools import partial
@@ -80,6 +81,11 @@ _backends: Dict[str, ComputerUseBackend] = {}
 _backend_call_locks: Dict[str, threading.RLock] = {}
 _backend_permission_modes: Dict[str, str] = {}
 _backend_displays: Dict[str, str] = {}  # DISPLAY the cached backend was spawned against (Bot Desktop rebind)
+_backend_homes: Dict[str, str] = {}  # hermes_home_key the backend was spawned under (multiplex)
+_LEASE_POLL_S = 0.25
+_lease_listener = None
+_watch_started = False
+_watch_lock = threading.Lock()
 # (home key, provider, model) → bool. The decision reads the active profile's config (auxiliary.vision
 # override, declared supports_vision), so a multiplexed process must not serve profile A's verdict to B.
 _AUX_VISION_ROUTE_CACHE: Dict[Tuple[str, str, str], bool] = {}
@@ -134,18 +140,39 @@ def _install_backend(sid: str, backend: ComputerUseBackend, permission_mode: str
     """Record a backend in the session caches (the empty session also mirrors it onto the ``_backend`` hook).
     Caller holds ``_backend_lock``."""
     global _backend
+    from hermes_constants import hermes_home_key
     from tools.computer_use.cua_backend import desktop_identity
     _backends[sid], _backend_permission_modes[sid] = backend, permission_mode
     _backend_displays[sid] = desktop_identity()
+    _backend_homes[sid] = hermes_home_key()
     _backend_call_locks[sid] = threading.RLock()
     _backend = backend if sid == "" else _backend
     return backend
+
+
+def _backend_owner_home(session_id: str) -> Optional[str]:
+    """HERMES_HOME that spawned this session's cua-driver, or None if unrecorded.
+
+    After a multiplex turn the process home is the launch profile. Ambient
+    ``assert_agent_may_act`` / persist / ``desktop_identity`` then read
+    launch ``lease.json`` (agent, missing file) and leftover
+    ``computer_use`` typed on the bot screen a human was using — or
+    replaced that session's cached driver because launch DISPLAY looked
+    stale. Copy the home out; do not persist while holding the cache
+    lock. Unrecorded owner stays ambient. A human on the launch bot
+    does not void a sibling session.
+    """
+    sid = str(session_id or "")
+    with _backend_lock:
+        home = _backend_homes.get(sid)
+    return home if isinstance(home, str) and home else None
 
 def _detach_locked(sid: str) -> Tuple[Optional[ComputerUseBackend], Optional[threading.RLock]]:
     """Remove one session's cache entries, plus the ``_backend`` injection hook when it aliases the empty session
     (older callers/tests may populate only the hook). Caller holds ``_backend_lock``."""
     global _backend
     _backend_permission_modes.pop(sid, None), _backend_displays.pop(sid, None)
+    _backend_homes.pop(sid, None)
     backend, call_lock = _backends.pop(sid, None), _backend_call_locks.pop(sid, None)
     if sid == "":
         backend = _backend if backend is None else backend
@@ -161,11 +188,136 @@ def _stop_backend(backend: ComputerUseBackend, call_lock: Optional[threading.RLo
     except Exception as e:
         on_error(e)
 
+
+def _interrupt_backend(backend: ComputerUseBackend) -> None:
+    """Drop the driver without taking the call lock. ``stop()`` waits behind
+    an in-flight ``type_text``; that leftover write is the hole."""
+    fn = getattr(backend, "interrupt", None)
+    (fn if callable(fn) else backend.stop)()
+
+
+def install_computer_use_lease_hook() -> None:
+    """Interrupt cua-driver sessions aimed at a human-held Bot Desktop.
+
+    In-process Take over fires ``on_change``. Cross-process acquire (Desktop
+    ``display.lease.acquire`` in ``hermes serve``) is picked up by the 0.25s
+    poll — the same cadence leftover CDP uses. ``lease._reset_for_tests``
+    drops listeners, so we re-subscribe when the callback is gone.
+    """
+    global _lease_listener, _watch_started
+    from tools.bot_desktop import lease as _bd_lease
+    if _lease_listener is None or _lease_listener not in _bd_lease._listeners:
+        def _on_lease(profile_key: str, lease) -> None:
+            if lease.holder != _bd_lease.HUMAN:
+                return
+            interrupt_reserved_backends(home=profile_key)
+
+        _lease_listener = _on_lease
+        _bd_lease.on_change(_on_lease)
+    with _watch_lock:
+        if not _watch_started:
+            _watch_started = True
+            threading.Thread(
+                target=_watch_loop, daemon=True, name="bot-desktop-cua-lease",
+            ).start()
+
+
+def _persist_watched_dock_ports() -> None:
+    """Stamp each cua-backend home's live dock port while DevTools is readable.
+
+    Finding 65 persists on ``lease.acquire``. Finding 66 persists on the
+    leftover CDP watch (only after leftover / browser hooks). Finding 67
+    persists in ``hermes serve``. A messaging-only gateway drives the
+    screen via ``computer_use`` with no leftover hook and no serve
+    process; this 0.25s walk already visits those homes and never
+    stamped ``dock-cdp-port``. A later DevTools miss then treated
+    leftover CDP attach as another Chrome. Unrelated Chromes stay
+    unstamped.
+    """
+    from tools.bot_desktop.browser import persist_live_dock_cdp_port
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    homes: List[Optional[str]] = [None]
+    with _backend_lock:
+        homes.extend(_backend_homes.values())
+    seen: set[str] = set()
+    for home in homes:
+        key = home or ""
+        if key in seen:
+            continue
+        seen.add(key)
+        token = None
+        try:
+            if home:
+                token = set_hermes_home_override(home)
+            persist_live_dock_cdp_port()
+        except Exception:
+            pass
+        finally:
+            if token is not None:
+                reset_hermes_home_override(token)
+
+
+def _watch_loop() -> None:
+    while True:
+        try:
+            _persist_watched_dock_ports()
+        except Exception:
+            pass
+        try:
+            interrupt_reserved_backends()
+        except Exception:
+            logger.debug("computer_use reserved-backend watch failed", exc_info=True)
+        time.sleep(_LEASE_POLL_S)
+
+
+def interrupt_reserved_backends(home: Optional[str] = None) -> None:
+    """Abort cua-driver sessions whose screen a human now holds.
+
+    ``_stop_backend`` takes the session call lock so an in-flight ``type``
+    finishes first — leftover keystrokes in the field the human is using.
+    Detach from the cache, then ``interrupt()`` without that lock.
+
+    ``home`` limits the sweep to one profile (in-process acquire). ``None``
+    walks every cached backend under the home it was spawned on.
+    """
+    install_computer_use_lease_hook()
+    from hermes_constants import hermes_home_key, reset_hermes_home_override, set_hermes_home_override
+    from tools.bot_desktop import lease as _bd_lease
+    want = hermes_home_key(home) if home is not None else None
+    victims: List[ComputerUseBackend] = []
+    with _backend_lock:
+        for sid in list(_backends.keys()):
+            owner = _backend_homes.get(sid)
+            owner_key = hermes_home_key(owner) if owner else hermes_home_key()
+            if want is not None and owner_key != want:
+                continue
+            token = None
+            try:
+                if owner:
+                    token = set_hermes_home_override(owner)
+                held = _bd_lease.human_holds()
+            finally:
+                if token is not None:
+                    reset_hermes_home_override(token)
+            if not held:
+                continue
+            backend, _call_lock = _detach_locked(sid)
+            if backend is not None:
+                victims.append(backend)
+    for backend in victims:
+        try:
+            _interrupt_backend(backend)
+        except Exception:
+            logger.debug("computer_use reserved-backend interrupt failed", exc_info=True)
+
 def _get_backend(session_id: str = "") -> ComputerUseBackend:
     sid = str(session_id or "")
+    # First call imports tools.approval (cwd-aware regexes used to compile
+    # here). Do that before the cache lock so Take over can still interrupt
+    # a sibling session. Re-read under the lock: YOLO can flip in between.
+    _cua_permission_mode(sid)
     while True:
         with _backend_lock:
-            # Mode resolved under the cache lock; YOLO mutation never holds the approval lock while releasing it.
             permission_mode = _cua_permission_mode(sid)
             if sid == "" and _backend is not None and sid not in _backends:
                 _install_backend(sid, _backend, permission_mode)  # fold the injection hook into the cache
@@ -213,7 +365,8 @@ def _shutdown_backend_atexit() -> None:
         if _backend is not None:
             unique.setdefault(id(_backend), (_backend, _backend_call_locks.get("")))
         _backend = None
-        _backends.clear(), _backend_call_locks.clear(), _backend_permission_modes.clear(), _backend_displays.clear()
+        _backends.clear(), _backend_call_locks.clear(), _backend_permission_modes.clear()
+        _backend_displays.clear(), _backend_homes.clear()
     with _approval_lock:
         _session_auto_approve.clear(), _always_allow.clear(), _escalation_warned.clear()
     for backend, call_lock in unique.values():
@@ -249,12 +402,44 @@ class _NoopBackend(ComputerUseBackend):  # pragma: no cover
 def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
     """Main entry point (tools.registry): a JSON string (text-only) or a dict marked `_multimodal`. Order: hard
     blocks (_reject_unsafe) -> approval scopes (destructive action, then 'bring_to_front' — persistent focus is a
-    separate visible side effect with its own scope) -> backend -> dispatch under the session call lock."""
+    separate visible side effect with its own scope) -> backend -> dispatch under the session call lock.
+
+    Re-enter the session's cua-backend home first. After a multiplex turn
+    the process home is the launch profile; leftover ``computer_use`` must
+    admit / persist / resolve DISPLAY against *this* session's
+    ``lease.json``, not the launch bot's (finding 117).
+    """
     action = (args.get("action") or "").strip().lower()
     if not action:
         return json.dumps({"error": "missing `action`"})
     session_id = str(kwargs.get("session_id") or "")  # approval-state / daemon-mode isolation key
+    owner = _backend_owner_home(session_id)
+    token = None
+    if owner:
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        token = set_hermes_home_override(owner)
+    try:
+        return _handle_computer_use_unscoped(args, session_id, action)
+    finally:
+        if token is not None:
+            reset_hermes_home_override(token)
+
+
+def _handle_computer_use_unscoped(args: Dict[str, Any], session_id: str, action: str) -> Any:
     from tools.computer_use.handoff import HANDOFF_ACTIONS, handle_handoff
+    # Finding 68 stamped dock-cdp-port on list_apps/click/… and started the
+    # leftover watch. request_handoff / wait_for_human returned first, so a
+    # messaging-only "please take over" never persisted. Take over can then
+    # unlink DevToolsActivePort; leftover attach is another Chrome.
+    # Persist + watch before the handoff return. Persist failure must not
+    # fail the ask. Do not assert_agent_may_act here — wait_for_human runs
+    # while a human holds.
+    install_computer_use_lease_hook()
+    try:
+        from tools.bot_desktop.browser import persist_live_dock_cdp_port
+        persist_live_dock_cdp_port()
+    except Exception:
+        pass
     if action in HANDOFF_ACTIONS:
         return handle_handoff(action, args)
     # Bot Desktop lease: while a human drives the screen every action, capture included, is refused.
@@ -307,6 +492,13 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
     except _bd_lease.HumanHasControl as e:
         return _refused(e)
     except Exception as e:
+        # interrupt() aborts in-flight input with a transport error. Treat a
+        # lease flip the same as the explicit fence — leftover keystrokes
+        # must not surface as a retryable driver failure.
+        if _bd_lease.get().epoch != admitted.epoch or _bd_lease.human_holds():
+            return _refused(_bd_lease.HumanHasControl(
+                "A human took over this desktop while the action ran; its result was discarded. "
+                "Re-capture (or call computer_use action='wait_for_human' if they still hold control)."))
         logger.exception("computer_use %s failed", action)
         return json.dumps({"error": f"{action} failed: {e}"})
 

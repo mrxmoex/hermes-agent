@@ -122,6 +122,16 @@ class ComputerUseBackend(ABC):
     @abstractmethod
     def stop(self) -> None: ...
 
+    def interrupt(self) -> None:
+        """Abort in-flight driver I/O without waiting for the current action.
+
+        ``stop()`` is polite: it may send ``end_session`` and wait behind a
+        live ``type_text``. A human who takes over the Bot Desktop screen
+        needs the transport dropped immediately so leftover keystrokes do
+        not land in the field they are typing into.
+        """
+        self.stop()
+
     @abstractmethod
     def is_available(self) -> bool: ...  # usable on this host right now (check_fn gating, setup wizard)
 

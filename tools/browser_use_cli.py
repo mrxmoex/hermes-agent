@@ -123,6 +123,10 @@ def _export_session_cdp(env: dict, get_session_info: Callable[[str], Any], cache
     try:
         cdp = str((get_session_info(cache_key) or {}).get("cdp_url") or "")
     except Exception as e:
+        from tools.bot_desktop.lease import HumanHasControl
+
+        if isinstance(e, HumanHasControl):
+            raise
         return fail_msg(e)
     if not cdp:
         return no_cdp_msg
@@ -390,6 +394,9 @@ def _resolve_managed_chromium_cdp(env: dict, task_id: Optional[str], session_nam
         return None
     res = _run_browser_command(_backend_cache_key(task_id, session_name), "get", ["cdp-url"],
                                timeout=_get_open_command_timeout(first_open=True))
+    if (res or {}).get("code") == "human_has_control":
+        from tools.bot_desktop.lease import HumanHasControl
+        raise HumanHasControl((res or {}).get("error") or "A human has taken over this desktop.")
     cdp = str(((res or {}).get("data") or {}).get("cdpUrl") or "") if (res or {}).get("success") else ""
     if not cdp:
         return (f"The local browser could not be started: {(res or {}).get('error') or 'agent-browser returned no CDP endpoint'} "
@@ -422,12 +429,23 @@ def _resolve_backend_cdp(env: dict, task_id: Optional[str], session_name: str = 
         return None
     try:
         from tools.browser_tool_cloud import _get_cloud_provider
-        from tools.browser_tool_session import _get_session_info
-        from tools.browser_tool_cdp import _get_cdp_override
+        from tools.browser_tool_session import _get_session_info, _refuse_shared_session_while_human_holds
+        from tools.browser_tool_cdp import _get_cdp_override, _get_cdp_override_raw
     except Exception as e:  # pragma: no cover — stubbed browser_tool in tests
         logger.debug("browser_tool backend resolution unavailable: %s", e)
         return None
-    override = _quiet(_get_cdp_override, "")
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.browser_tool_session import _session_owner_home
+    owner = _session_owner_home(task_id)
+    token = set_hermes_home_override(owner) if owner else None
+    try:
+        raw = _quiet(_get_cdp_override_raw, "")
+        if raw:
+            _refuse_shared_session_while_human_holds(cdp_url=raw)
+        override = _quiet(_get_cdp_override, "")
+    finally:
+        if token is not None:
+            reset_hermes_home_override(token)
     if override:
         _set_cdp_env(env, override)
         return None
@@ -481,6 +499,8 @@ def _resolve_real_profile_cdp(env: dict, force_local: bool) -> Optional[str]:
     if not force_local and (_quiet(_get_cloud_provider, object()) is not None
                             or is_legacy_browser_use_cloud_config(_read_browser_cfg())):
         return None
+    from tools.browser_tool_session import _refuse_shared_session_while_human_holds
+    _refuse_shared_session_while_human_holds()
     cdp, err = _real_profile_cdp()
     if cdp and not err:
         _set_cdp_env(env, cdp)
@@ -495,10 +515,35 @@ def _attach_vault_supervisor(env: dict, task_id: Optional[str]) -> None:
     if not cdp:
         return
     try:
+        from tools.bot_desktop.lease import HumanHasControl
+        from tools.browser_tool_session import _admit_shared_browser, _session_owner_home
+        owner = _session_owner_home(task_id)
+        _admit_shared_browser(cdp_url=cdp, home=owner)
+    except HumanHasControl:
+        return
+    except Exception:
+        return
+    try:
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
         from tools.browser_supervisor import SUPERVISOR_REGISTRY
         from tools.browser_tool_cdp import _get_dialog_policy_config, _resolve_cdp_override
+        from tools.browser_tool_session import _admit_resolved_cdp_for_attach, _session_owner_home
         policy, timeout_s = _get_dialog_policy_config()
-        SUPERVISOR_REGISTRY.get_or_start(task_id=task_id or "default", cdp_url=_resolve_cdp_override(cdp),
+        owner = _session_owner_home(task_id)
+        token = set_hermes_home_override(owner) if owner else None
+        try:
+            resolved = _resolve_cdp_override(cdp)
+        finally:
+            if token is not None:
+                reset_hermes_home_override(token)
+        if not resolved:
+            return
+        # Re-admit the *resolved* WS. Discovery can outlive the start-of-call
+        # admit; leftover get_or_start after Take over is Target.attach on the
+        # jar. Unrelated Chromes stay unfenced.
+        if not _admit_resolved_cdp_for_attach(resolved, home=owner, task_id=task_id):
+            return
+        SUPERVISOR_REGISTRY.get_or_start(task_id=task_id or "default", cdp_url=resolved,
                                          dialog_policy=policy, dialog_timeout_s=timeout_s)
     except Exception as exc:
         logger.debug("browser_exec: CDP supervisor attach failed (non-fatal): %s", exc)
@@ -509,14 +554,23 @@ def _route_backend(env: dict, session: str, task_id: Optional[str], local: bool)
     BEFORE provider resolution so a hit short-circuits the cloud path via the BU_CDP_* env contract. Named
     sessions compose with the backend: BU_NAME namespaces the harness daemon (IPC socket, log, pid) and on
     provider backends additionally keys its own cloud browser."""
-    rp_err = _resolve_real_profile_cdp(env, force_local=local)
-    if rp_err:
-        return rp_err
-    # local=True is only served by the real-profile route; consent off must not pretend.
-    if local and not _has_cdp_env(env) and not _real_profile_consented():
-        return ("local=true was requested but browser.use_real_profile is off. Enable it in config.yaml "
-                "(browser.use_real_profile: true) or the desktop Settings → Browser section, then retry.")
-    return _resolve_backend_cdp(env, task_id, session_name=session)
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.browser_tool_session import _session_owner_home
+
+    owner = _session_owner_home(task_id)
+    token = set_hermes_home_override(owner) if owner else None
+    try:
+        rp_err = _resolve_real_profile_cdp(env, force_local=local)
+        if rp_err:
+            return rp_err
+        # local=True is only served by the real-profile route; consent off must not pretend.
+        if local and not _has_cdp_env(env) and not _real_profile_consented():
+            return ("local=true was requested but browser.use_real_profile is off. Enable it in config.yaml "
+                    "(browser.use_real_profile: true) or the desktop Settings → Browser section, then retry.")
+        return _resolve_backend_cdp(env, task_id, session_name=session)
+    finally:
+        if token is not None:
+            reset_hermes_home_override(token)
 
 
 def _group_popen_kwargs() -> dict:
@@ -558,26 +612,39 @@ def _kill_cli_process_group(proc) -> None:
         os.killpg(proc.pid, signal.SIGKILL)  # windows-footgun: ok — POSIX only, the nt branch returned above
 
 
-def _run_cli_killing_process_group(cmd, code, env, timeout):
+def _run_cli_killing_process_group(cmd, code, env, timeout, dock_home=None):
     """Run the CLI in its own process group and kill the whole group on timeout.
 
     ``subprocess.run`` only kills the direct child on ``TimeoutExpired``; a grandchild that
     inherited the stdout/stderr pipes (browser_harness daemon / Chrome helper) is orphaned
     still holding them, and on Windows ``run()``'s unbounded post-kill ``communicate()`` then
     blocks on pipe EOF forever — so the tool call, plus its activity heartbeat, wedges (#106244).
+
+    ``dock_home`` marks a leftover writer aimed at this profile's Bot Desktop
+    Chromium. Take over kills that process group immediately — waiting the CLI
+    out leaves Playwright keystrokes in the field the human is typing into.
+    Dock Chromium is not in this group (attached via CDP / agent-browser).
     """
     proc = subprocess.Popen(
         cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=True, encoding="utf-8", errors="replace", env=env, **_group_popen_kwargs(),
     )
+    if dock_home:
+        from tools.browser_tool_session import register_inflight_dock_cli, unregister_inflight_dock_cli
+        register_inflight_dock_cli(proc, dock_home, kill=_kill_cli_process_group)
     try:
-        stdout, stderr = proc.communicate(input=code, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        _kill_cli_process_group(proc)
-        with contextlib.suppress(subprocess.TimeoutExpired):
-            proc.communicate(timeout=_POST_KILL_DRAIN_S)
-        raise
-    return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+        try:
+            stdout, stderr = proc.communicate(input=code, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            _kill_cli_process_group(proc)
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                proc.communicate(timeout=_POST_KILL_DRAIN_S)
+            raise
+        return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+    finally:
+        if dock_home:
+            from tools.browser_tool_session import unregister_inflight_dock_cli
+            unregister_inflight_dock_cli(proc)
 
 
 def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT_S,
@@ -603,9 +670,30 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
             return tool_error(f"Invalid session name {session!r}: use 1-64 letters, digits, "
                               "dashes, or underscores (e.g. 'r7k2').")
         env["BU_NAME"] = session
-    route_err = _route_backend(env, session, task_id, bool(local))
+    try:
+        route_err = _route_backend(env, session, task_id, bool(local))
+    except Exception as e:
+        from tools.bot_desktop.lease import HumanHasControl
+
+        if isinstance(e, HumanHasControl):
+            return tool_error(str(e), code="human_has_control")
+        raise
     if route_err:
         return tool_error(route_err)
+    admitted = None
+    cdp = env.get("BU_CDP_WS") or env.get("BU_CDP_URL") or ""
+    if cdp:
+        try:
+            from tools.bot_desktop.lease import HumanHasControl
+            from tools.browser_tool_session import _admit_shared_browser, _session_owner_home
+            # After a multiplex turn the process home is the launch profile.
+            # Ambient admit then stamps launch ``lease.json`` (agent, missing
+            # file) so leftover browser-use still ran on the sibling jar, the
+            # harness registered under the launch home, and epoch discard
+            # never saw the owner's Take over.
+            admitted = _admit_shared_browser(cdp_url=cdp, home=_session_owner_home(task_id))
+        except HumanHasControl as e:
+            return tool_error(str(e), code="human_has_control")
     _attach_vault_supervisor(env, task_id)
 
     # SHARED browser (/browser connect CDP override): pin each named session to its own tab (see
@@ -625,14 +713,25 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
 
     timeout = _clamp_timeout(timeout_s)
     started = time.time()
+    dock_home = getattr(admitted, "_hermes_home", None) if admitted is not None else None
+    harness_name = session or "default"
+    if dock_home:
+        from tools.browser_tool_session import register_reserved_dock_harness
+        # Register before spawn: the harness daemonizes out of the CLI
+        # process group, so Take over must find it even mid-command.
+        register_reserved_dock_harness(harness_name, dock_home)
     try:
-        proc = _run_cli_killing_process_group(cmd, code, env, timeout)
+        proc = _run_cli_killing_process_group(cmd, code, env, timeout, dock_home=dock_home)
     except subprocess.TimeoutExpired:
         return tool_error(f"browser-use exec timed out after {timeout}s. The daemon may still be working; retry "
                           f"with a larger timeout_s (max {_MAX_TIMEOUT_S}), or split the work into several calls that "
                           "append to workspace files — anything already written to the workspace is preserved.")
     except OSError as e:
         return tool_error(f"Failed to launch browser-use CLI: {e}")
+
+    if dock_home:
+        from tools.browser_tool_session import refresh_reserved_dock_harness_pid
+        refresh_reserved_dock_harness_pid(harness_name, dock_home)
 
     result = {"success": proc.returncode == 0, "exit_code": proc.returncode, "output": proc.stdout}
     if workspace:
@@ -645,6 +744,11 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     if stderr:
         result["stderr"] = stderr
     screenshot = _find_screenshot(proc.stdout, started)
+    if admitted is not None:
+        from tools.browser_tool_session import _lease_moved_result
+        moved = _lease_moved_result(admitted)
+        if moved:
+            return tool_error(moved["error"], code="human_has_control")
     if screenshot:
         result["screenshot_path"] = screenshot
         native = _native_screenshot_result(result, screenshot)

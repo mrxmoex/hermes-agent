@@ -300,6 +300,12 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         if self._session._started:
             self._best_effort("end_session failed (continuing teardown)",
                               self._session.call_tool, "end_session", {"session": self._session_id})
+        self.interrupt()
+
+    def interrupt(self) -> None:
+        """Drop the MCP transport immediately. ``stop()`` sends ``end_session``
+        first, which queues behind an in-flight ``type_text`` — leftover
+        keystrokes on the screen a human just took over."""
         with contextlib.ExitStack() as teardown:  # every step runs even if one raised (LIFO: session, bridge, daemon)
             self._embedded_daemon is None or teardown.callback(self._embedded_daemon.stop)
             teardown.callback(self._bridge.stop)

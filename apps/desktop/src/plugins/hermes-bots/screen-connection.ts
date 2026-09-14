@@ -13,8 +13,17 @@
 import { host, resolveSiblingWsUrl } from '@hermes/plugin-sdk'
 import type { PluginProfileRoute, RpcEvent } from '@hermes/plugin-sdk'
 
-import { botConnectionRoute } from './routing'
+import { botConnectionRoute, resolveBotConnectionRoute } from './routing'
 import type { RosterRow } from './types'
+
+/** Names that identify `bot`'s screen: the roster handle plus the backend
+ *  profile `display.*` actually speaks for (aliases have `name !== targetProfile`). */
+export function botScreenMatchNames(bot: RosterRow): string[] {
+  const route = resolveBotConnectionRoute(bot).route
+  const names = [bot.name, bot.targetProfile, route?.profile, route?.targetProfile]
+
+  return [...new Set(names.filter((name): name is string => Boolean(name && String(name).trim())))]
+}
 
 export interface DisplayLease {
   holder: 'agent' | 'human'
@@ -106,11 +115,21 @@ export function botScreenRoute(bot: RosterRow): PluginProfileRoute | string {
  * Does a `display.*` event belong to `bot`'s screen? Two hosts can share the same
  * `~/.hermes` path, so the profile key alone is ambiguous: the event must also have
  * arrived on the bot's registry connection (local/legacy events carry no tag).
+ *
+ * When `profileKey` is still unknown (the one-shot `display.status` is in flight)
+ * match on the event's own `payload.profile` — the backend profile name — plus
+ * connection. An alias row (`moxie` → `default`) must match `default`, not only
+ * `bot.name`. Never match on `connectionId` alone (one serve multiplexes many
+ * bots) and never on `event.profile` (that is the socket's launch profile).
  */
 export function isEventForBotScreen(bot: RosterRow, event: RpcEvent, profileKey: null | string | undefined): boolean {
-  const payload = event.payload as { profile_key?: string } | undefined
+  const payload = event.payload as { profile?: string; profile_key?: string } | undefined
 
-  if (!profileKey || payload?.profile_key !== profileKey) {
+  if (profileKey) {
+    if (payload?.profile_key !== profileKey) {
+      return false
+    }
+  } else if (!payload?.profile || !botScreenMatchNames(bot).includes(payload.profile)) {
     return false
   }
 

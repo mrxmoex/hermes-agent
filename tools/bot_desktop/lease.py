@@ -14,6 +14,7 @@ an action admitted under one lease can tell that control changed underneath it.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -53,6 +54,21 @@ class Lease:
     def as_dict(self) -> Dict[str, object]:
         return asdict(self)
 
+    def public_view(self) -> Dict[str, object]:
+        """Lease as it may leave this process (RPC, tool results, CLI JSON).
+
+        ``viewer_id`` is a capability — whoever presents it can take or release the
+        lease — so it is replaced by a short hash the holder can match against its
+        own minted id. On-disk ``as_dict()`` still stores the raw id.
+        """
+        d = self.as_dict()
+        vid = d.pop("viewer_id")
+        d["viewer_id"] = None
+        d["viewer_hash"] = (
+            hashlib.sha256(vid.encode()).hexdigest()[:12] if isinstance(vid, str) and vid else None
+        )
+        return d
+
 
 _lock = threading.Condition()
 _listeners: List[Callable[[str, Lease], None]] = []
@@ -89,9 +105,23 @@ def _read(path: Path) -> Lease:
 
 def _write(path: Path, lease: Lease) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        path.parent.chmod(0o700)
+    except OSError:
+        pass
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(lease.as_dict()), encoding="utf-8")
+    try:
+        os.chmod(tmp, 0o600)
+    except OSError:
+        pass
     os.replace(tmp, path)
+    # replace keeps an existing dest's mode; a file created under a loose umask
+    # must not stay group/world readable — the raw viewer_id is a capability.
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
 
 
 class _locked:
@@ -155,6 +185,31 @@ def _transition(profile_key: Optional[str], mutate: Callable[[Lease], bool]) -> 
     return lease
 
 
+def _persist_live_dock_under_home(profile_key: Optional[str] = None) -> None:
+    """Stamp ``dock-cdp-port`` on the home that owns this lease write.
+
+    Finding 65 persisted on ``acquire`` / ``request_handoff``, but used the
+    ambient ``get_hermes_home()``. A caller that writes another bot's
+    ``lease.json`` via ``profile_key`` (Desktop / serve / a test of that
+    shape) then stamped the *launch* profile and left the owner's file
+    empty. After a DevTools miss leftover attach treated that jar as
+    another Chrome. Persist failure must not fail the lease write.
+    """
+    token = None
+    try:
+        if profile_key:
+            from hermes_constants import set_hermes_home_override
+            token = set_hermes_home_override(profile_key)
+        from tools.bot_desktop.browser import persist_live_dock_cdp_port
+        persist_live_dock_cdp_port()
+    except Exception:
+        pass
+    finally:
+        if token is not None:
+            from hermes_constants import reset_hermes_home_override
+            reset_hermes_home_override(token)
+
+
 def acquire(viewer_id: str, *, profile_key: Optional[str] = None, reason: str = "") -> Lease:
     """Human ``viewer_id`` takes control. Last writer wins: a second viewer evicts the first, and the
     RFB bridge closes the evicted socket so its UI drops to view-only."""
@@ -165,7 +220,12 @@ def acquire(viewer_id: str, *, profile_key: Optional[str] = None, reason: str = 
         lease.reason = reason or lease.pending_handoff or ""
         lease.pending_handoff = None
         return True
-    return _transition(profile_key, _m)
+    lease = _transition(profile_key, _m)
+    # Persist the live dock port before DevToolsActivePort can disappear.
+    # A never-probed jar would otherwise fail-open leftover CDP after Take
+    # over (admit returns None when the port was never stamped).
+    _persist_live_dock_under_home(profile_key)
+    return lease
 
 
 def release(viewer_id: Optional[str] = None, *, profile_key: Optional[str] = None) -> Lease:
@@ -189,7 +249,14 @@ def request_handoff(reason: str, *, profile_key: Optional[str] = None) -> Lease:
     def _m(lease: Lease) -> bool:
         lease.pending_handoff = reason
         return True
-    return _transition(profile_key, _m)
+    lease = _transition(profile_key, _m)
+    # Stamp now, while the agent still holds and DevTools is readable.
+    # computer_use used to return from request_handoff before finding 68's
+    # persist; Take over can then unlink DevToolsActivePort and leftover
+    # attach treats the jar as another Chrome. Persist failure must not
+    # fail the ask. Same ``profile_key`` home as the lease write.
+    _persist_live_dock_under_home(profile_key)
+    return lease
 
 
 def wait_for_release(*, timeout: float, profile_key: Optional[str] = None) -> bool:

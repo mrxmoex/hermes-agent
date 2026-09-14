@@ -37,12 +37,58 @@ def test_install_worker_keeps_the_requested_profile_scope(tmp_path, monkeypatch)
     assert seen["home"] == str(named)
 
 
+def test_install_sudo_card_ignores_a_client_session_id(tmp_path, monkeypatch):
+    """A client-supplied session_id used to be the sudo card's target, so
+    Install on one pane could put the host password prompt in another
+    window's chat. The card is connection-scoped; session_id is ignored.
+    """
+    from hermes_constants import hermes_home_key
+    from tools.bot_desktop import install, runtime
+    import tui_gateway.server as server
+
+    named = tmp_path / "profiles" / "named"
+    named.mkdir(parents=True)
+    monkeypatch.setattr(server, "_profile_home", lambda name: str(named) if name == "named" else None)
+    monkeypatch.setattr(runtime, "is_supported_host", lambda: True)
+    monkeypatch.setattr(runtime, "install_command", lambda: "sudo apt-get install -y x")
+    blocked = []
+    done = threading.Event()
+
+    def fake_block(event, sid, payload, timeout=300):
+        blocked.append((event, sid, dict(payload)))
+        return ""
+
+    def fake_install(*, ask_password, on_line, timeout_seconds=900.0, claimed=False):
+        ask_password()
+        done.set()
+        return 0
+
+    monkeypatch.setattr(server, "_block", fake_block)
+    monkeypatch.setattr(install, "install_packages", fake_install)
+    monkeypatch.setattr(server, "_broadcast_global_event", lambda *a, **k: None)
+    resp = server.handle_request({
+        "jsonrpc": "2.0", "id": 1, "method": "display.install",
+        "params": {"profile": "named", "session_id": "other-chat"},
+    })
+    assert resp["result"]["started"], resp
+    assert done.wait(5)
+    assert blocked, "install never asked for the sudo password"
+    event, sid, payload = blocked[0]
+    assert event == "display.install.sudo.request"
+    assert sid == ""
+    assert payload.get("profile_key") == hermes_home_key(named)
+    assert "other-chat" not in json.dumps(blocked)
+
+
 @pytest.fixture
 def _fresh_lease():
     from tools.bot_desktop import lease
+    import tui_gateway.server as server
     lease._reset_for_tests()
+    server._reset_minted_for_tests()
     yield lease
     lease._reset_for_tests()
+    server._reset_minted_for_tests()
 
 
 def _call(server, method, params):
@@ -65,18 +111,26 @@ def test_thumbnail_is_suppressed_while_a_human_holds_the_lease(monkeypatch, _fre
     assert _call(server, "display.thumbnail", {})["result"]["data_url"].endswith("SECRET")
 
 
-def test_release_without_viewer_id_cannot_yank_another_viewers_lease(_fresh_lease):
+def test_release_without_viewer_id_cannot_yank_another_viewers_lease(monkeypatch, tmp_path, _fresh_lease):
     """lease.release(None) skips the holder check, so a client that lost its viewer id (or a bare RPC)
-    must be refused unless it forces; a matching viewer id and force keep working."""
+    must be refused unless it forces. A raw id this connection did not mint is refused the same way
+    as acquire; only a minted id or force can hand back."""
+    from tools.bot_desktop import runtime
     import tui_gateway.server as server
 
     _fresh_lease.acquire("viewer-1")
     refused = _call(server, "display.lease.release", {})
     assert refused["error"]["data"]["code"] == "viewer_mismatch"
     assert _fresh_lease.get().holder == _fresh_lease.HUMAN
-    assert _call(server, "display.lease.release", {"viewer_id": "viewer-1"})["result"]["lease"]["holder"] == _fresh_lease.AGENT
-    _fresh_lease.acquire("viewer-2")
+    stolen = _call(server, "display.lease.release", {"viewer_id": "viewer-1"})
+    assert stolen["error"]["data"]["code"] == "viewer_unminted"
+    assert _fresh_lease.get().holder == _fresh_lease.HUMAN
     assert _call(server, "display.lease.release", {"force": True})["result"]["lease"]["holder"] == _fresh_lease.AGENT
+
+    monkeypatch.setattr(runtime, "rfb_socket_path", lambda: tmp_path / "rfb.sock")
+    minted = _call(server, "display.observe", {})["result"]["viewer_id"]
+    assert _call(server, "display.lease.acquire", {"viewer_id": minted})["result"]["lease"]["holder"] == _fresh_lease.HUMAN
+    assert _call(server, "display.lease.release", {"viewer_id": minted})["result"]["lease"]["holder"] == _fresh_lease.AGENT
 
 def _rpc(server, method, params):
     return server.handle_request({"jsonrpc": "2.0", "id": 7, "method": method, "params": params})
@@ -91,6 +145,7 @@ def test_observe_mints_the_viewer_id_and_status_never_discloses_the_holder(monke
 
     monkeypatch.setattr(runtime, "rfb_socket_path", lambda: tmp_path / "rfb.sock")
     lease._reset_for_tests()
+    server._reset_minted_for_tests()
     broadcasts = []
     monkeypatch.setattr(server, "_broadcast_global_event", lambda ev, payload=None: broadcasts.append((ev, payload)))
     try:
@@ -121,5 +176,240 @@ def test_observe_mints_the_viewer_id_and_status_never_discloses_the_holder(monke
         assert status["lease"]["viewer_hash"] == hashlib.sha256(holder.encode()).hexdigest()[:12]
         lease_events = [p for ev, p in broadcasts if ev == "display.lease"]
         assert lease_events and all(holder not in json.dumps(p) for p in lease_events)
+        assert all(isinstance(p.get("profile"), str) and p["profile"] for p in lease_events)
     finally:
         lease._reset_for_tests()
+        server._reset_minted_for_tests()
+
+
+class _Peer:
+    def write(self, obj):
+        return True
+
+
+def test_acquire_refuses_a_viewer_id_this_connection_did_not_mint(monkeypatch, tmp_path, _fresh_lease):
+    """observe mints the id; acquire must not accept a client-invented string. A forged id
+    evicts the real holder and freezes the agent while nobody can type."""
+    from tools.bot_desktop import runtime
+    import tui_gateway.server as server
+
+    monkeypatch.setattr(runtime, "rfb_socket_path", lambda: tmp_path / "rfb.sock")
+    forged = _rpc(server, "display.lease.acquire", {"viewer_id": "forged-id"})
+    assert forged["error"]["data"]["code"] == "viewer_unminted"
+    assert _fresh_lease.get().holder == _fresh_lease.AGENT
+
+    # Same unkeyed caller (handle_request has no transport): observe then acquire must still work.
+    observed = _rpc(server, "display.observe", {})["result"]["viewer_id"]
+    taken_here = _rpc(server, "display.lease.acquire", {"viewer_id": observed})
+    assert taken_here["result"]["lease"]["holder"] == _fresh_lease.HUMAN
+    assert observed not in json.dumps(taken_here)
+    _fresh_lease.release(observed)
+
+    mine, other = _Peer(), _Peer()
+    minted = server.dispatch({"jsonrpc": "2.0", "id": 8, "method": "display.observe", "params": {}}, mine)["result"]["viewer_id"]
+    stolen = server.dispatch({"jsonrpc": "2.0", "id": 9, "method": "display.lease.acquire",
+                              "params": {"viewer_id": minted}}, other)
+    assert stolen["error"]["data"]["code"] == "viewer_unminted"
+    assert _fresh_lease.get().holder == _fresh_lease.AGENT
+
+    taken = server.dispatch({"jsonrpc": "2.0", "id": 10, "method": "display.lease.acquire",
+                             "params": {"viewer_id": minted}}, mine)
+    assert taken["result"]["lease"]["holder"] == _fresh_lease.HUMAN
+    assert taken["result"]["lease"]["viewer_id"] is None
+    assert minted not in json.dumps(taken)
+
+
+def test_acquire_refuses_a_viewer_id_minted_for_another_profile(monkeypatch, tmp_path, _fresh_lease):
+    """One multiplexed socket serves many bots. An id observe minted for profile A must not
+    take over profile B — that is the same eviction/freeze as a forged id, just via a sibling."""
+    from tools.bot_desktop import runtime
+    import tui_gateway.server as server
+
+    home_a = tmp_path / "profiles" / "bot-a"
+    home_b = tmp_path / "profiles" / "bot-b"
+    home_a.mkdir(parents=True)
+    home_b.mkdir(parents=True)
+    homes = {"bot-a": home_a, "bot-b": home_b}
+    monkeypatch.setattr(server, "_profile_home", lambda name: str(homes[name]) if name in homes else None)
+    monkeypatch.setattr(runtime, "rfb_socket_path", lambda: tmp_path / "rfb.sock")
+
+    minted_a = _rpc(server, "display.observe", {"profile": "bot-a"})["result"]["viewer_id"]
+    stolen = _rpc(server, "display.lease.acquire", {"profile": "bot-b", "viewer_id": minted_a})
+    assert stolen["error"]["data"]["code"] == "viewer_unminted"
+    assert _fresh_lease.get(str(home_b)).holder == _fresh_lease.AGENT
+
+    minted_b = _rpc(server, "display.observe", {"profile": "bot-b"})["result"]["viewer_id"]
+    taken = _rpc(server, "display.lease.acquire", {"profile": "bot-b", "viewer_id": minted_b})
+    assert taken["result"]["lease"]["holder"] == _fresh_lease.HUMAN
+    assert minted_b not in json.dumps(taken)
+
+
+def test_observe_remint_revokes_the_unused_ticket_for_that_viewer(monkeypatch, tmp_path, _fresh_lease):
+    """Two unused tickets for one viewer_id would open two RFB streams that share
+    the lease input gate. Reminting must kill the previous unused ticket."""
+    from tools.bot_desktop import runtime
+    import tui_gateway.server as server
+
+    monkeypatch.setattr(runtime, "rfb_socket_path", lambda: tmp_path / "rfb.sock")
+    first = _rpc(server, "display.observe", {})["result"]
+    second = _rpc(server, "display.observe", {"viewer_id": first["viewer_id"]})["result"]
+    assert second["viewer_id"] == first["viewer_id"]
+    assert first["ticket"] != second["ticket"]
+    with pytest.raises(ws_tickets.TicketInvalid):
+        ws_tickets.consume_ticket(first["ticket"])
+    assert ws_tickets.consume_ticket(second["ticket"])["viewer_id"] == first["viewer_id"]
+
+
+def test_observe_reuses_one_id_when_the_client_omits_or_invents_one(monkeypatch, tmp_path, _fresh_lease):
+    """One (caller, profile) is one viewer. observe() without an id, or with a
+    client-invented string, used to mint a fresh id every time — each id can
+    hold one RFB stream, so a single connection could open many."""
+    from tools.bot_desktop import runtime
+    import tui_gateway.server as server
+
+    monkeypatch.setattr(runtime, "rfb_socket_path", lambda: tmp_path / "rfb.sock")
+    mine, other = _Peer(), _Peer()
+    first = server.dispatch({"jsonrpc": "2.0", "id": 8, "method": "display.observe", "params": {}}, mine)["result"]
+    omitted = server.dispatch({"jsonrpc": "2.0", "id": 9, "method": "display.observe", "params": {}}, mine)["result"]
+    invented = server.dispatch({"jsonrpc": "2.0", "id": 10, "method": "display.observe",
+                                "params": {"viewer_id": "client-invented"}}, mine)["result"]
+    assert omitted["viewer_id"] == first["viewer_id"]
+    assert invented["viewer_id"] == first["viewer_id"]
+    assert omitted["ticket"] != first["ticket"]
+    with pytest.raises(ws_tickets.TicketInvalid):
+        ws_tickets.consume_ticket(first["ticket"])
+    stranger = server.dispatch({"jsonrpc": "2.0", "id": 11, "method": "display.observe", "params": {}}, other)["result"]
+    assert stranger["viewer_id"] != first["viewer_id"]
+    assert ws_tickets.consume_ticket(invented["ticket"])["viewer_id"] == first["viewer_id"]
+
+
+def test_minted_viewer_id_survives_a_loopback_token_transport_replace(monkeypatch, tmp_path, _fresh_lease):
+    """Local hermes serve authenticates /api/ws with ?token= and never stamps
+    auth_identity (that would make the token a dashboard controller). mint_identity
+    is the reconnect key: a new WSTransport after sleep/wake must still release."""
+    from tools.bot_desktop import runtime
+    import tui_gateway.server as server
+
+    class _TokenPeer:
+        def __init__(self):
+            self.mint_identity = {"user_id": "loopback-session", "provider": "token"}
+
+        def write(self, obj):
+            return True
+
+    monkeypatch.setattr(runtime, "rfb_socket_path", lambda: tmp_path / "rfb.sock")
+    first, second, stranger = _TokenPeer(), _TokenPeer(), _Peer()
+    minted = server.dispatch({"jsonrpc": "2.0", "id": 8, "method": "display.observe", "params": {}}, first)["result"]["viewer_id"]
+    reused = server.dispatch({"jsonrpc": "2.0", "id": 9, "method": "display.observe",
+                              "params": {"viewer_id": minted}}, second)["result"]["viewer_id"]
+    assert reused == minted
+    stolen = server.dispatch({"jsonrpc": "2.0", "id": 10, "method": "display.observe",
+                              "params": {"viewer_id": minted}}, stranger)["result"]["viewer_id"]
+    assert stolen != minted
+    taken = server.dispatch({"jsonrpc": "2.0", "id": 11, "method": "display.lease.acquire",
+                             "params": {"viewer_id": minted}}, second)
+    assert taken["result"]["lease"]["holder"] == _fresh_lease.HUMAN
+    released = server.dispatch({"jsonrpc": "2.0", "id": 12, "method": "display.lease.release",
+                                "params": {"viewer_id": minted}}, second)
+    assert released["result"]["lease"]["holder"] == _fresh_lease.AGENT
+
+
+def test_minted_viewer_id_survives_a_new_transport_with_the_same_auth(monkeypatch, tmp_path, _fresh_lease):
+    """A Desktop /api/ws reconnect is a new WSTransport. The holder still has the minted
+    id in the pane; acquire/release on the replacement socket must recognise it."""
+    from tools.bot_desktop import runtime
+    import tui_gateway.server as server
+
+    class _Authed:
+        def __init__(self, user):
+            self.auth_identity = {"user_id": user, "provider": "dashboard"}
+
+        def write(self, obj):
+            return True
+
+    monkeypatch.setattr(runtime, "rfb_socket_path", lambda: tmp_path / "rfb.sock")
+    first, second, stranger = _Authed("desk-1"), _Authed("desk-1"), _Authed("desk-2")
+    minted = server.dispatch({"jsonrpc": "2.0", "id": 8, "method": "display.observe", "params": {}}, first)["result"]["viewer_id"]
+    reused = server.dispatch({"jsonrpc": "2.0", "id": 9, "method": "display.observe",
+                              "params": {"viewer_id": minted}}, second)["result"]["viewer_id"]
+    assert reused == minted
+    stolen = server.dispatch({"jsonrpc": "2.0", "id": 10, "method": "display.observe",
+                              "params": {"viewer_id": minted}}, stranger)["result"]["viewer_id"]
+    assert stolen != minted
+    taken = server.dispatch({"jsonrpc": "2.0", "id": 11, "method": "display.lease.acquire",
+                             "params": {"viewer_id": minted}}, second)
+    assert taken["result"]["lease"]["holder"] == _fresh_lease.HUMAN
+    released = server.dispatch({"jsonrpc": "2.0", "id": 12, "method": "display.lease.release",
+                                "params": {"viewer_id": minted}}, second)
+    assert released["result"]["lease"]["holder"] == _fresh_lease.AGENT
+
+
+def test_thumbnail_discards_a_frame_grabbed_across_a_lease_epoch_change(monkeypatch, _fresh_lease):
+    """human_holds() is checked before ImageGrab; a takeover during the grab is the same
+    class as a capture admitted before takeover — the frame must not ship."""
+    import tui_gateway.server as server
+    from tools.bot_desktop import thumbnail
+
+    def grab_after_takeover():
+        _fresh_lease.acquire("human")
+        return "data:image/jpeg;base64,SECRET"
+
+    monkeypatch.setattr(thumbnail, "thumbnail_data_url", grab_after_takeover)
+    result = _call(server, "display.thumbnail", {})["result"]
+    assert result["data_url"] is None and result["suppressed"] == "human_has_control"
+    assert "SECRET" not in json.dumps(result)
+
+
+def test_stop_cannot_kill_the_screen_under_a_human_without_force(monkeypatch, _fresh_lease):
+    """display.stop released the lease unconditionally before stopping Xvnc: any authenticated caller
+    could yank a human mid-login and kill the screen under them. Same rule as display.lease.release."""
+    import tui_gateway.server as server
+    from tools.bot_desktop import runtime
+
+    stops = []
+    monkeypatch.setattr(runtime, "stop", lambda: stops.append(1) or True)
+    _fresh_lease.acquire("viewer-1")
+    refused = _call(server, "display.stop", {})
+    assert refused["error"]["data"]["code"] == "viewer_mismatch"
+    assert _fresh_lease.get().holder == _fresh_lease.HUMAN and stops == []
+    forced = _call(server, "display.stop", {"force": True})["result"]
+    assert forced["stopped"] is True and stops == [1]
+    assert _fresh_lease.get().holder == _fresh_lease.AGENT
+
+
+def test_display_status_persists_dock_port_before_devtools_miss(monkeypatch, _fresh_lease):
+    """Desktop polls ``display.status`` while the pane is open. Finding 65
+    only stamps at Take over; finding 66 only stamps after leftover hooks
+    start the agent watch. A DevTools miss before both left the jar
+    looking like another Chrome."""
+    import tools.bot_desktop.browser as bdb
+    import tui_gateway.server as server
+    from tools.bot_desktop.lease import HumanHasControl
+    from tools.browser_tool_session import (
+        _admit_resolved_cdp_for_attach,
+        _admit_shared_browser,
+        _cdp_url_is_bot_desktop_browser,
+        _last_dock_cdp_port,
+        _reset_dock_port_memory_for_tests,
+    )
+
+    _reset_dock_port_memory_for_tests()
+    dock = "ws://127.0.0.1:9333/devtools/browser/x"
+    other = "ws://127.0.0.1:9222/devtools/browser/x"
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: 9333)
+    assert bdb.last_known_dock_cdp_port() is None
+    assert "error" not in _call(server, "display.status", {})
+    assert bdb.last_known_dock_cdp_port() == 9333
+
+    _last_dock_cdp_port.clear()
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: None)
+    _fresh_lease.acquire("human-viewer")
+    assert bdb.last_known_dock_cdp_port() == 9333
+    assert _cdp_url_is_bot_desktop_browser(dock) is True
+    assert _cdp_url_is_bot_desktop_browser(other) is False
+    with pytest.raises(HumanHasControl):
+        _admit_shared_browser(cdp_url=dock)
+    assert _admit_resolved_cdp_for_attach(dock) is False
+    assert _admit_shared_browser(cdp_url=other) is None
+    assert _admit_resolved_cdp_for_attach(other) is True
+    _reset_dock_port_memory_for_tests()

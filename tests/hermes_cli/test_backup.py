@@ -206,6 +206,77 @@ class TestShouldExclude:
         # Other .bak files are user data and stay.
         assert not _should_exclude(Path("config.yaml.bak"))
 
+    def test_excludes_bot_desktop_runtime_tree(self):
+        """bot-desktop/ is the screen's live state. browser-profile already
+        drops the cookie jar; lease.json and dock-cdp-port must not travel
+        either — a restored human lease fences computer_use with no screen,
+        and a stale dock port fail-opens leftover CDP classification."""
+        from hermes_cli.backup import _is_bot_desktop_rel, _should_exclude
+        assert _should_exclude(Path("bot-desktop/lease.json"))
+        assert _should_exclude(Path("bot-desktop/dock-cdp-port"))
+        assert _should_exclude(Path("profiles/coder/bot-desktop/browser-profile/Default/Cookies"))
+        assert not _should_exclude(Path("config.yaml"))
+        assert _is_bot_desktop_rel("bot-desktop/lease.json")
+        assert _is_bot_desktop_rel("profiles/coder/bot-desktop/dock-cdp-port")
+        assert not _is_bot_desktop_rel("config.yaml")
+
+
+class TestBotDesktopArchiveDoor:
+    def _min_tree(self, hermes_home: Path) -> None:
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        (hermes_home / "config.yaml").write_text("model:\n  provider: openrouter\n")
+        (hermes_home / ".env").write_text("OPENROUTER_API_KEY=sk-test\n")
+        (hermes_home / "state.db").write_bytes(b"x")
+        desktop = hermes_home / "bot-desktop"
+        (desktop / "browser-profile" / "Default").mkdir(parents=True)
+        (desktop / "browser-profile" / "Default" / "Cookies").write_bytes(b"jar")
+        (desktop / "lease.json").write_text('{"holder":"human","epoch":9}\n')
+        (desktop / "dock-cdp-port").write_text("9333\n")
+        named = hermes_home / "profiles" / "coder" / "bot-desktop"
+        named.mkdir(parents=True)
+        (named / "lease.json").write_text('{"holder":"human"}\n')
+        (hermes_home / "profiles" / "coder" / "config.yaml").write_text("model: {}\n")
+
+    def test_full_backup_does_not_ship_bot_desktop(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        self._min_tree(hermes_home)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        from hermes_cli.backup import run_backup
+        out_zip = tmp_path / "backup.zip"
+        run_backup(Namespace(output=str(out_zip)))
+        with zipfile.ZipFile(out_zip) as zf:
+            names = zf.namelist()
+        assert not any("bot-desktop" in n.split("/") for n in names), names
+        assert any(n.endswith("config.yaml") for n in names)
+
+    def test_import_drops_bot_desktop_from_an_older_archive(self, tmp_path, monkeypatch):
+        """Older full-home zips still carry the tree. Import must drop it
+        the same way profile-import drops a crafted tarball."""
+        dst = tmp_path / "dst" / ".hermes"
+        dst.mkdir(parents=True)
+        zip_path = tmp_path / "old.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("config.yaml", "model: {}\n")
+            zf.writestr(".env", "X=1\n")
+            zf.writestr("state.db", "x")
+            zf.writestr("bot-desktop/lease.json", '{"holder":"human","epoch":9}\n')
+            zf.writestr("bot-desktop/dock-cdp-port", "9333\n")
+            zf.writestr("profiles/coder/config.yaml", "model: {}\n")
+            zf.writestr("profiles/coder/bot-desktop/lease.json", '{"holder":"human"}\n')
+
+        monkeypatch.setenv("HERMES_HOME", str(dst))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path / "dst")
+
+        from hermes_cli.backup import run_import
+        run_import(Namespace(zipfile=str(zip_path), force=True))
+
+        assert (dst / "config.yaml").is_file()
+        assert not (dst / "bot-desktop").exists()
+        assert not (dst / "profiles" / "coder" / "bot-desktop").exists()
+        assert (dst / "profiles" / "coder" / "config.yaml").is_file()
+
 
 # ---------------------------------------------------------------------------
 # _iter_backup_files tests

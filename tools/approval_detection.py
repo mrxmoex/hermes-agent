@@ -11,6 +11,7 @@ import re
 import shlex
 import tempfile
 import unicodedata
+from typing import Optional
 
 logger = logging.getLogger("tools.approval")
 
@@ -26,6 +27,29 @@ _HERMES_ENV_PATH = (
 _HERMES_CONFIG_PATH = (
     r'(?:~\/\.hermes/|(?:\$home|\$\{home\})/\.hermes/|(?:\$hermes_home|\$\{hermes_home\})/)' r'config\.yaml\b'
 )
+# bot-desktop/ is the screen lease + cookie jar + X cookie + dock-cdp-port.
+# write_file already denies it; without this, `echo … > lease.json` / sed -i
+# forges holder=agent (or fail-opens leftover CDP) under auto-approve. Same
+# credential-style pairing as #14639 — not a lease-gated terminal fence.
+# Optional profiles/<name>/ covers the named-home spelling
+# `~/.hermes/profiles/coder/bot-desktop` — `_rewrite_resolved_hermes_home`
+# only folds the *active* home, so a sibling (or the active home written
+# with the profiles/ path) would otherwise auto-approve.
+_HERMES_PROFILE_INFIX = r'(?:profiles/[^/\s"\']+/)?'
+_HERMES_BOT_DESKTOP_PATH = (
+    r'(?:'
+    r'~\/\.hermes/' + _HERMES_PROFILE_INFIX +
+    r'|(?:\$home|\$\{home\})/\.hermes/' + _HERMES_PROFILE_INFIX +
+    r'|(?:\$hermes_home|\$\{hermes_home\})/' + _HERMES_PROFILE_INFIX +
+    r')'
+    # `/` for a file inside the tree; whitespace/quote/EOS so `mv ~/.hermes/bot-desktop /tmp`
+    # (directory as SOURCE) still matches. Do not use `\b` — that would fire on
+    # a project folder named bot-desktop-backup.
+    r'bot-desktop(?:/|(?=[\s;"\']|$))'
+)
+_HERMES_SECURITY_PATH = (
+    rf'(?:{_HERMES_CONFIG_PATH}|{_HERMES_ENV_PATH}|{_HERMES_BOT_DESKTOP_PATH})'
+)
 _PROJECT_ENV_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*\.env(?:\.[^/\s"\'`]+)*)'
 _PROJECT_CONFIG_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*config\.yaml)'
 _SHELL_RC_FILES = r'(?:~|\$home|\$\{home\})/\.' r'(?:bashrc|zshrc|profile|bash_profile|zprofile)\b'
@@ -35,7 +59,7 @@ _CREDENTIAL_FILES = r'(?:~|\$home|\$\{home\})/\.' r'(?:netrc|pgpass|npmrc|pypirc
 _MACOS_PRIVATE_SYSTEM_PATH = r'/private/(?:etc|var|tmp|home)/'
 _SYSTEM_CONFIG_PATH = rf'(?:/etc/|{_MACOS_PRIVATE_SYSTEM_PATH})'
 _SENSITIVE_WRITE_TARGET = (
-    rf'(?:{_SYSTEM_CONFIG_PATH}|/dev/sd|{_SSH_SENSITIVE_PATH}|{_HERMES_ENV_PATH}|{_HERMES_CONFIG_PATH}|'
+    rf'(?:{_SYSTEM_CONFIG_PATH}|/dev/sd|{_SSH_SENSITIVE_PATH}|{_HERMES_SECURITY_PATH}|'
     rf'{_SHELL_RC_FILES}|{_CREDENTIAL_FILES})'
 )
 _USER_SENSITIVE_WRITE_TARGET = rf'(?:{_SSH_SENSITIVE_PATH}|{_SHELL_RC_FILES}|{_CREDENTIAL_FILES})'
@@ -296,8 +320,56 @@ DANGEROUS_PATTERNS = [
     (r'\bopenssl\b.*\b(?:base64|enc)\b[^|]*\s+-[dD]\b[^|]*\|\s*\b(bash|sh|zsh|ksh|dash)\b',
      "pipe openssl-decoded content to shell (possible command obfuscation)"),
     (rf'\btee\b.*["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via tee"),
+    # moreutils sponge is dest-last like tee (atomic replace). Without this,
+    # `cat forged | sponge ~/.hermes/bot-desktop/lease.json` auto-approves.
+    (rf'\bsponge\b\s+["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via sponge"),
+    # sqlite3 `.output` / `.once` (unique prefixes `.out` / `.o`) write query
+    # bytes to FILE. Dest is after the dot-command, not command-tail, so
+    # `sqlite3 :memory: ".output lease.json" "select …"` forges holder=agent
+    # under auto-approve. Opening the path as a DB is not this door.
+    (rf'\bsqlite3\b[^\n]*\.(?:output|once|out|o)\s+["\']?{_SENSITIVE_WRITE_TARGET}',
+     "overwrite system file via sqlite3"),
+    # GNU/BSD sed `w`/`W` writes the pattern space to FILE (space or glued).
+    # `sed -i` is already gated; `sed -n '1w lease.json'` is not, and
+    # byte-writes holder=agent under auto-approve.
+    (rf'\bg?sed\b[^\n]*w\s*["\']?{_SENSITIVE_WRITE_TARGET}',
+     "overwrite system file via sed w"),
+    # ex/vim `:w` / `:w!` is the same dest write (`ex -sc 'w! DEST|q'`).
+    # Opening the path (`vim lease.json`) stays unflagged — no `w` dest.
+    (rf'\b(?:ex|n?vim?|view)\b[^\n]*\bw!?\s+["\']?{_SENSITIVE_WRITE_TARGET}',
+     "overwrite system file via ex/vim"),
+    # awk `> "path"` is already the `>>?` rule. The unpaired doors are
+    # `-v dest=PATH` then `> dest`, and dest-last `> ARGV[n]` — both
+    # byte-write holder=agent under auto-approve. Reading the path
+    # (`awk '{print}' lease.json`) has no `>` / `-v dest=` write.
+    (rf'\b(?:g?awk|mawk|nawk)\b(?=[^\n]*>)[^\n]*-v\s*\w+=["\']?{_SENSITIVE_WRITE_TARGET}',
+     "overwrite system file via awk"),
+    (rf'\b(?:g?awk|mawk|nawk)\b[^\n]*>\s*ARGV\[[^\n]*["\']?{_SENSITIVE_WRITE_TARGET}[^\s"\']*["\']?{_COMMAND_TAIL}',
+     "overwrite system file via awk"),
+    # dest-last `objcopy [-I binary -O binary] SRC DEST`. `-O` is the
+    # output *target format*, not a dest path — do not treat it as dest-first.
+    (rf'\bobjcopy\b.*\s["\']?{_SENSITIVE_WRITE_TARGET}[^\s"\']*["\']?{_COMMAND_TAIL}',
+     "overwrite system file via objcopy"),
     (rf'>>?\s*["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via redirection"),
+    # `dd of=` with no `if=` writes stdin (or zeros) and misses the "disk copy" rule
+    # (`dd … if=`). Same pairing as tee/redirect: forges lease.json holder=agent or
+    # fail-opens leftover dock-cdp-port under auto-approve. `gdd` / `busybox dd`
+    # are not folded by basename projection (`busybox`/`gdd` stay the argv0).
+    (rf'\b(?:gdd|dd)\b[^\n]*\bof=["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via dd"),
     (rf'\btee\b.*["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_WRITE_TARGET_BOUNDARY}', "overwrite project env/config via tee"),
+    (rf'\bsponge\b\s+["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_WRITE_TARGET_BOUNDARY}', "overwrite project env/config via sponge"),
+    (rf'\bsqlite3\b[^\n]*\.(?:output|once|out|o)\s+["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_WRITE_TARGET_BOUNDARY}',
+     "overwrite project env/config via sqlite3"),
+    (rf'\bg?sed\b[^\n]*w\s*["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_WRITE_TARGET_BOUNDARY}',
+     "overwrite project env/config via sed w"),
+    (rf'\b(?:ex|n?vim?|view)\b[^\n]*\bw!?\s+["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_WRITE_TARGET_BOUNDARY}',
+     "overwrite project env/config via ex/vim"),
+    (rf'\b(?:g?awk|mawk|nawk)\b(?=[^\n]*>)[^\n]*-v\s*\w+=["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_WRITE_TARGET_BOUNDARY}',
+     "overwrite project env/config via awk"),
+    (rf'\b(?:g?awk|mawk|nawk)\b[^\n]*>\s*ARGV\[[^\n]*["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_COMMAND_TAIL}',
+     "overwrite project env/config via awk"),
+    (rf'\bobjcopy\b.*\s["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_COMMAND_TAIL}',
+     "overwrite project env/config via objcopy"),
     (rf'>>?\s*["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_WRITE_TARGET_BOUNDARY}', "overwrite project env/config via redirection"),
     (r'\bxargs\s+.*\brm\b', "xargs with rm"),
     # -execdir has the same semantics as -exec (runs in each match's directory).
@@ -337,8 +409,8 @@ DANGEROUS_PATTERNS = [
     # launchctl bootout "$label"`) never has "hermes" after the verb, and that slipped past and restarted 4 gateways
     # with zero approval. Erring broad is correct for an approval gate: an extra prompt is cheap.
     (r'(?=[\s\S]*\blaunchctl\s+(?:stop|kickstart|bootout|unload|kill|disable|remove)\b)(?=[\s\S]*\b(?:hermes|ai\.hermes)\b)', "stop/restart hermes launchd service (kills running agents)"),
-    (rf'\b(cp|mv|install)\b.*\s{_SYSTEM_CONFIG_PATH}', "copy/move file into system config path"),
-    (rf'\b(cp|mv|install)\b.*\s["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_COMMAND_TAIL}', "overwrite project env/config file"),
+    (rf'\b(?:g?cp|g?mv|g?install)\b.*\s{_SYSTEM_CONFIG_PATH}', "copy/move file into system config path"),
+    (rf'\b(?:g?cp|g?mv|g?install)\b.*\s["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_COMMAND_TAIL}', "overwrite project env/config file"),
     # cp/mv/install OVERWRITING a credential/SSH/shell-rc/Hermes file (key implant, login-time
     # injection) — pairs the tee/redirection coverage. Anchored to the command tail so only the
     # DESTINATION fires; reading OUT of a sensitive path (`cp ~/.ssh/config /tmp/x`) stays safe.
@@ -349,26 +421,70 @@ DANGEROUS_PATTERNS = [
     # implant), `cp creds ~/.netrc`, and `cp evil ~/.bashrc` (login-time command injection) slipped through
     # with auto-approve. Same unpaired-door rationale as #14639 / the sed-tee-redirect pairing on these
     # targets. `authorized_keys` after the `~/.ssh/` fragment).
-    (rf'\b(cp|mv|install)\b.*\s["\']?{_SENSITIVE_WRITE_TARGET}[^\s"\']*["\']?{_COMMAND_TAIL}', "copy/move file into sensitive credential/SSH/shell-rc path"),
+    # Dest-LAST only. GNU `-t` / `--target-directory` (and curl -o / tar -C /
+    # unzip -d) put dest earlier — those run on the case-preserved variant via
+    # DEST_FIRST_SENSITIVE_PATTERNS so `-t` is not collapsed into `-T`.
+    (rf'\b(?:g?cp|g?mv|g?install)\b.*\s["\']?{_SENSITIVE_WRITE_TARGET}[^\s"\']*["\']?{_COMMAND_TAIL}', "copy/move file into sensitive credential/SSH/shell-rc path"),
+    # ln/rsync DEST is the same unpaired overwrite as cp: `ln -sf /tmp/evil
+    # ~/.hermes/bot-desktop/lease.json` replaces a live human lease with a
+    # symlink whose target says holder=agent (``path.read_text`` follows it).
+    # ``rsync --delete`` into the tree is the drop. Source-only copies
+    # (``ln jar /tmp`` / ``rsync jar /tmp``) stay unflagged — same-UID read.
+    # Homebrew GNU coreutils (`gcp`/`gmv`/`gln`/`ginstall`) are the same
+    # argv0 class as finding 37's `gdd` — basename projection does not fold them.
+    (rf'\b(?:g?ln)\b.*\s["\']?{_SENSITIVE_WRITE_TARGET}[^\s"\']*["\']?{_COMMAND_TAIL}', "link into sensitive credential/SSH/shell-rc path"),
+    (rf'\brsync\b.*\s["\']?{_SENSITIVE_WRITE_TARGET}[^\s"\']*["\']?{_COMMAND_TAIL}', "rsync into sensitive credential/SSH/shell-rc path"),
+    # dest-last local `scp SRC DEST` is the same overwrite as cp/rsync.
+    # `scp /tmp/evil ~/.hermes/bot-desktop/lease.json` writes exact bytes
+    # and auto-approves. Source-only `scp jar /tmp` stays unflagged.
+    (rf'\bscp\b.*\s["\']?{_SENSITIVE_WRITE_TARGET}[^\s"\']*["\']?{_COMMAND_TAIL}',
+     "scp into sensitive credential/SSH/shell-rc path"),
+    # dest-last extract/copy siblings of dest-first 7z/curl: unrar/rar put dest
+    # last; lz4 -d SRC DEST; rclone copy/sync/move DEST last.
+    (rf'\b(?:unrar|rar)\b[^\n]*\s(?:x|e)\b.*\s["\']?{_SENSITIVE_WRITE_TARGET}[^\s"\']*["\']?{_COMMAND_TAIL}',
+     "extract archive into sensitive path"),
+    (rf'\blz4\b[^\n]*\s(?:-d|--decompress)\b.*\s["\']?{_SENSITIVE_WRITE_TARGET}[^\s"\']*["\']?{_COMMAND_TAIL}',
+     "overwrite system file via lz4"),
+    # dest-last `xxd -r [infile [outfile]]`. `-o` on xxd is a seek offset,
+    # not an output path — do not treat it as dest-first.
+    (rf'\bxxd\b[^\n]*\s(?:-r|--revert)\b.*\s["\']?{_SENSITIVE_WRITE_TARGET}[^\s"\']*["\']?{_COMMAND_TAIL}',
+     "overwrite system file via xxd"),
+    (rf'\brclone\b\s+(?:copy|copyto|sync|move|moveto)\b.*\s["\']?{_SENSITIVE_WRITE_TARGET}[^\s"\']*["\']?{_COMMAND_TAIL}',
+     "rclone into sensitive path"),
+    # last OPEN: address is dest (`socat -u SRC OPEN:lease.json`). Source-only
+    # `OPEN:lease OPEN:/tmp` stays unflagged (same-UID read). The negative
+    # lookahead refuses a sensitive OPEN: that is not the last address.
+    (rf'\bsocat\b[^\n]*\bopen:["\']?{_SENSITIVE_WRITE_TARGET}(?![^\n]*\bopen:)',
+     "overwrite system file via socat"),
     # In-place edits mutate the file directly, bypassing redirection/tee/cp coverage; gate the same
     # startup/credential files.
-    (rf'\bsed\s+-[^\s]*i.*(?:{_USER_SENSITIVE_WRITE_TARGET})[^\s"\']*', "in-place edit of sensitive credential/SSH/shell-rc path"),
-    (rf'\bsed\s+--in-place\b.*(?:{_USER_SENSITIVE_WRITE_TARGET})[^\s"\']*', "in-place edit of sensitive credential/SSH/shell-rc path (long flag)"),
+    (rf'\bg?sed\s+-[^\s]*i.*(?:{_USER_SENSITIVE_WRITE_TARGET})[^\s"\']*', "in-place edit of sensitive credential/SSH/shell-rc path"),
+    (rf'\bg?sed\s+--in-place\b.*(?:{_USER_SENSITIVE_WRITE_TARGET})[^\s"\']*', "in-place edit of sensitive credential/SSH/shell-rc path (long flag)"),
     (rf'\b(?:perl|ruby)\b.*(?:^|\s)-[^\s]*i\b.*(?:{_USER_SENSITIVE_WRITE_TARGET})[^\s"\']*', "in-place edit of sensitive credential/SSH/shell-rc path (perl/ruby)"),
-    (rf'\bsed\s+-[^\s]*i.*\s{_SYSTEM_CONFIG_PATH}', "in-place edit of system config"),
-    (rf'\bsed\s+--in-place\b.*\s{_SYSTEM_CONFIG_PATH}', "in-place edit of system config (long flag)"),
+    (rf'\bg?sed\s+-[^\s]*i.*\s{_SYSTEM_CONFIG_PATH}', "in-place edit of system config"),
+    (rf'\bg?sed\s+--in-place\b.*\s{_SYSTEM_CONFIG_PATH}', "in-place edit of system config (long flag)"),
     # sed -i on Hermes config/.env bypasses the redirection/tee rules; pairs the file_tools
     # write_file/patch deny so the terminal side is not an open door.
     # In-place edit of a Hermes-managed security file (~/.hermes/config.yaml or .env). sed -i bypasses the
     # redirection/tee patterns above because it mutates the file directly. See #14639.
-    (rf'\bsed\s+-[^\s]*i.*(?:{_HERMES_CONFIG_PATH}|{_HERMES_ENV_PATH})', "in-place edit of Hermes config/env"),
-    (rf'\bsed\s+--in-place\b.*(?:{_HERMES_CONFIG_PATH}|{_HERMES_ENV_PATH})', "in-place edit of Hermes config/env (long flag)"),
+    (rf'\bg?sed\s+-[^\s]*i.*(?:{_HERMES_SECURITY_PATH})', "in-place edit of Hermes config/env/bot-desktop"),
+    (rf'\bg?sed\s+--in-place\b.*(?:{_HERMES_SECURITY_PATH})', "in-place edit of Hermes config/env/bot-desktop (long flag)"),
     # perl/ruby -i: the flag may be its own token after other flags (`-p -i -e`), combined (`-pi`), or carry a backup
     # suffix (`-i.bak`), so match any flag token containing `i` anywhere; `perl -e '...'` (no -i) does not trip.
     # perl -i and ruby -i perform the same in-place mutation as sed -i but are not caught by the -e/-c
     # script-execution pattern above (which targets code evaluation, not file mutation). Pairs the sed -i
     # coverage from #14639.
-    (rf'\b(?:perl|ruby)\b.*(?:^|\s)-[^\s]*i\b.*(?:{_HERMES_CONFIG_PATH}|{_HERMES_ENV_PATH})', "in-place edit of Hermes config/env (perl/ruby)"),
+    (rf'\b(?:perl|ruby)\b.*(?:^|\s)-[^\s]*i\b.*(?:{_HERMES_SECURITY_PATH})', "in-place edit of Hermes config/env/bot-desktop (perl/ruby)"),
+    # rm/unlink/shred of bot-desktop/ is the inverse of the write forge: missing
+    # lease.json fail-opens to holder=agent (``Lease()`` on FileNotFoundError),
+    # and missing dock-cdp-port fail-opens leftover CDP classification. mv of
+    # the tree as SOURCE is the same drop. ``cat`` stays unflagged (same-UID
+    # read). Recursive ``rm -rf`` is already a generic dangerous command.
+    (rf'\b(?:g?rm|unlink|shred)\b.*["\']?{_HERMES_BOT_DESKTOP_PATH}', "delete Bot Screen lease/cookie jar"),
+    (rf'\bg?mv\b.*["\']?{_HERMES_BOT_DESKTOP_PATH}', "move Bot Screen lease/cookie jar"),
+    # Desktop trash CLIs are the unpaired alias of rm: missing lease.json
+    # fail-opens to holder=agent. Electron hermes:fs:trash is already gated.
+    (rf'\b(?:gio\s+trash|trash-put|trash)\b.*["\']?{_HERMES_BOT_DESKTOP_PATH}', "trash Bot Screen lease/cookie jar"),
     # Interpreter heredocs are handled by _execution_flag_findings(); only shell heredocs stay
     # regex-based. `bash <<'EOF'` runs arbitrary commands without triggering the `bash -c` path.
     (r'\b(bash|sh|zsh|ksh)\s+<<', "shell execution via heredoc"),
@@ -410,6 +526,88 @@ DANGEROUS_PATTERNS = [
 
 
 DANGEROUS_PATTERNS_COMPILED = [(re.compile(p, _RE_FLAGS), d) for p, d in DANGEROUS_PATTERNS]
+
+# Dest-first writes. dest-tail requires the sensitive path as LAST argv;
+# these flags name dest earlier (`cp -t DEST SRC`, `curl -o DEST URL`,
+# `tar -C DEST -xf ARCHIVE`). detect_dangerous_command lowercases
+# DANGEROUS_PATTERNS input, which collapses `cp -t` / `cp -T` and tar
+# `-C` (directory) / `-c` (create), so these search the case-preserved
+# variant. Short flags are `(?-i:)` so `-T` / `-c` / `-X` stay out;
+# long options and path spelling stay IGNORECASE.
+_DEST_FIRST_TARGET_DIR = r'(?:(?-i:-[a-zA-Z]*t)|--target-directory)'
+_DEST_FIRST_TAR_DIR = r'(?:(?-i:-C)|--directory)'
+# `-xf` / `-zxf` put `x` in the cluster, not last (`-[a-zA-Z]*x` misses them).
+_DEST_FIRST_TAR_EXTRACT = r'(?:(?-i:-[a-zA-Z]*x[a-zA-Z]*)|--extract|--get)'
+# dest-tail sees `~/.ssh/file` or `~/.ssh` at EOS. dest-first dest is usually
+# a directory token (`-t ~/.ssh SRC`) so `.ssh(?:/|$)` misses the trailing space.
+_DEST_FIRST_DIR = (
+    rf'(?:/etc(?:/|(?=[\s;"\']|$))|(?:~|\$home|\$\{{home\}})/\.ssh(?:/|(?=[\s;"\']|$)))'
+)
+_DEST_FIRST_WRITE_TARGET = rf'(?:{_SENSITIVE_WRITE_TARGET}|{_DEST_FIRST_DIR})'
+DEST_FIRST_SENSITIVE_PATTERNS = [
+    # `cp -t ~/.hermes/bot-desktop /tmp/evil.json` forges lease.json;
+    # `cp -t ~/.ssh /tmp/k` is the dest-tail key-implant sibling.
+    (rf'\b(?:g?cp|g?mv|g?install|g?ln)\b[^\n]*\s{_DEST_FIRST_TARGET_DIR}[=\s]*["\']?{_DEST_FIRST_WRITE_TARGET}',
+     "copy/move/link into sensitive path via --target-directory"),
+    (rf'\bcurl\b[^\n]*\s(?:(?-i:-o|-O)|--output-dir|--output)[=\s]*["\']?{_DEST_FIRST_WRITE_TARGET}',
+     "overwrite system file via curl --output"),
+    # `-T` / `--upload-file` to `file://DEST` writes the local file onto
+    # DEST (absolute / $HOME / $HERMES_HOME; tilde file:// is rejected by
+    # curl). `-o` is already gated. GET `file://` is a same-UID read.
+    # `-T` is case-preserved so curl `-t` (telnet-option) stays out.
+    (rf'\bcurl\b(?=[^\n]*(?:(?-i:-T)|--upload-file))(?=[^\n]*file://["\']?{_DEST_FIRST_WRITE_TARGET})',
+     "overwrite system file via curl --upload-file"),
+    # `-P` is `--directory-prefix` (dest dir). `-p` is `--page-requisites`
+    # and must stay out, so the short prefix flag is case-preserved.
+    (rf'\bwget\b[^\n]*\s(?:(?-i:-o|-O|-P)|--output-document|--directory-prefix)[=\s]*["\']?{_DEST_FIRST_WRITE_TARGET}',
+     "overwrite system file via wget --output"),
+    (rf'\baria2c\b[^\n]*\s(?:(?-i:-d)|--dir)[=\s]*["\']?{_DEST_FIRST_WRITE_TARGET}',
+     "overwrite system file via aria2c --dir"),
+    (rf'\b(?:(?:bsd|g)?tar)\b[^\n]*\s{_DEST_FIRST_TAR_EXTRACT}\b[^\n]*\s{_DEST_FIRST_TAR_DIR}[=\s]*["\']?{_DEST_FIRST_WRITE_TARGET}',
+     "extract archive into sensitive path"),
+    (rf'\b(?:(?:bsd|g)?tar)\b[^\n]*\s{_DEST_FIRST_TAR_DIR}[=\s]*["\']?{_DEST_FIRST_WRITE_TARGET}[^\n]*\s{_DEST_FIRST_TAR_EXTRACT}\b',
+     "extract archive into sensitive path"),
+    (rf'\b(?:unzip|cabextract)\b[^\n]*\s(?-i:-d)[=\s]*["\']?{_DEST_FIRST_WRITE_TARGET}',
+     "extract archive into sensitive path"),
+    (rf'\bunar\b[^\n]*\s(?-i:-o)[=\s]*["\']?{_DEST_FIRST_WRITE_TARGET}',
+     "extract archive into sensitive path"),
+    (rf'\blz4\b[^\n]*\s(?-i:-o)[=\s]*["\']?{_DEST_FIRST_WRITE_TARGET}',
+     "overwrite system file via lz4"),
+    # dest-first pipe dumps. `pv FILE > dest` is already gated by `>>?`;
+    # `pv -o DEST` / `mbuffer -o DEST` name dest earlier.
+    (rf'\b(?:pv|mbuffer)\b[^\n]*\s(?:(?-i:-o)|--output)[=\s]*["\']?{_DEST_FIRST_WRITE_TARGET}',
+     "overwrite system file via pv/mbuffer"),
+    (rf'\bcpio\b[^\n]*\s(?:(?-i:-D)|--directory)[=\s]*["\']?{_DEST_FIRST_WRITE_TARGET}',
+     "extract archive into sensitive path"),
+    # 7-Zip `-o{dir}` is glued (`-oDEST`) or spaced. Extract only (`x`/`e`);
+    # `7z a` / `7z l` stay out. Short `-o` is case-preserved so it does not
+    # collide with an unrelated long option after IGNORECASE folding.
+    (rf'\b(?:7z|7za|7zr|7zz)\b(?=[^\n]*\s(?:x|e)\b)[^\n]*[\'"]?(?-i:-o)[=\s]*["\']?{_DEST_FIRST_WRITE_TARGET}',
+     "extract archive into sensitive path"),
+    # Decode/decrypt dest-first `-o`/`-out`/`--output` — same unpaired
+    # lease.json / dock-cdp-port forge as curl -o. Long `-out` can live
+    # here; short `-o` stays `(?-i:)`.
+    (rf'\bopenssl\b[^\n]*\s(?:-out|--out)[=\s]*["\']?{_DEST_FIRST_WRITE_TARGET}',
+     "overwrite system file via openssl --out"),
+    (rf'\bbase64\b[^\n]*\s(?:(?-i:-o)|--output)[=\s]*["\']?{_DEST_FIRST_WRITE_TARGET}',
+     "overwrite system file via base64 --output"),
+    (rf'\b(?:gpg|gpg2)\b[^\n]*\s(?:(?-i:-o)|--output)[=\s]*["\']?{_DEST_FIRST_WRITE_TARGET}',
+     "overwrite system file via gpg --output"),
+    (rf'\bage\b[^\n]*\s(?:(?-i:-o)|--output)[=\s]*["\']?{_DEST_FIRST_WRITE_TARGET}',
+     "overwrite system file via age --output"),
+    (rf'\b(?:zstd|unzstd)\b[^\n]*\s(?:(?-i:-o)|--output-file)[=\s]*["\']?{_DEST_FIRST_WRITE_TARGET}',
+     "overwrite system file via zstd --output"),
+    # dest-first iconv/patch `-o`/`--output`. Literal awk `> path` is
+    # already `>>?`; these name dest earlier and byte-write (patch -o
+    # adds a newline; json.loads still accepts holder=agent).
+    (rf'\biconv\b[^\n]*\s(?:(?-i:-o)|--output)[=\s]*["\']?{_DEST_FIRST_WRITE_TARGET}',
+     "overwrite system file via iconv --output"),
+    (rf'\bpatch\b[^\n]*\s(?:(?-i:-o)|--output)[=\s]*["\']?{_DEST_FIRST_WRITE_TARGET}',
+     "overwrite system file via patch --output"),
+]
+DEST_FIRST_SENSITIVE_PATTERNS_COMPILED = [
+    (re.compile(p, _RE_FLAGS), d) for p, d in DEST_FIRST_SENSITIVE_PATTERNS
+]
 
 # Preserve approvals stored under the removed interpreter regex rules.
 _REMOVED_PATTERN_KEY_ALIASES = {
@@ -1411,17 +1609,759 @@ def _is_shell_token_spliced_gateway_lifecycle(command: str) -> bool:
     return contains_gateway_lifecycle_command(command)
 
 
-def detect_dangerous_command(command: str) -> tuple:
-    """Check dangerous patterns -> (is_dangerous, pattern_key, description)."""
+# Relative dest after `cd ~/.hermes/bot-desktop` (or a persisted session
+# cwd there). Absolute / `~` / `$HOME` dests already hit the prefix
+# patterns; `> lease.json` does not.
+_RELATIVE_WRITE_DEST = r'(?:["\']?)(?!(?:/|~|\$))(?:\./)?[A-Za-z0-9._][^\s;&|<>"\']*'
+# `$PWD/…` / `$(pwd)/…` expand to that cwd but start with `$`, so the
+# exclusion above lets `cd ~/.hermes/bot-desktop && echo … > $PWD/lease.json`
+# auto-approve. Bash ``~+`` is ``$PWD`` (unquoted only — quotes suppress
+# tilde expansion). ``$(pwd -P)`` / ``$(realpath .)`` / ``$(readlink -f .)``
+# are the same cwd. ``${PWD:0}`` / ``${PWD#}`` / ``${PWD-}`` are still
+# ``$PWD``. ``$(dirs)`` / ``$(dirs +0)`` / ``$(dirs -0)`` are ``$PWD`` on
+# a one-entry stack (``cd`` updates ``DIRSTACK[0]``; it does not push).
+# ``$(echo $PWD)`` / ``$(printf %s "$PWD")`` / ``$(printenv PWD)`` /
+# ``$(realpath $PWD)`` print the same path (finding 63). GNU
+# ``/bin/pwd --physical`` is ``pwd -P``. Require a path component —
+# `> $PWD` writes a directory.
+_PWD_CMD = (
+    r'(?:(?:(?:builtin|command)\s+)|(?:/(?:usr/)?bin/))?'
+    r'pwd(?:\s+(?:-[PL]+|--physical|--logical))*'
+)
+_CWD_RESOLVE_OPERAND_PWD = (
+    r'(?:\.|(?:["\']?)(?:\$PWD\b|\$\{PWD\})(?:["\']?))'
+)
+_CWD_RESOLVE_CMD = (
+    r'(?:'
+    r'realpath(?:\s+(?:-[esmP]+|--canonicalize(?:-existing|-missing)?))*(?:\s+--)?\s+'
+    + _CWD_RESOLVE_OPERAND_PWD +
+    r'|readlink\s+(?:-[fem]+|--canonicalize(?:-existing|-missing)?)(?:\s+--)?\s+'
+    + _CWD_RESOLVE_OPERAND_PWD +
+    r')'
+)
+# ``$(echo TOKEN)`` / ``$(printf %s TOKEN)`` / backticks. Two wraps
+# cover ``$(echo $(echo $PWD))`` / ``$(printf %s $(echo $PWD))``
+# (finding 64). Identity printers (``awk ENVIRON``, here-string
+# ``cat <<< $PWD``, ``echo $PWD | cat``) are the same path.
+_ECHO_BIN = r'(?:(?:builtin|command)\s+)?echo(?:\s+-[neE]+)*(?:\s+--)?'
+_PRINTF_BIN = (
+    r'(?:(?:builtin|command)\s+)?printf(?:\s+--)?\s+'
+    r'(?:["\']?)%s(?:\\n)?(?:["\']?)'
+)
+_PRINTENV_BIN = r'(?:(?:builtin|command)\s+)?printenv(?:\s+--)?'
+
+
+def _echo_printf_subst(inner: str, *, allow_quotes: bool = True) -> str:
+    """Command subst that prints *inner* via ``echo`` / ``printf``.
+
+    Tilde inners must stay unquoted (``$(echo '~+')`` is a literal name).
+    """
+    arg = r'(?:["\']?)' + inner + r'(?:["\']?)' if allow_quotes else inner
+    body = (
+        r'(?:'
+        + _ECHO_BIN + r'\s+' + arg +
+        r'|' + _PRINTF_BIN + r'\s+' + arg +
+        r')'
+    )
+    return r'(?:\$\(\s*' + body + r'\s*\)|`' + body + r'`)'
+
+
+def _token_or_printed(inner: str, wraps: int = 1) -> str:
+    """*inner*, or up to *wraps* ``echo``/``printf`` wraps of *inner*."""
+    expr = inner
+    for _ in range(max(wraps, 0)):
+        expr = r'(?:' + expr + r'|' + _echo_printf_subst(expr) + r')'
+    return expr
+
+
+def _herestring_identity_cmd(var_token: str) -> str:
+    """``$(cat <<< "$PWD")`` / ``$(tr -d '\\n' <<< $PWD)`` print *var_token*."""
+    return (
+        r'(?:(?:builtin|command)\s+)?'
+        r'(?:cat|tee|tr|cut|xargs|head|tail|dd)'
+        r'[^\n<]*<<<\s+(?:["\']?)' + var_token + r'(?:["\']?)'
+    )
+
+
+def _awk_environ_cmd(name: str) -> str:
+    """``$(awk 'BEGIN{print ENVIRON["PWD"]}')`` (also ``gawk`` / ``mawk``)."""
+    return (
+        r'(?:g|m)?awk\b[^\n)]*ENVIRON\s*\[\s*["\']' + name + r'["\'][^\n)]*'
+    )
+
+
+def _pipe_identity_cmd(var_token: str) -> str:
+    """``$(echo $PWD | cat)`` / ``$(printf %s "$PWD" | tee)``."""
+    printed = (
+        r'(?:'
+        + _ECHO_BIN + r'\s+(?:["\']?)' + var_token + r'(?:["\']?)'
+        r'|' + _PRINTF_BIN + r'\s+(?:["\']?)' + var_token + r'(?:["\']?)'
+        r')'
+    )
+    return printed + r'\s*\|\s*(?:cat|tee|xargs|dd|head|tail)\b[^\n)]*'
+
+
+def _process_subst_identity_cmd(var_token: str) -> str:
+    """``$(< <(echo $PWD))`` — bash process-subst identity."""
+    inner = (
+        r'(?:'
+        + _ECHO_BIN + r'\s+(?:["\']?)' + var_token + r'(?:["\']?)'
+        r'|' + _PRINTF_BIN + r'\s+(?:["\']?)' + var_token + r'(?:["\']?)'
+        r')'
+    )
+    return r'<\s*<\(\s*' + inner + r'\s*\)'
+
+
+def _rev_identity_cmd(var_token: str) -> str:
+    """``$(rev <<< "$PWD" | rev)`` / ``$(echo $PWD | rev | rev)``."""
+    quoted = r'(?:["\']?)' + var_token + r'(?:["\']?)'
+    printed = (
+        r'(?:'
+        + _ECHO_BIN + r'\s+' + quoted
+        + r'|' + _PRINTF_BIN + r'\s+' + quoted
+        + r')'
+    )
+    return (
+        r'(?:'
+        r'(?:(?:builtin|command)\s+)?rev\b[^\n<]*<<<\s+' + quoted +
+        r'\s*\|\s*rev\b[^\n)]*'
+        r'|' + printed + r'\s*\|\s*rev\b[^\n|]*\|\s*rev\b[^\n)]*'
+        r')'
+    )
+
+
+def _identity_print_cmd(var_token: str, environ_name: str) -> str:
+    return (
+        r'(?:'
+        + _herestring_identity_cmd(var_token) +
+        r'|' + _awk_environ_cmd(environ_name) +
+        r'|' + _pipe_identity_cmd(var_token) +
+        r'|' + _process_subst_identity_cmd(var_token) +
+        r'|' + _rev_identity_cmd(var_token) +
+        r')'
+    )
+
+
+# ``dirs -v`` prefixes an index; ``dirs -c`` clears. Separate ``-l``/``-p``
+# only — clustered ``-lp +N`` is ``invalid number`` in bash.
+_DIRS_BIN = r'(?:(?:builtin|command)\s+)?dirs'
+_DIRS_FLAGS = r'(?:\s+-[lp])*'
+_DIRS_PWD_CMD = _DIRS_BIN + _DIRS_FLAGS + r'(?:\s+[+-]0+)?'
+_DIRS_STACK_CMD = (
+    _DIRS_BIN + _DIRS_FLAGS + r'\s+(?:\+0*[1-9][0-9]*|-0*[1-9][0-9]*)'
+)
+# ``${PWD}`` / ``${PWD:0}`` / ``${PWD:0:N}`` / empty ``#``/``%`` strip /
+# ``${PWD%/}`` (trailing slash only) / ``${PWD-}`` / ``${PWD:-word}``.
+# Do not take ``${PWD:1}`` (drops a prefix) or ``${PWD:+word}`` (expands
+# to word, not the path). ``${PWD%/*}`` is dirname-of-PWD — a parent dest
+# (finding 60), not this token.
+_PWD_PARAM = (
+    r'\$\{PWD(?:'
+    r':0(?::\d+)?'
+    r'|\#\#?'
+    r'|%%?/'
+    r'|%%?'
+    r'|(?:-|:-)[^}]*'
+    r')?\}'
+)
+_OLDPWD_PARAM = (
+    r'\$\{OLDPWD(?:'
+    r':0(?::\d+)?'
+    r'|\#\#?'
+    r'|%%?/'
+    r'|%%?'
+    r'|(?:-|:-)[^}]*'
+    r')?\}'
+)
+_PWD_VAR = r'(?:\$PWD\b|' + _PWD_PARAM + r')'
+_PWD_IDENTITY_CMD = _identity_print_cmd(_PWD_VAR, "PWD")
+_PWD_CORE = (
+    r'(?:'
+    + _PWD_PARAM +
+    r'|\$PWD\b'
+    r'|\$\(\s*(?:'
+    + _PWD_CMD + r'|' + _DIRS_PWD_CMD + r'|' + _PRINTENV_BIN + r'\s+PWD\b'
+    r'|' + _PWD_IDENTITY_CMD +
+    r')\s*\)'
+    r'|`(?:'
+    + _PWD_CMD + r'|' + _DIRS_PWD_CMD + r'|' + _PRINTENV_BIN + r'\s+PWD\b'
+    r'|' + _PWD_IDENTITY_CMD +
+    r')`'
+    r'|\$\(\s*' + _CWD_RESOLVE_CMD + r'\s*\)'
+    r'|`' + _CWD_RESOLVE_CMD + r'`'
+    r')'
+)
+_PWD_TOKEN = _token_or_printed(_PWD_CORE, wraps=2)
+_PWD_TILDE = r'~(?:\+0+|0+|-0+|\+)'
+# Unquoted ``~+`` / ``~+0`` / ``~00`` / ``~0`` / ``~-0`` are ``$PWD``
+# (``~+1`` / ``~-1`` are DIRSTACK). A one-entry stack's ``dirs -0`` is
+# PWD — ``echo > ~-0/lease.json`` with cwd in the tree forges the lease
+# without ``pushd``. Bash strips leading zeros (``~00`` == ``~0``).
+# Put ``~+0+`` / ``~-0+`` before ``~+`` / ``~-`` so ``~+0/`` is not
+# consumed as ``~+`` + ``0/``.
+_PWD_WRITE_DEST = (
+    r'(?:'
+    r'(?:["\']?)' + _PWD_TOKEN + r'(?:["\']?)'
+    r'|' + _PWD_TILDE +
+    r'|' + _echo_printf_subst(_PWD_TILDE, allow_quotes=False) +
+    r')'
+    r'/'
+    r'(?:["\']?)'
+    r'[^\s;&|<>"\']+'
+    r'(?:["\']?)'
+)
+# ``> $(echo $PWD/lease.json)`` — the filename lives *inside* the subst,
+# so there is no ``TOKEN/file`` after the ``$()``. Do not take ``../``
+# (tree-root ``$(echo $PWD/../lease.json)`` writes ``~/.hermes``).
+_PWD_PRINTED_FILE = (
+    r'(?:["\']?)(?:\$PWD\b|' + _PWD_PARAM + r')(?:["\']?)'
+    r'(?:/\.)*/'
+    r'(?:["\']?)[A-Za-z0-9._][A-Za-z0-9._-]*'
+    r'(?:["\']?)'
+)
+_PWD_PRINTED_FILE_DEST = (
+    r'(?:["\']?)' + _echo_printf_subst(_PWD_PRINTED_FILE) + r'(?:["\']?)'
+)
+# `$OLDPWD/…` is the screen after a same-command chdir *into* it
+# (`cd ~/.hermes/bot-desktop && cd /tmp && > $OLDPWD/lease.json`), or
+# after ``cd``/``pushd``/``popd`` away from a session cwd that already
+# is the tree. Bash ``~-`` is ``$OLDPWD`` (unquoted only). A bare
+# ``$OLDPWD`` dest with no shell chdir is the *previous* directory —
+# not the screen — and stays unflagged. ``~-0`` is ``dirs -0`` (PWD on
+# a one-entry stack; stack bottom after ``pushd``), not OLDPWD — it
+# lives on ``_PWD_WRITE_DEST``.
+_CWD_RESOLVE_OPERAND_OLDPWD = (
+    r'(?:["\']?)(?:\$OLDPWD\b|\$\{OLDPWD\})(?:["\']?)'
+)
+_OLDPWD_RESOLVE_CMD = (
+    r'(?:'
+    r'realpath(?:\s+(?:-[esmP]+|--canonicalize(?:-existing|-missing)?))*(?:\s+--)?\s+'
+    + _CWD_RESOLVE_OPERAND_OLDPWD +
+    r'|readlink\s+(?:-[fem]+|--canonicalize(?:-existing|-missing)?)(?:\s+--)?\s+'
+    + _CWD_RESOLVE_OPERAND_OLDPWD +
+    r')'
+)
+_OLDPWD_VAR = r'(?:\$OLDPWD\b|' + _OLDPWD_PARAM + r')'
+_OLDPWD_IDENTITY_CMD = _identity_print_cmd(_OLDPWD_VAR, "OLDPWD")
+_OLDPWD_CORE = (
+    r'(?:'
+    + _OLDPWD_PARAM +
+    r'|\$OLDPWD\b'
+    r'|\$\(\s*(?:'
+    + _PRINTENV_BIN + r'\s+OLDPWD\b'
+    r'|' + _OLDPWD_IDENTITY_CMD +
+    r')\s*\)'
+    r'|`(?:'
+    + _PRINTENV_BIN + r'\s+OLDPWD\b'
+    r'|' + _OLDPWD_IDENTITY_CMD +
+    r')`'
+    r'|\$\(\s*' + _OLDPWD_RESOLVE_CMD + r'\s*\)'
+    r'|`' + _OLDPWD_RESOLVE_CMD + r'`'
+    r')'
+)
+_OLDPWD_TOKEN = _token_or_printed(_OLDPWD_CORE, wraps=2)
+_OLDPWD_WRITE_DEST = (
+    r'(?:'
+    r'(?:["\']?)' + _OLDPWD_TOKEN + r'(?:["\']?)'
+    r'|~-'
+    r'|' + _echo_printf_subst(r'~-', allow_quotes=False) +
+    r')'
+    r'/'
+    r'(?:["\']?)'
+    r'[^\s;&|<>"\']+'
+    r'(?:["\']?)'
+)
+_OLDPWD_PRINTED_FILE = (
+    r'(?:["\']?)(?:\$OLDPWD\b|' + _OLDPWD_PARAM + r')(?:["\']?)'
+    r'(?:/\.)*/'
+    r'(?:["\']?)[A-Za-z0-9._][A-Za-z0-9._-]*'
+    r'(?:["\']?)'
+)
+_OLDPWD_PRINTED_FILE_DEST = (
+    r'(?:["\']?)' + _echo_printf_subst(_OLDPWD_PRINTED_FILE) + r'(?:["\']?)'
+)
+# Bash ``~N`` / ``~+N`` / ``~-N`` (N ≥ 1) are DIRSTACK (unquoted only).
+# After ``cd ~/.hermes/bot-desktop && pushd /tmp``, ``~1`` / ``~+1`` /
+# ``$(dirs +1)`` / ``$(dirs -l +1)`` expand to the tree. ``cd`` does
+# not push DIRSTACK — only ``pushd``/``popd``. Quotes suppress tilde
+# expansion; single quotes also suppress ``$(dirs)``. Leading zeros:
+# ``~01`` == ``~1``. ``~-0`` is PWD, not this class.
+_DIRSTACK_TILDE = r'~(?:\+0*[1-9][0-9]*|0*[1-9][0-9]*|-0*[1-9][0-9]*)'
+_DIRSTACK_CORE = (
+    r'(?:'
+    r'\$\(\s*' + _DIRS_STACK_CMD + r'\s*\)'
+    r'|`' + _DIRS_STACK_CMD + r'`'
+    r')'
+)
+_DIRSTACK_WRITE_DEST = (
+    r'(?:'
+    r'(?:' + _DIRSTACK_TILDE + r'|' + _echo_printf_subst(_DIRSTACK_TILDE, allow_quotes=False) + r')'
+    r'|(?:["\']?)' + _token_or_printed(_DIRSTACK_CORE) + r'(?:["\']?)'
+    r')'
+    r'/'
+    r'(?:["\']?)'
+    r'[^\s;&|<>"\']+'
+    r'(?:["\']?)'
+)
+# Dirname-of-PWD. From ``bot-desktop/<child>`` (browser-profile, pairing)
+# one-level ``${PWD%/*}`` / ``$(dirname $PWD)`` / ``$(realpath ..)`` /
+# ``$(cd .. && pwd)`` expand to the screen root and write ``lease.json``.
+# Chrome's cookie jar lives one level deeper
+# (``bot-desktop/browser-profile/Default``); two-level
+# ``${PWD%/*/*}`` / ``$(dirname $(dirname $PWD))`` / ``$(realpath ../..)``
+# / ``$(cd ../.. && pwd)`` are the same forge. From a shallower cwd the
+# extra ``/*`` lands in ``~/.hermes`` — not a hole. ``${PWD%/*}`` is
+# not a ``_PWD_PARAM`` (that token is still ``$PWD``).
+_DIRNAME_BIN = r'(?:(?:builtin|command)\s+)?dirname(?:\s+--)?\s+'
+_MAX_PARENT_LEVELS = 8
+
+
+def _dirname_chain(base: str, levels: int) -> str:
+    """``dirname`` applied *levels* times to *base* (``$PWD`` / ``$OLDPWD``)."""
+    expr = base
+    for i in range(levels):
+        inner = (
+            r'(?:["\']?)' + expr + r'(?:["\']?)'
+            if i == 0
+            else r'(?:\$\(\s*' + expr + r'\s*\)|`' + expr + r'`)'
+        )
+        expr = _DIRNAME_BIN + inner
+    return expr
+
+
+def _parent_dots(levels: int) -> str:
+    """``..`` / ``../..`` / ``../../..`` (*levels* hops)."""
+    return r'(?:\.\./){' + str(levels - 1) + r'}\.\.'
+
+
+def _parent_resolve_cmd(levels: int) -> str:
+    dots = _parent_dots(levels)
+    return (
+        r'(?:'
+        r'realpath(?:\s+-[esP]+)?\s+' + dots +
+        r'|readlink\s+(?:-[fe]+|--canonicalize(?:-existing|-missing)?)\s+' + dots +
+        r')'
+    )
+
+
+def _cd_parent_pwd_cmd(levels: int) -> str:
+    return (
+        r'cd\s+' + _parent_dots(levels) + r'/?\s*(?:&&|;)\s*'
+        r'(?:(?:builtin|command)\s+)?pwd(?:\s+-[PL]+)*'
+    )
+
+
+def _pwd_parent_token(levels: int) -> str:
+    """Dest token that expands to *levels*-up from ``$PWD``."""
+    strip = r'\$\{PWD%(?:/\*){' + str(levels) + r'}\}'
+    dirname_cmd = _dirname_chain(r'(?:\$PWD\b|\$\{PWD\})', levels)
+    body = dirname_cmd + r'|' + _parent_resolve_cmd(levels) + r'|' + _cd_parent_pwd_cmd(levels)
+    core = (
+        r'(?:'
+        + strip +
+        r'|\$\(\s*(?:' + body + r')\s*\)'
+        r'|`(?:' + body + r')`'
+        r')'
+    )
+    return _token_or_printed(core)
+
+
+def _oldpwd_parent_token(levels: int) -> str:
+    """Dest token that expands to *levels*-up from ``$OLDPWD``."""
+    strip = r'\$\{OLDPWD%(?:/\*){' + str(levels) + r'}\}'
+    dirname_cmd = _dirname_chain(r'(?:\$OLDPWD\b|\$\{OLDPWD\})', levels)
+    core = (
+        r'(?:'
+        + strip +
+        r'|\$\(\s*(?:' + dirname_cmd + r')\s*\)'
+        r'|`(?:' + dirname_cmd + r')`'
+        r')'
+    )
+    return _token_or_printed(core)
+
+
+def _parent_write_dest(token: str) -> str:
+    return (
+        r'(?:["\']?)' + token + r'(?:["\']?)'
+        r'/'
+        r'(?:["\']?)'
+        r'[^\s;&|<>"\']+'
+        r'(?:["\']?)'
+    )
+
+
+_COMMAND_SUBST_RE = re.compile(r'\$\([^)]*\)|`[^`]*`')
+_CHDIR_BOT_DESKTOP_RE = re.compile(
+    rf'(?:(?:\bcd\b|\bpushd\b)\s+|\benv\b[^\n]*\s(?:-C|--chdir)[=\s]*)["\']?{_HERMES_BOT_DESKTOP_PATH}',
+    _RE_FLAGS,
+)
+# ``cd bot-desktop`` from session cwd ``~/.hermes`` (messaging
+# ``TERMINAL_CWD``) lands in the screen. The prefix pattern above only
+# sees ``cd ~/.hermes/bot-desktop``. Walk ``cd``/``pushd``/``env -C``
+# targets against the starting cwd so a relative hop is joined the same
+# way the shell does. ``cd --`` / ``cd -P`` / ``cd -L`` are flags.
+_CHDIR_TARGET_RE = re.compile(
+    r'(?:'
+    r'(?:\bcd\b|\bpushd\b)(?:\s+(?:--|-P|-L))*\s+'
+    r'|\benv\b[^\n]*\s(?:-C|--chdir)[=\s]*'
+    r')'
+    r'["\']?'
+    r'(?P<target>[^\s;&|<>"\']+)'
+    r'["\']?',
+    _RE_FLAGS,
+)
+# Redirects / later words see parent-shell PWD. ``env -C`` does not.
+_SHELL_CHDIR_TARGET_RE = re.compile(
+    r'(?:\bcd\b|\bpushd\b)(?:\s+(?:--|-P|-L))*\s+'
+    r'["\']?'
+    r'(?P<target>[^\s;&|<>"\']+)'
+    r'["\']?',
+    _RE_FLAGS,
+)
+# ``CDPATH=~/.hermes cd bot-desktop`` from ``/tmp`` still lands in the
+# screen — CDPATH is searched before the starting cwd.
+_CDPATH_HERMES_RE = re.compile(
+    r'\bCDPATH=(?:["\']?)(?:[^;\s]*:)?'
+    r'(?:'
+    r'~\/\.hermes'
+    r'|(?:\$home|\$\{home\})/\.hermes'
+    r'|(?:\$hermes_home|\$\{hermes_home\})'
+    r')'
+    r'(?:/|:|(?=[\s;"\']|$))',
+    _RE_FLAGS,
+)
+_RELATIVE_BOT_DESKTOP_CHDIR_RE = re.compile(
+    r'(?:(?:\bcd\b|\bpushd\b)(?:\s+(?:--|-P|-L))*\s+|\benv\b[^\n]*\s(?:-C|--chdir)[=\s]*)'
+    r'["\']?(?:\./)?bot-desktop(?:/|(?=[\s;"\']|$))',
+    _RE_FLAGS,
+)
+# Same-shell ``cd``/``pushd``/``popd`` (not ``env -C``) updates ``$OLDPWD``
+# for later words. Session cwd in the screen plus ``cd /tmp &&
+# > $OLDPWD/lease.json`` is the finding-54 miss: OLDPWD becomes the tree
+# without a same-command chdir *into* it.
+_SHELL_CHDIR_RE = re.compile(r'\b(?:cd|pushd|popd)\b', _RE_FLAGS)
+# ``cd`` does not push DIRSTACK. ``~1`` / ``$(dirs +1)`` only become
+# the screen after ``pushd``/``popd``. ``~-0`` / ``$(dirs -0)`` are
+# PWD on a one-entry stack and live on the PWD dest.
+_DIRSTACK_MUTATE_RE = re.compile(r'\b(?:pushd|popd)\b', _RE_FLAGS)
+_BOT_DESKTOP_CWD_RE = re.compile(_HERMES_BOT_DESKTOP_PATH, _RE_FLAGS)
+
+
+def _bot_desktop_cwd_write_re(dest: str) -> re.Pattern:
+    """Redirect / dest-last / dest-first writers whose dest is *dest*."""
+    return re.compile(
+        r'(?:'
+        r'>>?\s*' + dest +
+        r'|\btee\b(?:\s+-[^\s]+)*\s+' + dest +
+        r'|\b(?:gdd|dd)\b[^\n]*\bof=' + dest +
+        r'|\b(?:g?cp|g?mv|g?install|g?ln|rsync|scp|objcopy|sponge)\b[^\n]*\s'
+        + dest + r'(?:\s*(?:&&|\|\||;).*)?$'
+        r'|\b(?:curl|wget|iconv|patch|aria2c)\b[^\n]*\s'
+        r'(?:(?-i:-o|-O|-P|-d)|--output|--output-dir|--output-document|'
+        r'--directory-prefix|--dir)[=\s]*' + dest +
+        r'|\b(?:g?rm|unlink|shred|trash(?:-put)?)\b[^\n]*\s' + dest +
+        r'|\bgio\s+trash\b[^\n]*\s' + dest +
+        r'|\b(?:(?:bsd|g)?tar)\b(?![^\n]*\s(?:-C|--directory)[=\s]*[/~$])'
+        r'[^\n]*\s' + _DEST_FIRST_TAR_EXTRACT + r'\b'
+        r'|\b(?:unzip)\b(?![^\n]*\s(?-i:-d)[=\s]*[/~$])'
+        r'|\b(?:7z|7za|7zr|7zz)\b(?=[^\n]*\s(?:x|e)\b)(?![^\n]*(?-i:-o)[/~$])'
+        r')',
+        _RE_FLAGS,
+    )
+
+
+# Compile on first detect, not at import. Parent-level dests (especially
+# 6–8 hops) explode to ~1MB patterns; compiling all of them at import
+# made ``import tools.approval`` take ~10s. computer_use's first
+# ``_get_backend`` imports that module to read the YOLO bypass and used
+# to hold ``_backend_lock`` across the compile — Take over could not
+# interrupt a sibling session, and in-flight type never started in time.
+@functools.lru_cache(maxsize=1)
+def _relative_bot_desktop_write_re() -> re.Pattern:
+    return _bot_desktop_cwd_write_re(
+        rf'(?:{_RELATIVE_WRITE_DEST}|{_PWD_WRITE_DEST}|{_PWD_PRINTED_FILE_DEST})'
+    )
+
+
+@functools.lru_cache(maxsize=1)
+def _oldpwd_bot_desktop_write_re() -> re.Pattern:
+    return _bot_desktop_cwd_write_re(
+        rf'(?:{_OLDPWD_WRITE_DEST}|{_OLDPWD_PRINTED_FILE_DEST})'
+    )
+
+
+@functools.lru_cache(maxsize=1)
+def _dirstack_bot_desktop_write_re() -> re.Pattern:
+    return _bot_desktop_cwd_write_re(_DIRSTACK_WRITE_DEST)
+
+
+@functools.lru_cache(maxsize=_MAX_PARENT_LEVELS)
+def _pwd_parent_write_re(level: int) -> re.Pattern:
+    return _bot_desktop_cwd_write_re(_parent_write_dest(_pwd_parent_token(level)))
+
+
+@functools.lru_cache(maxsize=_MAX_PARENT_LEVELS)
+def _oldpwd_parent_write_re(level: int) -> re.Pattern:
+    return _bot_desktop_cwd_write_re(_parent_write_dest(_oldpwd_parent_token(level)))
+
+
+_CHDIR_BOT_DESKTOP_WRITE_DESCRIPTION = "write into bot-desktop after chdir"
+
+
+def join_cwd_for_detection(cwd: Optional[str], *, base: Optional[str] = None) -> Optional[str]:
+    """Resolve a relative command cwd against the backend cwd for detection.
+
+    ``env.execute`` ``cd``s a relative ``workdir`` from the environment cwd
+    (Popen ``self.cwd`` / ``TERMINAL_CWD`` — often ``~/.hermes`` on
+    messaging). ``workdir=bot-desktop`` therefore writes ``lease.json``
+    under the screen tree while the detector would only see the token
+    ``bot-desktop``. Absolute / ``~`` dests are returned unchanged. A
+    relative cwd with no *base* is left as-is so a project folder named
+    ``bot-desktop`` stays unflagged.
+    """
+    if not cwd or not isinstance(cwd, str):
+        return cwd
+    expanded = os.path.expanduser(cwd)
+    if os.path.isabs(expanded):
+        return expanded
+    if not base or not isinstance(base, str):
+        return cwd
+    return os.path.normpath(os.path.join(os.path.expanduser(base.rstrip("/\\")), expanded))
+
+
+def _cwd_is_hermes_bot_desktop(cwd: Optional[str]) -> bool:
+    """True when *cwd* is this (or a sibling named) profile's screen tree."""
+    if not cwd or not isinstance(cwd, str):
+        return False
+    folded = _rewrite_resolved_user_home(
+        _rewrite_resolved_hermes_home(os.path.expanduser(cwd.rstrip("/\\")) + "/")
+    )
+    return bool(_BOT_DESKTOP_CWD_RE.search(folded))
+
+
+_BOT_DESKTOP_DEPTH_RE = re.compile(
+    r'(?:'
+    r'~\/\.hermes/' + _HERMES_PROFILE_INFIX +
+    r'|(?:\$home|\$\{home\})/\.hermes/' + _HERMES_PROFILE_INFIX +
+    r'|(?:\$hermes_home|\$\{hermes_home\})/' + _HERMES_PROFILE_INFIX +
+    r')'
+    r'bot-desktop(?:/(?P<rest>.+))?$',
+    _RE_FLAGS,
+)
+
+
+def _cwd_bot_desktop_depth(cwd: Optional[str]) -> int:
+    """How many path components *cwd* sits under the screen tree.
+
+    ``0`` is the tree root (or not the screen). ``1`` is
+    ``bot-desktop/browser-profile``. ``2`` is Chrome's ``Default`` —
+    ``${PWD%/*/*}/lease.json`` from there is the screen lease.
+    """
+    if not cwd or not isinstance(cwd, str):
+        return 0
+    folded = _rewrite_resolved_user_home(
+        _rewrite_resolved_hermes_home(os.path.expanduser(cwd.rstrip("/\\")))
+    ).rstrip("/\\")
+    match = _BOT_DESKTOP_DEPTH_RE.search(folded)
+    if not match:
+        return 0
+    rest = (match.group("rest") or "").strip("/\\")
+    if not rest:
+        return 0
+    return len([part for part in rest.split("/") if part and part != "."])
+
+
+def _relative_bot_desktop_depth(target: str) -> int:
+    """Depth of a relative ``bot-desktop/…`` chdir, or ``-1`` if it is not one."""
+    text = (target or "").strip()
+    while text.startswith("./"):
+        text = text[2:]
+    if text in ("bot-desktop", "bot-desktop/"):
+        return 0
+    prefix = "bot-desktop/"
+    if not text.startswith(prefix):
+        return -1
+    rest = text[len(prefix):].strip("/")
+    return len([part for part in rest.split("/") if part]) if rest else 0
+
+
+def _without_command_subst(command: str) -> str:
+    """Drop ``$(…)`` / backticks so an inner ``cd ..`` is not an outer chdir.
+
+    Redirects and later words see the parent-shell PWD. ``$(cd .. && pwd)``
+    is a dest token, not ``cd`` away from the screen.
+    """
+    return _COMMAND_SUBST_RE.sub(" ", command)
+
+
+def _shell_chdir_inside_state(command: str, cwd: Optional[str]) -> tuple:
+    """Walk outer ``cd``/``pushd`` (not ``env -C``) for dirname-of-PWD dests.
+
+    Returns ``(pwd_depth, oldpwd_depth)``. ``env -C`` does not change
+    parent-shell ``$PWD`` for redirects. Command-subst ``cd`` is stripped
+    first. ``CDPATH=~/.hermes cd bot-desktop/foo`` from ``/tmp`` still lands
+    in a child of the screen. *oldpwd_depth* is ``0`` when the command
+    never ``cd``/``pushd``s.
+    """
+    outer = _without_command_subst(command)
+    start = cwd if cwd and isinstance(cwd, str) else ""
+    pwd_depth = _cwd_bot_desktop_depth(start)
+    oldpwd_depth = 0
+    sim = start
+    cdpath = bool(_CDPATH_HERMES_RE.search(command))
+    for match in _SHELL_CHDIR_TARGET_RE.finditer(outer):
+        target = match.group("target")
+        if target in (".", "-", "--"):
+            continue
+        prev = pwd_depth
+        sim = _join_chdir_target(sim, target)
+        nxt = _cwd_bot_desktop_depth(sim)
+        if nxt == 0 and cdpath:
+            rel = _relative_bot_desktop_depth(target)
+            if rel >= 0:
+                nxt = rel
+        oldpwd_depth = prev
+        pwd_depth = nxt
+    return pwd_depth, oldpwd_depth
+
+
+def _join_chdir_target(cwd: str, target: str) -> str:
+    """Resolve one ``cd``/``pushd``/``env -C`` target against *cwd*."""
+    expanded = os.path.expanduser(target)
+    if os.path.isabs(expanded) or expanded.startswith(("$", "~")):
+        return expanded.rstrip("/\\") or expanded
+    base = os.path.expanduser(cwd.rstrip("/\\")) if cwd.startswith("~") else cwd.rstrip("/\\")
+    return os.path.normpath(os.path.join(base, expanded))
+
+
+def _command_chdirs_into_bot_desktop(command: str, cwd: Optional[str] = None) -> bool:
+    """True when the command ``cd``/``pushd``s into this profile's screen.
+
+    Absolute / ``~/.hermes/bot-desktop`` dests hit ``_CHDIR_BOT_DESKTOP_RE``.
+    ``cd bot-desktop`` from session cwd ``~/.hermes`` (or ``cd ../bot-desktop``
+    from a sibling) is joined against *cwd*. ``CDPATH=~/.hermes cd bot-desktop``
+    lands in the tree even when *cwd* is ``/tmp``.
+    """
+    if _CHDIR_BOT_DESKTOP_RE.search(command):
+        return True
+    if _CDPATH_HERMES_RE.search(command) and _RELATIVE_BOT_DESKTOP_CHDIR_RE.search(command):
+        return True
+    if not cwd or not isinstance(cwd, str):
+        return False
+    sim = cwd
+    for match in _CHDIR_TARGET_RE.finditer(command):
+        target = match.group("target")
+        if target in (".", "-", "--"):
+            continue
+        sim = _join_chdir_target(sim, target)
+        if _cwd_is_hermes_bot_desktop(sim):
+            return True
+    return False
+
+
+def _command_shell_chdirs(command: str) -> bool:
+    """True when the command ``cd``/``pushd``/``popd``s (updates ``$OLDPWD``)."""
+    return bool(_SHELL_CHDIR_RE.search(command))
+
+
+def _command_mutates_dirstack(command: str) -> bool:
+    """True when the command ``pushd``/``popd``s (updates DIRSTACK / ``~N``)."""
+    return bool(_DIRSTACK_MUTATE_RE.search(command))
+
+
+def _has_parent_bot_desktop_write(
+    command: str, write_re, levels: int,
+) -> bool:
+    cap = min(max(levels, 0), _MAX_PARENT_LEVELS)
+    return any(write_re(n + 1).search(command) for n in range(cap))
+
+
+def _has_relative_bot_desktop_write(
+    command: str, *, include_oldpwd: bool = False, include_dirstack: bool = False,
+    pwd_parent_levels: int = 0, oldpwd_parent_levels: int = 0,
+) -> bool:
+    if _relative_bot_desktop_write_re().search(command):
+        return True
+    if include_oldpwd and _oldpwd_bot_desktop_write_re().search(command):
+        return True
+    if include_dirstack and _dirstack_bot_desktop_write_re().search(command):
+        return True
+    if _has_parent_bot_desktop_write(command, _pwd_parent_write_re, pwd_parent_levels):
+        return True
+    return _has_parent_bot_desktop_write(
+        command, _oldpwd_parent_write_re, oldpwd_parent_levels,
+    )
+
+
+def detect_dangerous_command(command: str, *, cwd: Optional[str] = None) -> tuple:
+    """Check dangerous patterns -> (is_dangerous, pattern_key, description).
+
+    ``cwd`` is the command's resolved working directory (session ``cd`` /
+    per-call ``workdir``). Relative writes after ``cd ~/.hermes/bot-desktop``
+    (same command or a later turn that inherited that cwd) forge
+    ``lease.json`` the same way an absolute dest does.
+    """
     if _command_parser_limit_exceeded(command):
         return (True, _PARSER_LIMIT_DESCRIPTION, _PARSER_LIMIT_DESCRIPTION)
     if _is_verification_artifact_cleanup(command):
         return (False, None, None)
+    normalized_for_cwd = _normalize_command_for_detection(command)
+    chdir_bot_desktop = _command_chdirs_into_bot_desktop(normalized_for_cwd, cwd=cwd)
+    cwd_is_bot_desktop = _cwd_is_hermes_bot_desktop(cwd)
+    in_bot_desktop = cwd_is_bot_desktop or chdir_bot_desktop
+    # ``$OLDPWD`` is the screen after a same-command chdir *into* it, or
+    # after ``cd``/``pushd`` away from a session cwd that already is it.
+    # ``env -C`` does not update the parent shell's OLDPWD.
+    include_oldpwd = chdir_bot_desktop or (
+        cwd_is_bot_desktop and _command_shell_chdirs(normalized_for_cwd)
+    )
+    # ``~1`` / ``~+1`` / ``$(dirs +1)`` are the screen only after
+    # ``pushd``/``popd``. ``cd`` updates ``$OLDPWD`` but leaves extra
+    # DIRSTACK entries alone.
+    include_dirstack = (chdir_bot_desktop or cwd_is_bot_desktop) and (
+        _command_mutates_dirstack(normalized_for_cwd)
+    )
+    # Dirname-of-PWD is the screen only from a *subdirectory*, and only
+    # for as many ``/*`` hops as the cwd is deep. Tree-root
+    # ``${PWD%/*}`` and two-level ``${PWD%/*/*}`` from
+    # ``browser-profile`` write ``~/.hermes/lease.json``. Inner
+    # ``$(cd ../.. && pwd)`` is a dest token — strip substs so it is
+    # not an outer chdir.
+    outer_chdir = _without_command_subst(normalized_for_cwd)
+    pwd_parent_levels, oldpwd_parent_levels = _shell_chdir_inside_state(
+        normalized_for_cwd, cwd=cwd,
+    )
+    if not _command_shell_chdirs(outer_chdir):
+        oldpwd_parent_levels = 0
+    # Normalization strips ``\n`` in ``printf '%s\n'``, so also search the
+    # raw command for PWD dest writes (finding 64).
+    if in_bot_desktop and _has_relative_bot_desktop_write(
+        command, include_oldpwd=include_oldpwd, include_dirstack=include_dirstack,
+        pwd_parent_levels=pwd_parent_levels,
+        oldpwd_parent_levels=oldpwd_parent_levels,
+    ):
+        return (True, _CHDIR_BOT_DESKTOP_WRITE_DESCRIPTION, _CHDIR_BOT_DESKTOP_WRITE_DESCRIPTION)
     for command_variant in _command_detection_variants(command):
+        # Case-preserved: dest-first short flags (`-t` vs `-T`, tar `-C` vs `-c`).
+        for pattern_re, description in DEST_FIRST_SENSITIVE_PATTERNS_COMPILED:
+            if pattern_re.search(command_variant):
+                return (True, description, description)
         command_lower = command_variant.lower()
         for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
             if pattern_re.search(command_lower):
                 return (True, description, description)
+        if in_bot_desktop and _has_relative_bot_desktop_write(
+            command_variant, include_oldpwd=include_oldpwd, include_dirstack=include_dirstack,
+            pwd_parent_levels=pwd_parent_levels,
+            oldpwd_parent_levels=oldpwd_parent_levels,
+        ):
+            return (True, _CHDIR_BOT_DESKTOP_WRITE_DESCRIPTION, _CHDIR_BOT_DESKTOP_WRITE_DESCRIPTION)
+    if in_bot_desktop and _has_relative_bot_desktop_write(
+        normalized_for_cwd, include_oldpwd=include_oldpwd, include_dirstack=include_dirstack,
+        pwd_parent_levels=pwd_parent_levels,
+        oldpwd_parent_levels=oldpwd_parent_levels,
+    ):
+        return (True, _CHDIR_BOT_DESKTOP_WRITE_DESCRIPTION, _CHDIR_BOT_DESKTOP_WRITE_DESCRIPTION)
     normalized = _normalize_command_for_detection(command)
     for description, _ in _execution_flag_findings(normalized):
         return (True, description, description)

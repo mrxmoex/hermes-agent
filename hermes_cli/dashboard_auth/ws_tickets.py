@@ -46,18 +46,51 @@ def mint_ticket(*, user_id: str, provider: str, extra: Optional[Dict[str, Any]] 
     return ticket
 
 
-def consume_ticket(ticket: str) -> Dict[str, Any]:
-    """Validate and consume (single-use). Raises :class:`TicketInvalid` on missing/expired/used."""
+def revoke_unused_tickets(*, viewer_id: str, hermes_home: str) -> int:
+    """Drop unused Bot Desktop tickets for this viewer on this profile.
+
+    ``display.observe`` remints a 30 s ticket for the same ``viewer_id`` on
+    reconnect. Leaving the previous unused ticket alive lets a second
+    ``/api/display/ws`` share the lease input gate (keyed by viewer_id, not
+    socket). Already-consumed tickets are not in the store — the live-stream
+    registry evicts that socket.
+    """
+    if not viewer_id or not hermes_home:
+        return 0
+    dropped = 0
+    with _lock:
+        for ticket, (_expires_at, info) in list(_tickets.items()):
+            if (info.get("provider") == "bot-desktop"
+                    and str(info.get("viewer_id") or "") == viewer_id
+                    and str(info.get("hermes_home") or "") == hermes_home):
+                _tickets.pop(ticket, None)
+                dropped += 1
+        _gc_expired_locked()
+    return dropped
+
+
+def consume_ticket(ticket: str, *, provider: Optional[str] = None) -> Dict[str, Any]:
+    """Validate and consume (single-use). Raises :class:`TicketInvalid` on missing/expired/used.
+
+    ``provider`` binds the consume to one route. Display and gateway tickets share
+    this store: popping before that check burned a 30 s ``/api/ws`` login when it
+    was presented as ``?display_ticket=``. A mismatch leaves the ticket in the
+    store so its real door can still redeem it. Expired entries are still dropped.
+    """
     now = int(time.time())
     with _lock:
-        entry = _tickets.pop(ticket, None)
+        entry = _tickets.get(ticket)
         if entry is None:
             # Truncated so misuse never logs the secret in full.
             truncated = (ticket[:8] + "…") if ticket else "<empty>"
             raise TicketInvalid(f"unknown ticket: {truncated}")
         expires_at, info = entry
         if expires_at < now:
+            _tickets.pop(ticket, None)
             raise TicketInvalid("expired")
+        if provider is not None and info.get("provider") != provider:
+            raise TicketInvalid("ticket not valid for this route")
+        _tickets.pop(ticket, None)
         return info
 
 

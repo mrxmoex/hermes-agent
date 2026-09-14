@@ -3,6 +3,8 @@ status). Bodies are rebound onto server.py's globals at install time (method_ctx
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from .method_ctx import HandlerRegistry, bind_module
 
 _registry = HandlerRegistry()
@@ -12,8 +14,12 @@ _CDP_SCHEMES = {"http", "https", "ws", "wss"}
 
 def _resolve_browser_cdp_url() -> str:
     """Configured browser CDP override without network I/O (``/browser status`` must be fast;
-    ``tools.browser_tool_cdp._get_cdp_override`` HTTP-probes discovery URLs). Same precedence (env,
-    then ``browser.cdp_url``) minus WS resolution; ``browser_navigate`` normalizes on the next call."""
+    ``tools.browser_tool_cdp._get_cdp_override`` HTTP-probes discovery URLs). Same precedence
+    (this home's live connect, then env if it is not a sibling's, then ``browser.cdp_url``)
+    minus WS resolution; ``browser_navigate`` normalizes on the next call."""
+    with contextlib.suppress(Exception):
+        from tools.browser_tool_cdp import _get_cdp_override_raw
+        return _get_cdp_override_raw()
     if env_url := os.environ.get("BROWSER_CDP_URL", "").strip():
         return env_url
     with contextlib.suppress(Exception):
@@ -93,11 +99,89 @@ def _connect_local_default(port: int, system: str, announce) -> str | None:
     return None
 
 
+def _cdp_swap_blocked_by_human() -> str | None:
+    """Refuse connect/disconnect while a human holds this profile's Bot Desktop.
+
+    Both RPCs call ``cleanup_all_browsers()`` (historically ``force=True``)
+    around the CDP override swap. That tree-kills the shared Chromium a
+    human is mid-login in. Even after teardown defers the reserved jar,
+    swapping the process CDP URL would launch or adopt another Chrome
+    against the same profile. Hand back first. Same check as CLI
+    ``/browser connect``.
+    """
+    try:
+        from tools.browser_tool_cdp import cdp_swap_blocked_by_human
+        return cdp_swap_blocked_by_human()
+    except Exception:
+        return None
+
+
+def _browser_manage_owner_home(params: dict):
+    """HERMES_HOME for ``browser.manage``: explicit profile, else the live session.
+
+    TUI / Desktop send ``session_id``, not ``profile``. After a multiplex /
+    bot-session turn the process home is the launch profile. Swap fence,
+    persist, and override lookup must follow the session's bot home —
+    ``@_profile_scoped`` alone is not enough because clients never send
+    ``profile``. Unrecorded owner (no session, no profile) stays ambient.
+    """
+    if not isinstance(params, dict):
+        return None
+    profile = params.get("profile")
+    if isinstance(profile, str) and profile.strip():
+        return _profile_home(profile)
+    sid = params.get("session_id") or ""
+    if not sid:
+        return None
+    home = (_sessions.get(sid) or {}).get("profile_home")
+    if not home:
+        return None
+    try:
+        resolved = Path(home).resolve()
+    except OSError:
+        return None
+    try:
+        if resolved == Path(_hermes_home).resolve():
+            return None
+    except OSError:
+        pass
+    return resolved
+
+
+def _browser_manage(rid, params: dict) -> dict:
+    """Swap fence + persist + override lookup follow the session owner home."""
+    try:
+        home = _browser_manage_owner_home(params)
+    except FileNotFoundError as e:
+        return _err(rid, 4064, str(e))
+    token = set_hermes_home_override(home) if home is not None else None
+    try:
+        return _browser_manage_unscoped(rid, params)
+    finally:
+        if token is not None:
+            reset_hermes_home_override(token)
+
+
+def _browser_manage_unscoped(rid, params: dict) -> dict:
+    action = params.get("action", "status")
+    if action == "status":
+        url = _resolve_browser_cdp_url()
+        return _ok(rid, {"connected": bool(url), "url": url})
+    if action == "disconnect":
+        return _browser_disconnect(rid)
+    if action == "connect":
+        return _browser_connect(rid, params)
+    return _err(rid, 4015, f"unknown action: {action}")
+
+
 def _browser_connect(rid, params: dict) -> dict:
     import platform
     from hermes_cli.browser_connect import DEFAULT_BROWSER_CDP_URL
     from tools.browser_tool_lifecycle import cleanup_all_browsers
     from urllib.parse import urlparse
+    blocked = _cdp_swap_blocked_by_human()
+    if blocked:
+        return _err(rid, 5031, blocked)
     raw_url = params.get("url")
     if raw_url is not None and not isinstance(raw_url, str):
         return _err(rid, 4015, f"browser url must be a string, got {type(raw_url).__name__}")
@@ -149,7 +233,8 @@ def _browser_connect(rid, params: dict) -> dict:
         # Reap BEFORE publishing the new env (an in-flight tool call sees the old supervisor closed)
         # and AFTER (the default task's cached supervisor drains against the new URL).
         cleanup_all_browsers()
-        os.environ["BROWSER_CDP_URL"] = normalized
+        from tools.browser_tool_cdp import set_process_cdp_override
+        set_process_cdp_override(normalized)
         cleanup_all_browsers()
     except Exception as e:
         return _err(rid, 5031, str(e))
@@ -158,6 +243,9 @@ def _browser_connect(rid, params: dict) -> dict:
 
 
 def _browser_disconnect(rid) -> dict:
+    blocked = _cdp_swap_blocked_by_human()
+    if blocked:
+        return _err(rid, 5031, blocked)
     # Reap, drop the override, reap again — same swap window as ``_browser_connect``.
     def reap() -> None:
         with contextlib.suppress(Exception):
@@ -165,7 +253,8 @@ def _browser_disconnect(rid) -> dict:
             cleanup_all_browsers()
 
     reap()
-    os.environ.pop("BROWSER_CDP_URL", None)
+    from tools.browser_tool_cdp import clear_process_cdp_override
+    clear_process_cdp_override()
     reap()
     return _ok(rid, {"connected": False})
 

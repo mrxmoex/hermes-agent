@@ -389,3 +389,49 @@ def test_format_reference_value_round_trips_through_the_parser(value):
 
     assert match is not None
     assert match.group("value").strip("`\"'") == value
+
+
+def test_at_diff_does_not_dump_bot_desktop_lease(sample_repo: Path):
+    """@diff used to run ``git diff`` with no path filter; a tracked jar landed
+    in the attached context. Also pins that a real unstaged change is still
+    inlined (git diff exits 1 when files differ — that is success)."""
+    from agent.context_references import preprocess_context_references
+
+    secret = "LIVE-COOKIE-JAR-SECRET"
+    lease = sample_repo / "bot-desktop" / "lease.json"
+    lease.parent.mkdir()
+    lease.write_text(secret + "\n", encoding="utf-8")
+    _git(sample_repo, "add", "bot-desktop")
+    _git(sample_repo, "commit", "-m", "jar")
+    lease.write_text(secret + "-CHANGED\n", encoding="utf-8")
+    (sample_repo / "README.md").write_text("# changed\n", encoding="utf-8")
+
+    result = preprocess_context_references(
+        "Review @diff",
+        cwd=sample_repo,
+        context_length=100_000,
+    )
+
+    assert result.expanded
+    assert secret not in result.message
+    assert "bot-desktop" not in result.message
+    assert "# changed" in result.message
+
+
+def test_at_staged_does_not_dump_bot_desktop_lease(sample_repo: Path):
+    from agent.context_references import preprocess_context_references
+
+    secret = "STAGED-JAR-SECRET"
+    lease = sample_repo / "bot-desktop" / "lease.json"
+    lease.parent.mkdir()
+    lease.write_text(secret + "\n", encoding="utf-8")
+    _git(sample_repo, "add", "bot-desktop")
+
+    result = preprocess_context_references(
+        "Review @staged",
+        cwd=sample_repo,
+        context_length=100_000,
+    )
+
+    assert secret not in result.message
+    assert "bot-desktop" not in result.message

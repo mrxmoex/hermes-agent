@@ -126,10 +126,19 @@ def _run_chrome_fallback_command(task_id: str, command: str, args: List[str], ti
     # 1. Current URL from the Lightpanda session. ``get url`` is not fallback-eligible,
     # so this can't recurse; the explicit override strips Chromium-only env flags.
     url_result = _session._run_browser_command(task_id, "get", ["url"], timeout=10, _engine_override="lightpanda")
+    if url_result.get("code") == "human_has_control":
+        return url_result
     current_url = str(url_result.get("data", {}).get("url", "")).strip() if url_result.get("success") else None
     if not current_url:
         _bt.logger.warning("Chrome fallback: could not determine current URL from LP session")
         return {"success": False, "error": "Chrome fallback failed: could not determine current URL"}
+
+    from tools.bot_desktop.lease import HumanHasControl
+
+    try:
+        _session._refuse_shared_session_while_human_holds()
+    except HumanHasControl as e:
+        return {"success": False, "error": str(e), "code": "human_has_control"}
 
     # 2. Temporary Chrome session (bypasses _get_session_info's cache).
     tmp_session = f"h_cfb_{uuid.uuid4().hex[:8]}"
@@ -151,28 +160,42 @@ def _run_chrome_fallback_command(task_id: str, command: str, args: List[str], ti
     task_socket_dir = _session._prepare_session_socket_dir(tmp_session)
     # Bypasses _run_browser_command, so apply the same Chromium sandbox policy explicitly.
     browser_env = _session._agent_browser_command_env(task_socket_dir)
+    # _build_browser_env pins the dock jar. This fallback is a throwaway
+    # Chrome at the same URL — keeping that pin lets Chromium's singleton
+    # join the human-held dock instance and navigate it.
+    tmp_profile = os.path.join(task_socket_dir, "chrome-profile")
+    os.makedirs(tmp_profile, mode=0o700, exist_ok=True)
+    browser_env["AGENT_BROWSER_PROFILE"] = tmp_profile
     _session._apply_chromium_sandbox_args(browser_env)
 
     def _run_tmp(cmd: str, cmd_args: List[str]) -> Dict[str, Any]:
         proc = _session._popen_agent_browser(base_args + [cmd] + cmd_args, browser_env, task_socket_dir, cmd)
         stdout_path = os.path.join(task_socket_dir, f"_stdout_{cmd}")
         stderr_path = os.path.join(task_socket_dir, f"_stderr_{cmd}")
+        # Throwaway Chrome can singleton-join the dock jar (see AGENT_BROWSER_PROFILE
+        # pin above). Leftover navigate/fill after Take over is leftover write.
+        dock_home = _session._dock_cli_home(task_id, {"features": {"local": True}})
+        if dock_home:
+            _session.register_inflight_dock_cli(proc, dock_home)
         try:
-            proc.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
-            return {"success": False, "error": f"Chrome fallback '{cmd}' timed out"}
-        try:
-            with open(stdout_path, encoding="utf-8") as f:
-                stdout = f.read().strip()
-            if stdout:
-                return json.loads(stdout.split("\n")[-1])
-        except Exception as exc:
-            _bt.logger.debug("Chrome fallback tmp cmd '%s' error: %s", cmd, exc)
+            try:
+                proc.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+                return {"success": False, "error": f"Chrome fallback '{cmd}' timed out"}
+            try:
+                with open(stdout_path, encoding="utf-8") as f:
+                    stdout = f.read().strip()
+                if stdout:
+                    return json.loads(stdout.split("\n")[-1])
+            except Exception as exc:
+                _bt.logger.debug("Chrome fallback tmp cmd '%s' error: %s", cmd, exc)
+            return {"success": False, "error": f"Chrome fallback '{cmd}' failed"}
         finally:
+            if dock_home:
+                _session.unregister_inflight_dock_cli(proc)
             _session._unlink_command_output_files(stdout_path, stderr_path)
-        return {"success": False, "error": f"Chrome fallback '{cmd}' failed"}
 
     try:
         # 3. Navigate Chrome to the same URL, then 4. run the requested command.

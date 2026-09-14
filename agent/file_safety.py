@@ -38,8 +38,39 @@ def _hermes_dirs() -> list[Path]:
 
     Both are checked so credential stores at <root>/... stay guarded when
     running under a profile (HERMES_HOME = <root>/profiles/<name>).
+    Sibling named homes (``<root>/profiles/<other>``) are not listed here —
+    Bot Screen paths cover them via ``_is_hermes_bot_desktop_path``.
     """
     return list(dict.fromkeys(_resolve_each((_hermes_home_path(), _hermes_root_path()))))
+
+
+def _is_hermes_bot_desktop_path(resolved: str | Path) -> bool:
+    """True when *resolved* sits in a profile's Bot Screen tree.
+
+    Screens live at ``<home>/bot-desktop`` per profile: the default home
+    (``<root>/bot-desktop``) and every named home
+    (``<root>/profiles/<name>/bot-desktop``). ``_hermes_dirs()`` only
+    yields the active home and the root, so a sibling profile's jar
+    would otherwise be readable and writable — forging that profile's
+    ``lease.json`` / ``dock-cdp-port``. A project folder named
+    ``bot-desktop`` outside the Hermes root is not the screen.
+    """
+    try:
+        target = Path(os.path.realpath(str(resolved)))
+    except Exception:
+        return False
+    for base in _hermes_dirs():
+        with suppress(Exception):
+            if _is_under(target, Path(os.path.realpath(str(base / "bot-desktop")))):
+                return True
+    with suppress(Exception):
+        root = Path(os.path.realpath(str(_hermes_root_path())))
+        parts = target.relative_to(root).parts
+        if parts and parts[0] == "bot-desktop":
+            return True
+        if len(parts) >= 3 and parts[0] == "profiles" and parts[2] == "bot-desktop":
+            return True
+    return False
 
 
 def _resolve_each(paths) -> list[Path]:
@@ -130,7 +161,12 @@ def build_write_approval_paths(home: str) -> set[str]:
 # rewrite. Session transcripts (state.db, sessions/) are application-owned
 # state whose rewrite can falsify history and break resume/compression;
 # mcp-tokens/ and pairing/ hold credential material.
-_HERMES_PROTECTED_SUBPATHS = ("state.db", "sessions", "mcp-tokens", "pairing")
+# bot-desktop/ is the screen lease + cookie jar + X cookie + dock-cdp-port.
+# write_file of lease.json would flip holder=agent while a human is mid-login
+# (bypassing acquire/release). write of dock-cdp-port fail-opens leftover CDP.
+# Defense-in-depth — terminal can still write (same-UID); this is NOT a
+# lease-gated computer_use fence.
+_HERMES_PROTECTED_SUBPATHS = ("state.db", "sessions", "mcp-tokens", "pairing", "bot-desktop")
 
 
 def _classify_write_denial(path: str) -> Optional[str]:
@@ -152,6 +188,11 @@ def _classify_write_denial(path: str) -> Optional[str]:
             with suppress(Exception):
                 if _is_under(resolved, os.path.realpath(os.path.join(str(base), sub))):
                     return "credential"
+
+    # Sibling named profiles are outside _hermes_dirs(); their screen is
+    # still a live lease + cookie jar (same class as the active home).
+    if _is_hermes_bot_desktop_path(resolved):
+        return "credential"
 
     safe_roots = get_safe_write_roots()
     if safe_roots and not any(_is_under(resolved, root) for root in safe_roots):
@@ -204,6 +245,10 @@ _CREDENTIAL_FILE_NAMES = (
 # Directory-prefix read denies under HERMES_HOME / <root>: (subdir, message for
 # the directory itself, message for a file inside). browser-profile/ is a copy
 # of the user's Cookies / Login Data — the same credential class as auth.json.
+# bot-desktop/ is the Bot Screen runtime: the live Chromium jar (Cookies,
+# Login Data), Xauthority, lease.json, dock-cdp-port. Defense-in-depth only —
+# the terminal tool can still read it (same-UID); this is NOT a lease-gated
+# computer_use fence.
 _READ_DENIED_DIRS = (
     ("mcp-tokens",
      "is the Hermes MCP token directory and cannot be read directly.",
@@ -211,6 +256,9 @@ _READ_DENIED_DIRS = (
     ("browser-profile",
      "is the Hermes real-profile browser snapshot directory (copied cookies/logins) and cannot be read directly.",
      "is inside the Hermes real-profile browser snapshot (copied cookies/logins) and cannot be read directly."),
+    ("bot-desktop",
+     "is the Hermes Bot Desktop runtime directory (cookie jar, X cookie, lease) and cannot be read directly.",
+     "is inside the Hermes Bot Desktop runtime (cookie jar, X cookie, lease) and cannot be read directly."),
     # vault.key + vault.json.enc sit side by side; key + ciphertext = plaintext, so the whole dir is one credential.
     ("vault",
      "is the Hermes credential vault directory and cannot be read directly (secrets are filled server-side by browser_vault_fill).",
@@ -223,7 +271,7 @@ def get_read_block_error(path: str) -> Optional[str]:
 
     Blocked: internal skill-hub caches (prompt-injection carriers), credential
     stores under HERMES_HOME and the global root (exact files, plus anything
-    under ``mcp-tokens/`` and ``browser-profile/``), and project-local ``.env``
+    under ``mcp-tokens/``, ``browser-profile/``, and ``bot-desktop/``), and project-local ``.env``
     files anywhere on disk (``.env.example`` is the documented-shape substitute).
 
     Callers that resolve relative paths against a non-process cwd (e.g.
@@ -251,6 +299,11 @@ def get_read_block_error(path: str) -> Optional[str]:
                     break
             if reason:
                 break
+        if reason is None and _is_hermes_bot_desktop_path(resolved):
+            for subdir, dir_msg, file_msg in _READ_DENIED_DIRS:
+                if subdir == "bot-desktop":
+                    reason = (dir_msg if resolved.name == "bot-desktop" else file_msg) + _DID_SUFFIX
+                    break
         if reason is None and resolved.name.lower() in _BLOCKED_PROJECT_ENV_BASENAMES:
             reason = (
                 "is a secret-bearing environment file and cannot be read to prevent credential "
@@ -272,6 +325,33 @@ def raise_if_read_blocked(path: str) -> None:
         return
     if blocked:
         raise ValueError(blocked)
+
+
+# Directory names that are credential stores wherever they sit — not only
+# under HERMES_HOME. A copied ``bot-desktop/`` in a project repo is still
+# the live cookie jar / lease; ``git diff --no-index`` and ``@diff`` must
+# refuse it the same way dashboard / Electron git rails do.
+_SENSITIVE_TREE_DIR_NAMES = frozenset({"bot-desktop", "pairing", "mcp-tokens"})
+
+
+def is_sensitive_managed_path(path: str) -> bool:
+    """True when ``path`` is a credential / Bot Screen store.
+
+    Matches on directory name (any depth, symlink-resolved) plus the
+    HERMES_HOME-scoped ``get_read_block_error`` denylist. Fail-closed:
+    a path we cannot resolve is treated as sensitive so a dump rail
+    cannot open it.
+    """
+    try:
+        raw = Path(os.path.expanduser(str(path)))
+        if any(part.lower() in _SENSITIVE_TREE_DIR_NAMES for part in raw.parts):
+            return True
+        resolved = raw.resolve()
+        if any(part.lower() in _SENSITIVE_TREE_DIR_NAMES for part in resolved.parts):
+            return True
+        return get_read_block_error(str(resolved)) is not None
+    except Exception:
+        return True
 
 
 def _resolve_active_profile_name() -> str:

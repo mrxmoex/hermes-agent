@@ -75,7 +75,11 @@ _SENSITIVE_MANAGED_FILE_BASENAMES = frozenset({
 # match). The browser can descend into subdirs, so a basename-only guard would
 # still expose ``mcp-tokens/<server>.json``; match on ANY path component so the
 # trees are blocked wherever they sit under the root, no HERMES_HOME resolution.
-_SENSITIVE_MANAGED_DIR_NAMES = frozenset({"mcp-tokens", "pairing"})
+# bot-desktop/ is the Bot Screen cookie jar + Xauthority + lease + dock-cdp-port.
+# The managed-files / workspace-FS APIs already deny mcp-tokens/ and pairing/ as
+# trees; without this name the dashboard can download ~/.hermes/bot-desktop/...
+# the same way export/backup used to ship it.
+_SENSITIVE_MANAGED_DIR_NAMES = frozenset({"mcp-tokens", "pairing", "bot-desktop"})
 
 
 def _is_sensitive_filename(name: str) -> bool:
@@ -91,16 +95,25 @@ def _is_sensitive_filename(name: str) -> bool:
 
 def _is_sensitive_path(path: Path) -> bool:
     """True when the basename is sensitive OR any path component (case-
-    insensitive) is a credential directory. Read-side guard (list/read/
-    download); the write endpoints are a separate threat class.
+    insensitive) is a credential directory.
 
-    Read-side only: this guards list/read/download (the #57505 exfil surface). The write endpoints
-    (upload/mkdir/delete) are a separate threat class handled by the write-path checks; extending this guard
-    to them is out of scope for this fix.
+    Same always-on denylist as ``agent.file_safety`` / gateway media: ``.env``,
+    ``auth.json``, ``pairing/``, ``mcp-tokens/``, ``bot-desktop/``. Used on
+    list/read/download *and* upload/mkdir/delete/write-text — writing
+    ``bot-desktop/lease.json`` (or ``dock-cdp-port``) from the dashboard
+    returns control without ``acquire``/``release``. This is not a lease-gated
+    terminal fence.
     """
     if _is_sensitive_filename(path.name):
         return True
     return any(part.lower() in _SENSITIVE_MANAGED_DIR_NAMES for part in path.parts)
+
+
+def _raise_if_sensitive(path: Path) -> None:
+    """403 when ``path`` is a credential / Bot Screen store. Shared by the
+    managed-files and workspace-FS read *and* write doors."""
+    if _is_sensitive_path(path):
+        raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
 
 
 _FS_TEXT_SOURCE_MAX_BYTES = 64 * 1024 * 1024
@@ -387,8 +400,7 @@ def _managed_readable_file(request: Request, path: str) -> tuple[Any, Path, str,
         raise HTTPException(status_code=404, detail="File not found")
     if not target.is_file():
         raise HTTPException(status_code=400, detail="Path is not a file")
-    if _is_sensitive_path(target):
-        raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
+    _raise_if_sensitive(target)
     mime_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
     return policy, target, display_path, _MANAGED_FILE_MAX_BYTES, mime_type
 
@@ -472,6 +484,7 @@ async def stream_managed_file(request: Request, path: str):
 
 def _managed_write_target(path: str, request: Request, overwrite: bool):
     policy, target, display_path = _resolve_managed_path(path, request, for_write=True)
+    _raise_if_sensitive(target)
     if target.exists() and target.is_dir():
         raise HTTPException(status_code=409, detail="A directory already exists at that path")
     if target.exists() and not overwrite:
@@ -566,6 +579,7 @@ async def upload_managed_file_stream(
 @router.post("/api/files/mkdir")
 async def create_managed_directory(payload: ManagedDirectoryCreate, request: Request):
     policy, target, display_path = _resolve_managed_path(payload.path, request, for_write=True)
+    _raise_if_sensitive(target)
     if target.exists() and not target.is_dir():
         raise HTTPException(status_code=409, detail="A file already exists at that path")
     with _io_errors("Directory is not writable", "Could not create directory"):
@@ -582,6 +596,7 @@ async def delete_managed_file(payload: ManagedFileDelete, request: Request):
         raise HTTPException(status_code=400, detail="Cannot delete the filesystem root")
     if not target.exists():
         raise HTTPException(status_code=404, detail="Path not found")
+    _raise_if_sensitive(target)
 
     try:
         if target.is_dir():
@@ -607,11 +622,15 @@ _FS_LIST_ERRNO = (
 @router.get("/api/fs/list")
 async def fs_list(path: str):
     target = _fs_path(path)
+    if _is_sensitive_path(target):
+        return {"entries": [], "error": "EACCES"}
     try:
         entries = []
         with os.scandir(target) as scan:
             for entry in scan:
                 if entry.name in _FS_READDIR_HIDDEN:
+                    continue
+                if _is_sensitive_path(Path(entry.path)):
                     continue
                 entries.append({
                     "name": entry.name,
@@ -630,6 +649,7 @@ async def fs_list(path: str):
 @router.get("/api/fs/read-text")
 async def fs_read_text(path: str):
     target, st = _fs_regular_file(_fs_path(path))
+    _raise_if_sensitive(target)
     if st.st_size > _FS_TEXT_SOURCE_MAX_BYTES:
         raise HTTPException(status_code=413, detail="File too large")
     data = _fs_read_bytes(target, min(st.st_size, _FS_TEXT_PREVIEW_MAX_BYTES))
@@ -655,6 +675,7 @@ async def fs_write_text(payload: FsWriteText):
     Stale-on-disk detection is the client's job (re-read before save).
     """
     target = _fs_path(payload.path)
+    _raise_if_sensitive(target)
     text = payload.content or ""
     if len(text.encode("utf-8")) > _FS_TEXT_WRITE_MAX_BYTES:
         raise HTTPException(status_code=413, detail="Content too large")
@@ -710,8 +731,7 @@ async def fs_read_data_url(
 ):
     from hermes_cli.web_server import _FS_DATA_URL_MAX_BYTES
     target, st = _fs_regular_file(await _fs_download_path(path, profile, session_id))
-    if _is_sensitive_path(target):
-        raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
+    _raise_if_sensitive(target)
     if st.st_size > _FS_DATA_URL_MAX_BYTES:
         raise HTTPException(status_code=413, detail="File too large")
     encoded = base64.b64encode(_fs_read_bytes(target)).decode("ascii")
@@ -723,8 +743,7 @@ async def fs_download(
     path: str, profile: Optional[str] = None, session_id: Optional[str] = None,
 ):
     target, _st = _fs_regular_file(await _fs_download_path(path, profile, session_id))
-    if _is_sensitive_path(target):
-        raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
+    _raise_if_sensitive(target)
     return FileResponse(
         path=str(target),
         media_type=_fs_mime_type(target),

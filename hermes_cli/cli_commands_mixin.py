@@ -501,6 +501,9 @@ def _launch_default_cdp_browser(port: int):
 def _browser_connect(cli, cdp_url: str) -> None:
     """/browser connect [url] — validate the CDP URL, find or launch a debug browser, then
     point the browser tools at it (BROWSER_CDP_URL) and tell the model."""
+    blocked = _probe("tools.browser_tool_cdp", "cdp_swap_blocked_by_human", None)
+    if blocked:
+        return _say_block(blocked)
     normalized = _normalize_cdp_url(cdp_url)
     if normalized is None:
         return
@@ -524,7 +527,9 @@ def _browser_connect(cli, cdp_url: str) -> None:
     if not found:
         return _say_block("Browser not connected — start a Chromium-family browser with remote "
                           "debugging and retry /browser connect")
-    os.environ["BROWSER_CDP_URL"] = found
+    _probe("tools.browser_tool_cdp", "set_process_cdp_override", None, found)
+    if not os.environ.get("BROWSER_CDP_URL", "").strip():
+        os.environ["BROWSER_CDP_URL"] = found
     # Eagerly start the CDP supervisor so pending_dialogs + frame_tree show up in the next snapshot.
     _probe("tools.browser_tool_cdp", "_ensure_cdp_supervisor", None, "default")
     _say_block("🌐 Browser connected to live Chromium-family browser via CDP", f"   Endpoint: {found}")
@@ -543,15 +548,19 @@ def _browser_connect(cli, cdp_url: str) -> None:
 
 
 def _browser_disconnect(cli) -> None:
+    blocked = _probe("tools.browser_tool_cdp", "cdp_swap_blocked_by_human", None)
+    if blocked:
+        return _say_block(blocked)
     if not os.environ.get("BROWSER_CDP_URL", "").strip():
         return _say_block("Browser is not connected to a live Chromium-family browser "
                           "(already using default mode)")
-    os.environ.pop("BROWSER_CDP_URL", None)
     with suppress(Exception):
         from tools.browser_tool_lifecycle import cleanup_all_browsers
-        from tools.browser_tool_cdp import _stop_cdp_supervisor
+        from tools.browser_tool_cdp import _stop_cdp_supervisor, clear_process_cdp_override
         _stop_cdp_supervisor("default")
+        clear_process_cdp_override()
         cleanup_all_browsers()
+    os.environ.pop("BROWSER_CDP_URL", None)
     _say_block("🌐 Browser disconnected from live Chromium-family browser",
                "   Browser tools reverted to default mode (local headless or cloud provider)")
     if hasattr(cli, '_pending_input'):

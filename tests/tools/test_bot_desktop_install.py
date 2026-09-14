@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import types
 
 import pytest
 
@@ -60,6 +61,26 @@ def test_claim_is_atomic_and_refuses_a_second_claim():
     install.release(key)
 
 
+def test_kill_install_tree_asks_sudo_when_killpg_cannot_signal(monkeypatch):
+    """Unprivileged killpg can take sudo and leave a root apt/dnf child holding stdout."""
+    ran: list[list[str]] = []
+    closed = []
+    monkeypatch.setattr(install.os, "getpgid", lambda _pid: 4242)
+
+    def _killpg(_pgid, _sig):
+        raise PermissionError("Operation not permitted")
+
+    monkeypatch.setattr(install.os, "killpg", _killpg)
+    monkeypatch.setattr(
+        install.subprocess, "run",
+        lambda argv, **kw: ran.append(list(argv)) or types.SimpleNamespace(returncode=0),
+    )
+    proc = types.SimpleNamespace(pid=99, stdout=types.SimpleNamespace(close=lambda: closed.append(True)))
+    install._kill_install_tree(proc)
+    assert ran == [["sudo", "-n", "kill", "-9", "-4242"]]
+    assert closed == [True]
+
+
 @pytest.mark.linux_only
 def test_timeout_kills_the_package_managers_whole_process_group(monkeypatch):
     """sudo forks the package manager into the same (new) session; killing sudo alone leaves apt/dnf
@@ -73,7 +94,8 @@ def test_timeout_kills_the_package_managers_whole_process_group(monkeypatch):
     real_popen = subprocess.Popen
 
     def popen(argv, **kw):
-        if argv[:1] != fake:
+        # Privileged reaper uses subprocess.run(["sudo", "-n", "kill", ...]); do not intercept it.
+        if argv[:1] != fake or "kill" in argv:
             return real_popen(argv, **kw)
         return real_popen(["bash", "-c", "sleep 30 >/dev/null 2>&1 & echo child $!; wait"], **kw)
 

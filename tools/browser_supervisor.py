@@ -101,6 +101,21 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         self.cdp_url = cdp_url
         self.dialog_policy = dialog_policy
         self.dialog_timeout_s = float(dialog_timeout_s)
+        # Leftover I/O outlives the turn that minted this supervisor. The
+        # leftover-lease fence must re-enter THIS profile — the process home
+        # after a multiplex turn is the launch profile, whose dock port and
+        # lease.json are a different bot.
+        from hermes_constants import hermes_home_key
+        self.hermes_home = hermes_home_key()
+        # Capture dock identity NOW. After Take over, DevToolsActivePort /
+        # SingletonLock can be gone while this WS is still the jar the human
+        # is typing into — a live re-probe would fail-open leftover I/O.
+        self.targets_bot_desktop = False
+        try:
+            from tools.browser_tool_session import _cdp_url_is_bot_desktop_browser
+            self.targets_bot_desktop = bool(_cdp_url_is_bot_desktop_browser(cdp_url))
+        except Exception:
+            self.targets_bot_desktop = False
 
         # State protected by ``_state_lock`` for cross-thread reads.
         self._state_lock = threading.Lock()
@@ -346,15 +361,43 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
             with contextlib.suppress(Exception):
                 await ws.close()
 
+    def _lease_forbids_touch(self) -> bool:
+        """True when leftover I/O must not talk to this Chromium.
+
+        ``supervisor_may_touch_page`` already fail-closes on ``HumanHasControl``.
+        An unexpected admit error fail-closes only for a stamped dock leftover —
+        unrelated CDP is another browser.
+        """
+        try:
+            from tools.browser_tool_supervisor_lease import supervisor_may_touch_page
+            return not supervisor_may_touch_page(
+                self.cdp_url,
+                home=getattr(self, "hermes_home", None),
+                targets_bot_desktop=getattr(self, "targets_bot_desktop", None),
+            )
+        except Exception:
+            return getattr(self, "targets_bot_desktop", None) is True
+
     async def _run(self) -> None:
         """Top-level reconnecting supervisor coroutine. Browserbase tears down the CDP
         socket whenever a short-lived client (agent-browser's per-command CDP client)
         disconnects, so on drop we reset per-session ids, re-attach, and keep going.
         A failure before the first successful attach is fatal for ``start()``."""
         attempt, last_success_at, backoff = 0, 0.0, 0.5
-        import websockets  # deferred: only supervisors that connect pay the import
         while not self._stop_requested:
+            # Cross-process Take over can land while this loop is between
+            # sockets. Reconnect would Target.attach / Target.createTarget on
+            # the page the human is typing into; stop instead of racing the 1s
+            # leftover-supervisor watch.
+            if self._lease_forbids_touch():
+                logger.info(
+                    "CDP supervisor %s: not (re)connecting; a human holds the Bot Desktop lease",
+                    self.task_id,
+                )
+                self._stop_requested = True
+                return
             try:
+                import websockets  # deferred: only supervisors that connect pay the import
                 self._ws = await asyncio.wait_for(websockets.connect(self.cdp_url, max_size=50 * 1024 * 1024), timeout=10.0)
             except Exception as e:
                 attempt += 1
@@ -365,6 +408,18 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
                 await asyncio.sleep(min(backoff, 10.0))
                 backoff = min(backoff * 2, 10.0)
                 continue
+
+            # Take over (or stop()) can land during the 10s connect. Re-admit
+            # before Target.getTargets / Target.createTarget / attach — those
+            # are leftover action on the jar the human is typing into.
+            if self._stop_requested or self._lease_forbids_touch():
+                logger.info(
+                    "CDP supervisor %s: dropping fresh socket; a human holds the Bot Desktop lease",
+                    self.task_id,
+                )
+                self._stop_requested = True
+                await self._close_ws()
+                return
 
             reader_task = asyncio.create_task(self._read_loop(), name="cdp-reader")
             try:
@@ -416,6 +471,19 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         """Send a CDP command and await its response."""
         if self._ws is None:
             raise RuntimeError("supervisor WebSocket is not connected")
+        # Post-connect admit is not enough: Target.getTargets / Page.enable can
+        # sit on the wire for seconds, then Target.createTarget / Fetch.enable /
+        # Runtime.evaluate would be leftover action on the jar a human holds.
+        # Child-session install (_enable_child_domains) never saw that admit.
+        try:
+            from tools.browser_tool_supervisor_lease import request_leftover_stop
+            forbidden = request_leftover_stop(self)
+        except Exception:
+            forbidden = getattr(self, "targets_bot_desktop", None) is True
+            if forbidden:
+                self._stop_requested = True
+        if forbidden:
+            raise RuntimeError("CDP supervisor: a human holds the Bot Desktop lease")
         call_id, self._next_call_id = self._next_call_id, self._next_call_id + 1
         payload: Dict[str, Any] = {"id": call_id, "method": method}
         payload.update({k: v for k, v in (("params", params), ("sessionId", session_id)) if v})
@@ -431,9 +499,58 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         """Continuously dispatch incoming CDP frames (responses → futures, events → handlers)."""
         assert self._ws is not None
         try:
+            from tools.browser_tool_supervisor_lease import LEASE_POLL_S, request_leftover_stop
+        except Exception:
+            LEASE_POLL_S, request_leftover_stop = 0.25, None
+        last_lease_check = 0.0
+
+        async def _poll_lease_while_idle() -> None:
+            """A quiet page sends no CDP frames; ``async for`` would never re-admit."""
+            if request_leftover_stop is None:
+                return
+            while not self._stop_requested:
+                try:
+                    if request_leftover_stop(self):
+                        logger.info(
+                            "CDP supervisor %s: detaching; a human holds the Bot Desktop lease",
+                            self.task_id,
+                        )
+                        await self._close_ws()
+                        return
+                except Exception:
+                    if getattr(self, "targets_bot_desktop", None) is True:
+                        logger.info(
+                            "CDP supervisor %s: detaching; dock lease check failed closed",
+                            self.task_id,
+                        )
+                        self._stop_requested = True
+                        await self._close_ws()
+                        return
+                await asyncio.sleep(LEASE_POLL_S)
+
+        poller = asyncio.create_task(_poll_lease_while_idle(), name="cdp-lease-poll")
+        try:
             async for raw in self._ws:
                 if self._stop_requested:
                     break
+                now = time.monotonic()
+                if request_leftover_stop is not None and now - last_lease_check >= LEASE_POLL_S:
+                    last_lease_check = now
+                    try:
+                        if request_leftover_stop(self):
+                            logger.info(
+                                "CDP supervisor %s: detaching; a human holds the Bot Desktop lease",
+                                self.task_id,
+                            )
+                            break
+                    except Exception:
+                        if getattr(self, "targets_bot_desktop", None) is True:
+                            logger.info(
+                                "CDP supervisor %s: detaching; dock lease check failed closed",
+                                self.task_id,
+                            )
+                            self._stop_requested = True
+                            break
                 try:
                     msg = json.loads(raw)
                 except Exception:
@@ -453,6 +570,10 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
                         await result
         except Exception as e:
             logger.debug("CDP read loop exited: %s", e)
+        finally:
+            poller.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await poller
 
     # CDP event → handler(self, params, session_id). Async handlers return an
     # awaitable that ``_read_loop`` awaits; sync handlers return None.
@@ -461,33 +582,75 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
     }
 
 
+def _supervisor_registry_key(task_id: str, home: Optional[str] = None) -> str:
+    """Map key for a leftover supervisor: this profile's home plus ``task_id``.
+
+    The registry is process-global. Multiplex bots share ``default`` / the same
+    session-shaped id; a bare task_id key lets vault/dialog I/O talk to another
+    bot's jar after leftover admit has already refused to adopt it.
+    """
+    from hermes_constants import hermes_home_key
+    return f"{hermes_home_key(home)}\n{task_id}"
+
+
+def _supervisor_belongs_here(supervisor, home: Optional[str] = None) -> bool:
+    owner = getattr(supervisor, "hermes_home", None)
+    if not (isinstance(owner, str) and owner):
+        return True
+    from hermes_constants import hermes_home_key
+    return hermes_home_key(owner) == hermes_home_key(home)
+
+
 class _SupervisorRegistry:
-    """Process-global (task_id → supervisor) map with idempotent start/stop (``SUPERVISOR_REGISTRY``)."""
+    """Process-global (profile, task_id) → supervisor map with idempotent start/stop."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._by_task: Dict[str, CDPSupervisor] = {}
 
+    def _lookup_locked(self, task_id: str) -> Optional[CDPSupervisor]:
+        found = self._by_task.get(_supervisor_registry_key(task_id))
+        if found is not None:
+            return found
+        legacy = self._by_task.get(task_id)
+        if legacy is not None and _supervisor_belongs_here(legacy):
+            return legacy
+        return None
+
     def get(self, task_id: str) -> Optional[CDPSupervisor]:
         with self._lock:
-            return self._by_task.get(task_id)
+            return self._lookup_locked(task_id)
 
     def _pop(self, task_id: str) -> Optional[CDPSupervisor]:
         with self._lock:
-            return self._by_task.pop(task_id, None)
+            supervisor = self._by_task.pop(_supervisor_registry_key(task_id), None)
+            if supervisor is None and task_id in self._by_task:
+                candidate = self._by_task[task_id]
+                if _supervisor_belongs_here(candidate):
+                    supervisor = self._by_task.pop(task_id, None)
+            return supervisor
 
     def get_or_start(self, task_id: str, cdp_url: str, *, dialog_policy: str = DEFAULT_DIALOG_POLICY,
                      dialog_timeout_s: float = DEFAULT_DIALOG_TIMEOUT_S, start_timeout: float = 15.0) -> CDPSupervisor:
-        """Idempotently ensure a supervisor runs for ``(task_id, cdp_url)``; one bound to a
-        different ``cdp_url`` or unhealthy (dead thread / stopped loop) is stopped and replaced."""
+        """Idempotently ensure a supervisor runs for ``(profile, task_id, cdp_url)``.
+
+        A sibling leftover occupying the bare ``task_id`` is left alone. A
+        different ``cdp_url`` or unhealthy row for THIS profile is replaced.
+        """
+        key = _supervisor_registry_key(task_id)
+        existing = None
         with self._lock:
-            existing = self._by_task.get(task_id)
+            existing = self._lookup_locked(task_id)
             if existing is not None:
                 thread, loop = existing._thread, existing._loop
                 healthy = thread is not None and thread.is_alive() and loop is not None and loop.is_running()
                 if existing.cdp_url == cdp_url and healthy:
                     return existing
-                self._by_task.pop(task_id, None)
+                self._by_task.pop(key, None)
+                if existing is self._by_task.get(task_id) and _supervisor_belongs_here(existing):
+                    self._by_task.pop(task_id, None)
+            else:
+                existing = None
         if existing is not None:
             existing.stop()
 
@@ -496,11 +659,11 @@ class _SupervisorRegistry:
         supervisor.start(timeout=start_timeout)
         with self._lock:
             # Guard against a concurrent get_or_start from another thread.
-            already = self._by_task.get(task_id)
+            already = self._lookup_locked(task_id)
             if already is not None and already.cdp_url == cdp_url:
                 supervisor.stop()
                 return already
-            self._by_task[task_id] = supervisor
+            self._by_task[key] = supervisor
         return supervisor
 
     def stop(self, task_id: str) -> None:

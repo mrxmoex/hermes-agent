@@ -9,6 +9,7 @@ import json
 import io
 import os
 import shutil
+import subprocess
 import sys
 import tarfile
 import types
@@ -204,6 +205,51 @@ class TestCreateProfile:
         assert (profile_dir / "cron").is_dir()
         assert not any((profile_dir / "cron").iterdir())
         assert yaml.safe_load((profile_dir / "config.yaml").read_text())["model"] == "test"
+
+    def test_clone_all_does_not_copy_bot_desktop_cookie_jar(self, profile_env):
+        """bot-desktop/ holds the screen's persistent Chromium profile (Cookies,
+        Login Data) plus launcher/lease/Xauthority. --clone-all must not fork
+        those live sessions into a sibling — same reason export drops the dir.
+        Named-source clone-all is the load-bearing case: default-only excludes
+        would still copy a named profile's jar.
+        """
+        source = create_profile("sourcebot", no_alias=True)
+        cookies = source / "bot-desktop" / "browser-profile" / "Default" / "Cookies"
+        cookies.parent.mkdir(parents=True)
+        cookies.write_bytes(b"LIVE-SESSION")
+        (source / "bot-desktop" / "lease.json").write_text('{"holder":"human"}')
+
+        dest = create_profile(
+            "clonebot", clone_from="sourcebot", clone_all=True, no_alias=True,
+        )
+        assert not (dest / "bot-desktop").exists()
+        assert cookies.read_bytes() == b"LIVE-SESSION"
+
+    def test_clone_all_ignore_drops_bot_desktop_when_root_resolve_fails(self, tmp_path):
+        """A broken source root must not fail-open into copying the cookie jar.
+
+        ``_clone_all_copytree_ignore`` used to treat ``Path.resolve()``
+        failure as ``at_root=False`` so ``bot-desktop`` (only in the
+        at-root set) was copied. The name is always excluded now.
+        """
+        from hermes_cli.profiles import _clone_all_copytree_ignore
+
+        source = tmp_path / "broken-root"
+        source.mkdir()
+        ignore = _clone_all_copytree_ignore(source)
+
+        def _boom(self, *args, **kwargs):
+            raise OSError("resolve failed")
+
+        with patch.object(Path, "resolve", _boom):
+            ignored = ignore(
+                str(source),
+                ["bot-desktop", "config.yaml", "notes.md"],
+            )
+
+        assert "bot-desktop" in ignored
+        assert "config.yaml" not in ignored
+        assert "notes.md" not in ignored
 
 
 
@@ -768,6 +814,68 @@ class TestRenameProfile:
         assert cfg["hosts"]["hermes_heimdall"]["aiPeer"] == "ssi_health"
         assert cfg["hosts"]["hermes_heimdall"]["peerName"] == "user-peer"
 
+    @pytest.mark.linux_only
+    @pytest.mark.parametrize("op", ["delete", "rename"])
+    def test_delete_and_rename_stop_a_live_bot_desktop(self, profile_env, monkeypatch, op):
+        """The Bot Desktop launcher is not a gateway or serve backend. Delete
+        and rename must signal it before the profile directory vanishes or
+        changes name; otherwise Xvnc + Xfce keep the display, RFB socket, and
+        cookie jar live against a gone HERMES_HOME. A synthetic session-leader
+        sleep stands in for the launcher.
+        """
+        from tools.bot_desktop import runtime
+
+        monkeypatch.setattr(profiles, "_cleanup_gateway_service", lambda *_a, **_k: None)
+        monkeypatch.setattr(profiles, "check_alias_collision", lambda *_a, **_k: "skip")
+
+        profile_dir = create_profile("screenbot", no_alias=True)
+        desktop = profile_dir / "bot-desktop"
+        desktop.mkdir()
+        proc = subprocess.Popen(["sleep", "60"], start_new_session=True)
+        try:
+            born = runtime._create_time(proc.pid)
+            (desktop / "launcher.pid").write_text(f"{proc.pid} {born}", encoding="utf-8")
+            (desktop / "env").write_text("DISPLAY=:42\n", encoding="utf-8")
+            if op == "delete":
+                delete_profile("screenbot", yes=True)
+            else:
+                rename_profile("screenbot", "screenbot2")
+            assert proc.wait(timeout=10) != 0
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+
+    def test_bot_desktop_stop_failure_does_not_abort_delete(self, profile_env, monkeypatch):
+        """A wedged launcher must not block deleting the profile."""
+        monkeypatch.setattr(profiles, "_cleanup_gateway_service", lambda *_a, **_k: None)
+        monkeypatch.setattr("tools.bot_desktop.runtime.is_supported_host", lambda: True)
+
+        def _boom():
+            raise RuntimeError("launcher wedged")
+
+        monkeypatch.setattr("tools.bot_desktop.runtime.stop", _boom)
+        profile_dir = create_profile("screenbot", no_alias=True)
+        delete_profile("screenbot", yes=True)
+        assert not profile_dir.is_dir()
+
+    def test_rename_releases_a_human_held_lease(self, profile_env, monkeypatch):
+        """Rename keeps lease.json. A leftover human hold on a dead screen
+        would fence computer_use until someone force-releases. Teardown must
+        return control to the agent, same as CLI screen stop.
+        """
+        from tools.bot_desktop import lease
+
+        monkeypatch.setattr(profiles, "_cleanup_gateway_service", lambda *_a, **_k: None)
+        monkeypatch.setattr(profiles, "check_alias_collision", lambda *_a, **_k: "skip")
+        source = create_profile("heldbot", no_alias=True)
+        lease.acquire("viewer-test", profile_key=str(source), reason="login")
+        assert lease.human_holds(profile_key=str(source))
+        dest = rename_profile("heldbot", "heldbot2")
+        assert dest.is_dir()
+        assert not lease.human_holds(profile_key=str(dest))
+        assert lease.get(profile_key=str(dest)).holder == "agent"
+
 
 # ===================================================================
 # TestExportImport
@@ -852,6 +960,88 @@ class TestExportImport:
         # Valid symlink + target also kept
         assert any("valid_link" in n for n in names)
         assert any("valid_target.txt" in n for n in names)
+
+
+    @pytest.mark.parametrize("name", ["coder", "default"])
+    def test_export_leaves_the_bot_desktop_browser_profile_out(self, profile_env, tmp_path, name):
+        """bot-desktop/ holds the screen's persistent Chromium profile (Cookies, Login Data: the bot's live web
+        sessions) plus sockets and X state. None of it belongs in an export archive meant to move a persona."""
+        profile_dir = create_profile(name, no_alias=True) if name != "default" else get_profile_dir("default")
+        (profile_dir / "config.yaml").write_text("model: test")
+        cookies = profile_dir / "bot-desktop" / "browser-profile" / "Default" / "Cookies"
+        cookies.parent.mkdir(parents=True)
+        cookies.write_bytes(b"SQLite format 3\x00")
+        output = tmp_path / "export" / f"{name}.tar.gz"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        export_profile(name, str(output))
+        with tarfile.open(str(output), "r:gz") as tf:
+            names = tf.getnames()
+        assert f"{name}/config.yaml" in names
+        assert not [n for n in names if "bot-desktop" in n], names
+
+    def test_export_profile_extra_files_cannot_reinject_bot_desktop(self, profile_env, tmp_path):
+        """Desktop/API ``extra_files`` is written after the copytree ignore.
+
+        A client must still be able to ship ``desktop.json`` (profile-share)
+        without re-injecting the cookie jar, a human lease, or ``.env`` /
+        ``auth.json``.
+        """
+        profile_dir = create_profile("alice", no_alias=True)
+        (profile_dir / "config.yaml").write_text("model: test\n")
+        dest = tmp_path / "alice.tar.gz"
+        extra = {
+            "desktop.json": '{"kind":"desktop-share"}',
+            "bot-desktop/lease.json": '{"holder":"human"}',
+            "bot-desktop/browser-profile/Default/Cookies": "stolen-cookies",
+            ".env": "ANTHROPIC_API_KEY=sk-injected",
+            "auth.json": '{"token":"injected"}',
+        }
+
+        path = export_profile("alice", dest, extra_files=extra)
+        with tarfile.open(path, "r:gz") as tf:
+            names = set(tf.getnames())
+
+        assert "alice/desktop.json" in names
+        assert "alice/config.yaml" in names
+        assert not [n for n in names if "bot-desktop" in n], names
+        assert "alice/.env" not in names
+        assert "alice/auth.json" not in names
+
+    def test_import_drops_bot_desktop_from_a_crafted_archive(self, profile_env, tmp_path):
+        """Export already excludes bot-desktop. Import of a crafted or
+        pre-exclude archive must not restore the cookie jar or a human
+        lease that would fence computer_use on a profile with no screen.
+        """
+        staging = tmp_path / "pack" / "crafted"
+        cookies = staging / "bot-desktop" / "browser-profile" / "Default" / "Cookies"
+        cookies.parent.mkdir(parents=True)
+        cookies.write_bytes(b"STOLEN-SESSION")
+        (staging / "bot-desktop" / "lease.json").write_text(
+            '{"holder":"human","epoch":9}', encoding="utf-8",
+        )
+        (staging / "config.yaml").write_text("model: imported\n")
+        archive = tmp_path / "crafted.tar.gz"
+        with tarfile.open(str(archive), "w:gz") as tf:
+            tf.add(staging, arcname="crafted")
+
+        dest = import_profile(str(archive), name="imported")
+        assert dest.is_dir()
+        assert (dest / "config.yaml").read_text() == "model: imported\n"
+        assert not (dest / "bot-desktop").exists()
+
+    def test_drop_imported_bot_desktop_unlinks_a_symlink_without_following_it(self, tmp_path):
+        """safe_extract_targz refuses symlink members; if one still lands
+        on the staged tree, rmtree would delete the target jar. Unlink.
+        """
+        stranger = tmp_path / "other-home" / "bot-desktop"
+        stranger.mkdir(parents=True)
+        (stranger / "Cookies").write_bytes(b"LEAVE-ME")
+        extracted = tmp_path / "staged"
+        extracted.mkdir()
+        (extracted / "bot-desktop").symlink_to(stranger)
+        profiles._drop_imported_bot_desktop(extracted)
+        assert not (extracted / "bot-desktop").exists()
+        assert (stranger / "Cookies").read_bytes() == b"LEAVE-ME"
 
 
 

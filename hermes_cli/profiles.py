@@ -54,9 +54,14 @@ _CLONE_ALL_DEFAULT_EXCLUDE_ROOT: frozenset[str] = frozenset({
 # ``cron`` is scheduled work bound to the source profile and its origin channel: a clone
 # that inherits jobs.json runs every job twice (two gateways, same job ids, double spend,
 # duplicate deliveries) the moment its gateway starts. The empty dir is recreated below.
+# ``bot-desktop`` is the screen's live Chromium cookie jar (Cookies, Login Data) plus
+# launcher.pid / lease.json / Xauthority. A clone that inherits it shares the source's
+# web sessions and can adopt a stale launcher identity. Export already drops the directory;
+# the empty dir is NOT recreated — the screen mints a fresh one on first start.
 _CLONE_ALL_HISTORY_EXCLUDE_ROOT: frozenset[str] = frozenset({
     "state.db", "state.db-wal", "state.db-shm", "sessions", "backups", "state-snapshots", "checkpoints",
     "cron",
+    "bot-desktop",
 })
 
 # Marker written by `hermes profile create --no-skills`. When present at a profile root,
@@ -85,11 +90,15 @@ def _clone_all_copytree_ignore(source_dir: Path):
             at_root = Path(directory).resolve() == source_resolved
         except (OSError, ValueError):
             # resolve() can fail on odd FS layouts (broken symlinks, missing parents).
-            # Fail open — better to over-copy than silently drop user data.
+            # Fail open for ordinary user data — better to over-copy than drop it.
+            # bot-desktop is the opposite: over-copy forks the cookie jar / a
+            # holder=human lease. Drop it by name at any depth, even when we
+            # cannot tell whether this directory is the profile root.
             at_root = False
         return [
             entry for entry in names
             if entry == "__pycache__"
+            or entry == "bot-desktop"
             or entry.endswith((".pyc", ".pyo", ".sock", ".tmp"))
             or (at_root and entry in root_exclude)
         ]
@@ -1075,6 +1084,42 @@ def _stop_profile_backends(canon: str, profile_dir: Path) -> None:
     print(f"✓ Stopped {len(pids)} profile backend process(es)")
 
 
+def _stop_bot_desktop(profile_dir: Path) -> None:
+    """Tear down this profile's Bot Desktop before delete/rename/uninstall.
+
+    The launcher (Xvnc + Xfce + the dock Chromium) is not a gateway or a
+    ``serve``/``dashboard`` backend, so ``_stop_gateway_process`` and
+    ``_stop_profile_backends`` leave it running against a directory that is
+    about to vanish or change name. Call ``runtime.stop()`` directly —
+    ``display.stop`` refuses while a human holds the screen, and delete/rename
+    must still take the screen down.
+
+    Also release a human lease. Rename keeps ``lease.json``; leaving
+    ``holder=human`` on a dead screen fences ``computer_use`` forever. Delete
+    removes the file anyway; release first so a failed rmtree cannot leave a
+    stuck hold. Same bare ``lease.release()`` as CLI ``screen stop``.
+
+    Failure is logged and never fatal: the profile operation proceeds.
+    """
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.bot_desktop import lease, runtime
+
+    token = set_hermes_home_override(profile_dir)
+    try:
+        try:
+            lease.release(profile_key=str(profile_dir))
+        except Exception as e:
+            logger.warning("Could not release the Bot Desktop lease of %s: %s", profile_dir, e)
+        if not runtime.is_supported_host():
+            return
+        if runtime.stop():
+            print("✓ Bot Desktop stopped")
+    except Exception as e:
+        logger.warning("Could not stop the Bot Desktop of %s: %s", profile_dir, e)
+    finally:
+        reset_hermes_home_override(token)
+
+
 def _rmtree_make_writable(func, path, exc):
     """onexc/onerror handler: add +w on PermissionError so rmtree can proceed. Covers NixOS-
     style read-only copies where the path itself (0444) or its parent (0555) isn't writable."""
@@ -1168,6 +1213,7 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     if gw_running:
         _stop_gateway_process(profile_dir)
     _stop_profile_backends(canon, profile_dir)
+    _stop_bot_desktop(profile_dir)
 
     # Tombstone before rmtree so a stale serve/logging mkdir cannot relist this name live.
     mark_named_profile_deleted(profile_dir)
@@ -1472,8 +1518,19 @@ def _default_export_ignore(root_dir: Path):
     return _ignore
 
 
-# Credential files dropped from named-profile exports.
-_EXPORT_CREDENTIAL_FILES = frozenset({"auth.json", ".env"})
+# Credential files dropped from named-profile exports. ``bot-desktop`` is the screen's runtime state:
+# its persistent Chromium profile (Cookies, Login Data — the bot's live web sessions), Xauthority, sockets.
+_EXPORT_CREDENTIAL_FILES = frozenset({"auth.json", ".env", "bot-desktop"})
+
+
+def _is_export_credential_rel(parts) -> bool:
+    """True when an archive-relative path is a credential file or ``bot-desktop/``.
+
+    ``extra_files`` is written after the copytree ignore filter. Without this
+    gate a client can inject ``bot-desktop/lease.json`` (or ``.env`` /
+    ``auth.json``) into an archive that export otherwise refuses to copy.
+    """
+    return bool(parts) and any(part in _EXPORT_CREDENTIAL_FILES for part in parts)
 
 # Text/config suffixes secret-scrubbed on export; binary DBs, images etc. are left alone.
 _EXPORT_REDACT_SUFFIXES = frozenset({
@@ -1538,7 +1595,10 @@ def export_profile(name: str, output_path: str, extra_files: Optional[Dict[str, 
         staged = Path(tmpdir) / canon
         shutil.copytree(profile_dir, staged, symlinks=True, ignore=ignore)
         for rel, content in (extra_files or {}).items():
-            target = staged.joinpath(*normalize_archive_parts(rel))
+            parts = normalize_archive_parts(rel)
+            if _is_export_credential_rel(parts):
+                continue
+            target = staged.joinpath(*parts)
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content, encoding="utf-8")
         _scrub_export_secrets(staged)
@@ -1584,8 +1644,27 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
         if archive_root != canon:
             final_source = staging_root / canon
             extracted.rename(final_source)
+        # Export and --clone-all already refuse to copy this directory. Import
+        # is the other door: a crafted or pre-exclude archive can still carry
+        # the cookie jar plus a lease.json that fences computer_use with
+        # holder=human on a profile that has no screen. Drop it on the staged
+        # tree so it never lands in the new home. Unlink a symlink rather than
+        # rmtree — rmtree would follow it into another profile's jar.
+        _drop_imported_bot_desktop(final_source)
         shutil.move(str(final_source), str(profile_dir))
     return profile_dir
+
+
+def _drop_imported_bot_desktop(extracted: Path) -> None:
+    """Remove ``bot-desktop/`` from a staged import tree. Never follows a symlink."""
+    desktop = extracted / "bot-desktop"
+    try:
+        if desktop.is_symlink() or desktop.is_file():
+            desktop.unlink()
+        elif desktop.is_dir():
+            shutil.rmtree(desktop)
+    except OSError:
+        pass
 
 
 # Rename
@@ -1662,10 +1741,13 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     if new_dir.exists():
         raise FileExistsError(f"Profile '{new_canon}' already exists.")
 
-    # 1. Stop gateway if running
+    # 1. Stop gateway if running, then the Bot Desktop (which is neither a
+    # gateway nor a serve backend). Always attempt the desktop stop — a
+    # screen can be live with no gateway.
     if _check_gateway_running(old_dir):
         _cleanup_gateway_service(old_canon, old_dir)
         _stop_gateway_process(old_dir)
+    _stop_bot_desktop(old_dir)
 
     # 2. Rename directory
     old_dir.rename(new_dir)

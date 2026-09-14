@@ -715,6 +715,8 @@ def _(rid, params: dict) -> dict:
                 return _err(rid, 4016, f"image not found: {path_token}")
         if image_path.suffix.lower() not in _IMAGE_EXTENSIONS:
             return _err(rid, 4016, f"unsupported image: {image_path.name}")
+        if blocked := _attachment_block_reason(image_path):
+            return _err(rid, 4016, blocked)
         session.setdefault("attached_images", []).append(str(image_path))
         return _ok(rid, _attached_image_result(
             session, image_path,
@@ -774,6 +776,8 @@ def _pdf_attach_source(rid, params, td_path, raw_path, raw_b64):
         resolved = None
     if resolved is None or not (pdf := Path(resolved)).is_file():
         return None, None, _err(rid, 4016, f"PDF not found: {raw_path}")
+    if blocked := _attachment_block_reason(pdf):
+        return None, None, _err(rid, 4016, blocked)
     if pdf.suffix.lower() != ".pdf":
         return None, None, _err(rid, 4016, f"not a PDF: {pdf.name}")
     if pdf.stat().st_size > _PDF_ATTACH_MAX_BYTES:
@@ -908,6 +912,8 @@ def _(rid, params: dict) -> dict:
         if not dropped:
             return _ok(rid, {"matched": False})
         drop_path, remainder = dropped["path"], dropped["remainder"]
+        if blocked := _attachment_block_reason(drop_path):
+            return _err(rid, 4016, blocked)
         if dropped["is_image"]:
             session.setdefault("attached_images", []).append(str(drop_path))
             return _ok(rid, {
