@@ -248,6 +248,7 @@ class _FakeProc:
 def test_agent_browser_invocation_is_token_match_not_substring():
     from tools.browser_tool_session import (
         _is_agent_browser_invocation,
+        _is_browser_harness_daemon_invocation,
         _is_browser_use_invocation,
     )
 
@@ -336,6 +337,33 @@ def test_agent_browser_invocation_is_token_match_not_substring():
          "python3 -m browser_use --cdp-url http://127.0.0.1:9333"])
     assert not _is_browser_use_invocation(["/usr/bin/cat", "browser-use.log"])
     assert not _is_browser_use_invocation(["uvx", "ruff", "check"])
+    # Official leftover attach daemon (finding 148). Finding 78 / 110
+    # matched browser-use / python -m browser_use. ensure_daemon
+    # leaves python -m browser_harness.daemon with BU_CDP_* frozen.
+    # Do not fold the daemon into browser-use invocation.
+    _bh_daemon = (
+        "/home/x/.local/lib/python3.12/site-packages/browser_harness/daemon.py"
+    )
+    assert _is_browser_harness_daemon_invocation(
+        ["python3", "-m", "browser_harness.daemon"])
+    assert _is_browser_harness_daemon_invocation(
+        ["/usr/bin/python3", "-u", "-m", "browser_harness.daemon"])
+    assert _is_browser_harness_daemon_invocation(
+        ["/usr/bin/env", "python3", "-m", "browser_harness.daemon"])
+    assert _is_browser_harness_daemon_invocation(["python3", _bh_daemon])
+    assert not _is_browser_use_invocation(
+        ["python3", "-m", "browser_harness.daemon"])
+    assert not _is_browser_harness_daemon_invocation(
+        ["python3", "-m", "browser_harness"])
+    assert not _is_browser_harness_daemon_invocation(["browser-harness"])
+    assert not _is_browser_harness_daemon_invocation(
+        ["python3", "-m", "browser_harness.admin"])
+    assert not _is_browser_harness_daemon_invocation(
+        ["python3", "/tmp/daemon.py"])
+    assert not _is_browser_harness_daemon_invocation(
+        ["/usr/bin/cat", _bh_daemon])
+    assert not _is_browser_harness_daemon_invocation(
+        ["/bin/bash", "-c", "python3 -m browser_harness.daemon"])
     from tools.browser_tool_session import _unregistered_cli_aims_at_dock
     # Official leftover attach is ``--cdp-url`` (finding 110). Env-only
     # hid that writer. ``--connect`` cannot prove this jar.
@@ -354,6 +382,30 @@ def test_agent_browser_invocation_is_token_match_not_substring():
     assert not _unregistered_cli_aims_at_dock(
         ["browser-use", "--connect", "open", "https://example.com"],
         {}, None, 9333,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["python3", "-m", "browser_harness.daemon"],
+        {"BU_CDP_URL": "http://127.0.0.1:9333"}, None, 9333,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["python3", "-m", "browser_harness.daemon"],
+        {"BU_CDP_WS": "ws://127.0.0.1:9333/devtools/browser/x"}, None, 9333,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["python3", _bh_daemon],
+        {"BU_CDP_URL": "http://127.0.0.1:9333"}, None, 9333,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["python3", "-m", "browser_harness.daemon"],
+        {}, None, 9333,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["python3", "-m", "browser_harness"],
+        {"BU_CDP_URL": "http://127.0.0.1:9333"}, None, 9333,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["browser-harness"],
+        {"BU_CDP_URL": "http://127.0.0.1:9333"}, None, 9333,
     )
     from tools.bot_desktop import browser as _bdb
     _jar = _bdb.profile_dir()
@@ -6266,6 +6318,105 @@ def test_unregistered_playwright_mcp_config_not_shadowed_by_pw_test(tmp_path):
     assert mcp_env_wins.killed == 0
     assert codegen_cfg.killed == 0
     assert n == 3
+
+
+def test_unregistered_browser_harness_daemon_killed_on_takeover():
+    """terminal() leftover browser-use harness daemon hid attach after CLI exited.
+
+    Official leftover ``browser-use --cdp-url <dock>`` /
+    ``BU_CDP_*`` starts ``python -m browser_harness.daemon``
+    detached (``admin.ensure_daemon`` / ``start_new_session``).
+    Findings 78 / 110 / ``interrupt_reserved_browser_harness`` only
+    matched the parent CLI or a Hermes-registered ``browser_exec``
+    daemon, so Take over left the long-lived holder. Admin
+    ``python -m browser_harness``, ``browser-harness`` (``run.py``),
+    an unpinned daemon, a random ``daemon.py``, another Chrome, and
+    the bash ``-c`` parent stay up.
+    """
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    bdb.remember_dock_cdp_port(9333)
+    daemon = (
+        "/home/x/.local/lib/python3.12/site-packages/browser_harness/daemon.py"
+    )
+    leftover = _FakeProc(
+        11115,
+        ["python3", "-m", "browser_harness.daemon"],
+        {"BU_CDP_URL": "http://127.0.0.1:9333"},
+    )
+    via_ws = _FakeProc(
+        11116,
+        ["/usr/bin/python3", "-m", "browser_harness.daemon"],
+        {"BU_CDP_WS": "ws://127.0.0.1:9333/devtools/browser/x"},
+    )
+    via_browser_cdp = _FakeProc(
+        11117,
+        ["python3.12", "-u", "-m", "browser_harness.daemon"],
+        {"BROWSER_CDP_URL": "http://127.0.0.1:9333"},
+    )
+    via_env = _FakeProc(
+        11118,
+        ["/usr/bin/env", "python3", "-m", "browser_harness.daemon"],
+        {"BU_CDP_URL": "http://127.0.0.1:9333"},
+    )
+    via_path = _FakeProc(
+        11119,
+        ["python3", daemon],
+        {"BU_CDP_URL": "http://127.0.0.1:9333"},
+    )
+    unpinned = _FakeProc(
+        11120,
+        ["python3", "-m", "browser_harness.daemon"],
+        {},
+    )
+    sibling = _FakeProc(
+        11121,
+        ["python3", "-m", "browser_harness.daemon"],
+        {"BU_CDP_URL": "http://127.0.0.1:9222"},
+    )
+    admin = _FakeProc(
+        11122,
+        ["python3", "-m", "browser_harness"],
+        {"BU_CDP_URL": "http://127.0.0.1:9333"},
+    )
+    run_cli = _FakeProc(
+        11123,
+        ["browser-harness"],
+        {"BU_CDP_URL": "http://127.0.0.1:9333"},
+    )
+    other_py = _FakeProc(
+        11124,
+        ["python3", "/tmp/daemon.py"],
+        {"BU_CDP_URL": "http://127.0.0.1:9333"},
+    )
+    bash_parent = _FakeProc(
+        11125,
+        ["/bin/bash", "-c",
+         "python3 -m browser_harness.daemon"],
+        {"BU_CDP_URL": "http://127.0.0.1:9333"},
+    )
+    lease.acquire("human")
+    n = interrupt_unregistered_dock_cli(
+        processes=[
+            leftover, via_ws, via_browser_cdp, via_env, via_path,
+            unpinned, sibling, admin, run_cli, other_py, bash_parent,
+        ],
+        chromium_pid=9999,
+        owner_daemon_pid=9998,
+    )
+    assert leftover.killed == 1
+    assert via_ws.killed == 1
+    assert via_browser_cdp.killed == 1
+    assert via_env.killed == 1
+    assert via_path.killed == 1
+    assert unpinned.killed == 0
+    assert sibling.killed == 0
+    assert admin.killed == 0
+    assert run_cli.killed == 0
+    assert other_py.killed == 0
+    assert bash_parent.killed == 0
+    assert n == 5
 
 
 def test_stop_reserved_calls_unregistered_interrupt(monkeypatch):

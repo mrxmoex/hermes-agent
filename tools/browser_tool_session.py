@@ -2219,6 +2219,52 @@ def _is_browser_use_invocation(tokens: List[str]) -> bool:
     return False
 
 
+def _token_is_browser_harness_daemon(token: str) -> bool:
+    """True when this token is official leftover ``browser_harness.daemon``.
+
+    ``browser-use/browser-harness`` ``admin.ensure_daemon`` starts
+    ``sys.executable -m browser_harness.daemon`` in its own session.
+    The daemon is the long-lived CDP holder (``get_ws_url()`` reads
+    ``BU_CDP_WS`` then ``BU_CDP_URL``). Path parts must include
+    ``browser_harness`` — a random ``daemon.py`` is not.
+    ``python -m browser_harness`` (admin) / ``browser-harness``
+    (``run.py``) / ``cat daemon.py`` are not.
+    """
+    raw = (token or "").strip().strip("\"'")
+    if not raw:
+        return False
+    if "/" not in raw and "\\" not in raw:
+        return _token_basename_is(raw, "browser_harness.daemon")
+    path = Path(raw)
+    if path.name.lower() != "daemon.py":
+        return False
+    return "browser_harness" in [p.lower() for p in path.parts]
+
+
+def _is_browser_harness_daemon_invocation(tokens: List[str]) -> bool:
+    """True when argv is official leftover ``python -m browser_harness.daemon``.
+
+    Finding 78 / 110 matched leftover ``browser-use`` / ``python -m
+    browser_use``. Official leftover ``--cdp-url`` / ``BU_CDP_*``
+    also leaves this detached daemon after the CLI exits
+    (``start_new_session``). ``interrupt_reserved_browser_harness``
+    only kills Hermes-registered ``browser_exec`` daemons, so a
+    terminal-spawned leftover holder stayed typing into the jar a
+    human holds. Unpinned daemons stay unknown — official
+    ``get_ws_url()`` can scan default Chrome / 9222 when ``BU_CDP_*``
+    is unset. Do not fold this into ``_is_browser_use_invocation``.
+    """
+    if not tokens:
+        return False
+    name0 = _launcher_basename(tokens[0])
+    if name0 in _ENV_LAUNCHERS:
+        return _is_browser_harness_daemon_invocation(_env_command_tokens(tokens))
+    if _is_python_launcher(name0):
+        rest = _first_non_flag_tokens(tokens)
+        return bool(rest) and _token_is_browser_harness_daemon(rest[0])
+    return False
+
+
 def _token_is_playwright_cli_daemon(token: str) -> bool:
     """True when this token is official leftover Agent CLI ``cliDaemon.js``.
 
@@ -2929,6 +2975,7 @@ def _is_unregistered_dock_cli_invocation(tokens: List[str]) -> bool:
     return (
         _is_agent_browser_invocation(tokens)
         or _is_browser_use_invocation(tokens)
+        or _is_browser_harness_daemon_invocation(tokens)
         or _is_playwright_invocation(tokens)
         or _is_playwright_mcp_invocation(tokens)
         or _is_chrome_remote_interface_invocation(tokens)
@@ -3020,8 +3067,13 @@ def _unregistered_cli_aims_at_dock(
     browser-use leftover writers (finding 78) aim via ``BU_CDP_*`` /
     ``BROWSER_CDP_URL``. Official leftover attach is also
     ``--cdp-url <dock>`` on argv (finding 110); env-only hid that
-    writer. ``--connect`` / no URL stays unknown (a Chrome we cannot
-    prove is this jar). Explicit ``--cdp-url`` wins over env.
+    writer. Official leftover also leaves
+    ``python -m browser_harness.daemon`` detached with those same
+    env pins (finding 148) — finding 78 / 110 only matched the
+    parent CLI, so Take over left the long-lived holder.
+    ``--connect`` / no URL / an unpinned harness daemon stays
+    unknown (a Chrome we cannot prove is this jar). Explicit
+    ``--cdp-url`` wins over env.
 
     A relative ``AGENT_BROWSER_PROFILE`` is the leftover writer's jar,
     resolved against *that* process cwd (finding 95 for Chromium argv).
@@ -3116,11 +3168,17 @@ def _unregistered_cli_aims_at_dock(
     decide a relative or global Agent CLI file.
     """
     env = environ or {}
-    if _is_browser_use_invocation(tokens) and not _is_agent_browser_invocation(tokens):
+    if (
+        _is_browser_use_invocation(tokens)
+        or _is_browser_harness_daemon_invocation(tokens)
+    ) and not _is_agent_browser_invocation(tokens):
         # Official leftover attach: ``browser-use --cdp-url <dock>``.
         # Finding 78 only checked BU_CDP_* env, so Take over left the
-        # argv-aimed writer running (finding 110). Do not guess
-        # ``--cdp`` (agent-browser) or treat ``--connect`` as this jar.
+        # argv-aimed writer running (finding 110). Official leftover
+        # ``ensure_daemon`` also leaves ``python -m
+        # browser_harness.daemon`` with those env pins (finding 148).
+        # Do not guess ``--cdp`` (agent-browser) or treat
+        # ``--connect`` as this jar.
         cdp = _flag_value(tokens, ("--cdp-url",))
         if cdp:
             return _leftover_cdp_aims_at_dock(cdp, dock_port)
