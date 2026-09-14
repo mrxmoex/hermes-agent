@@ -484,6 +484,45 @@ def test_agent_browser_invocation_is_token_match_not_substring():
         ["npx", "playwright", "codegen"],
         {"PLAYWRIGHT_MCP_USER_DATA_DIR": str(_jar)}, _jar, None,
     )
+    # Official leftover Playwright 1.62+ is ``npx playwright mcp``
+    # (finding 135). Finding 127 only matched ``@playwright/mcp``, so
+    # env / --config on the bundled subcommand stayed unknown.
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "playwright", "mcp"],
+        {"PLAYWRIGHT_MCP_USER_DATA_DIR": str(_jar)}, _jar, None,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "playwright", "mcp", "--config", str(_mcp_cfg)],
+        {}, _jar, None,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "playwright", "mcp"],
+        {"PLAYWRIGHT_MCP_CONFIG": str(_mcp_cfg)}, _jar, None,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "playwright", "mcp", "--config", str(_mcp_cdp)],
+        {}, _jar, 9333,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["node", "/home/x/node_modules/playwright/cli.js", "mcp"],
+        {"PLAYWRIGHT_MCP_USER_DATA_DIR": str(_jar)}, _jar, None,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["npm", "exec", "playwright", "--", "mcp"],
+        {"PLAYWRIGHT_MCP_USER_DATA_DIR": str(_jar)}, _jar, None,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "--package=playwright", "--", "mcp"],
+        {"PLAYWRIGHT_MCP_USER_DATA_DIR": str(_jar)}, _jar, None,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["npx", "playwright", "mcp"],
+        {"PLAYWRIGHT_MCP_USER_DATA_DIR": "/tmp/other-chrome"}, _jar, None,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["npx", "playwright", "mcp", "--isolated"],
+        {}, _jar, None,
+    )
     assert not _unregistered_cli_aims_at_dock(
         ["npx", "@playwright/mcp"],
         {"PLAYWRIGHT_MCP_USER_DATA_DIR": "/tmp/other-chrome"}, _jar, None,
@@ -561,6 +600,19 @@ def test_agent_browser_invocation_is_token_match_not_substring():
     assert not _is_playwright_mcp_invocation(
         ["node", "/home/x/node_modules/playwright/cli.js"])
     assert not _is_playwright_mcp_invocation(["npx", "playwright", "codegen"])
+    assert _is_playwright_mcp_invocation(["npx", "playwright", "mcp"])
+    assert _is_playwright_mcp_invocation(
+        ["npx", "--yes", "playwright@1.62.0", "mcp", "--isolated"])
+    assert _is_playwright_mcp_invocation(
+        ["node", "/home/x/node_modules/playwright/cli.js", "mcp"])
+    assert _is_playwright_mcp_invocation(
+        ["npm", "exec", "playwright", "--", "mcp"])
+    assert _is_playwright_mcp_invocation(
+        ["pnpm", "exec", "playwright", "mcp"])
+    assert _is_playwright_mcp_invocation(
+        ["npx", "--package=playwright", "--", "mcp"])
+    assert not _is_playwright_mcp_invocation(
+        ["playwright-cli", "mcp"])
     assert not _is_playwright_mcp_invocation(["/usr/bin/mcp"])
     assert not _is_playwright_mcp_invocation(
         ["/bin/bash", "-c", "npx @playwright/mcp --cdp-endpoint http://127.0.0.1:9333"])
@@ -4149,6 +4201,117 @@ def test_unregistered_playwright_mcp_env_and_config_killed_on_takeover():
     assert other.killed == 0
     assert isolated.killed == 0
     assert other_cfg_proc.killed == 0
+    assert cdp_wins.killed == 0
+    assert bash_parent.killed == 0
+
+
+def test_unregistered_playwright_cli_mcp_env_and_config_killed_on_takeover():
+    """terminal() ``npx playwright mcp`` env / --config leftover hid launch-on-jar.
+
+    Official leftover Playwright 1.62+ is the bundled ``playwright mcp``
+    server — same ``PLAYWRIGHT_MCP_USER_DATA_DIR`` / ``--config`` pins
+    as ``@playwright/mcp``. Finding 127 only matched the scoped package,
+    so Take over left this writer typing into the jar. Regular
+    Playwright CLI, another jar, ``--isolated``, argv CDP to another
+    Chrome, ``playwright-cli``, and the bash ``-c`` parent stay up.
+    """
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    profile = bdb.profile_dir()
+    cfg = profile.parent / "pw-cli-mcp-dock.json"
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    cfg.write_text(json.dumps({"browser": {"userDataDir": str(profile)}}))
+    cdp_cfg = profile.parent / "pw-cli-mcp-cdp.json"
+    cdp_cfg.write_text(json.dumps({
+        "browser": {"cdpEndpoint": "http://127.0.0.1:9333"},
+    }))
+    bdb.remember_dock_cdp_port(9333)
+    leftover = _FakeProc(
+        10100,
+        ["npx", "playwright", "mcp"],
+        {"PLAYWRIGHT_MCP_USER_DATA_DIR": str(profile)},
+    )
+    via_cfg = _FakeProc(
+        10101,
+        ["npx", "playwright", "mcp", "--config", str(cfg)],
+    )
+    via_cfg_env = _FakeProc(
+        10102,
+        ["npx", "playwright", "mcp"],
+        {"PLAYWRIGHT_MCP_CONFIG": str(cfg)},
+    )
+    via_cdp = _FakeProc(
+        10103,
+        ["npx", "playwright", "mcp", "--config", str(cdp_cfg)],
+    )
+    shebang = _FakeProc(
+        10104,
+        ["node", "/home/x/node_modules/playwright/cli.js", "mcp"],
+        {"PLAYWRIGHT_MCP_USER_DATA_DIR": str(profile)},
+    )
+    via_npm = _FakeProc(
+        10105,
+        ["npm", "exec", "playwright", "--", "mcp"],
+        {"PLAYWRIGHT_MCP_USER_DATA_DIR": str(profile)},
+    )
+    via_pin = _FakeProc(
+        10106,
+        ["npx", "--package=playwright", "--", "mcp"],
+        {"PLAYWRIGHT_MCP_USER_DATA_DIR": str(profile)},
+    )
+    codegen = _FakeProc(
+        10107,
+        ["npx", "playwright", "codegen"],
+        {"PLAYWRIGHT_MCP_USER_DATA_DIR": str(profile)},
+    )
+    isolated = _FakeProc(
+        10108,
+        ["npx", "playwright", "mcp", "--isolated"],
+    )
+    other = _FakeProc(
+        10109,
+        ["npx", "playwright", "mcp"],
+        {"PLAYWRIGHT_MCP_USER_DATA_DIR": "/tmp/other-chrome"},
+    )
+    agent_cli = _FakeProc(
+        10110,
+        ["playwright-cli", "mcp"],
+        {"PLAYWRIGHT_MCP_USER_DATA_DIR": str(profile)},
+    )
+    cdp_wins = _FakeProc(
+        10111,
+        ["npx", "playwright", "mcp",
+         "--cdp-endpoint", "http://127.0.0.1:9222"],
+        {"PLAYWRIGHT_MCP_USER_DATA_DIR": str(profile)},
+    )
+    bash_parent = _FakeProc(
+        10112,
+        ["/bin/bash", "-c",
+         f"PLAYWRIGHT_MCP_USER_DATA_DIR={profile} npx playwright mcp"],
+    )
+    lease.acquire("human")
+    n = interrupt_unregistered_dock_cli(
+        processes=[
+            leftover, via_cfg, via_cfg_env, via_cdp, shebang, via_npm,
+            via_pin, codegen, isolated, other, agent_cli, cdp_wins,
+            bash_parent,
+        ],
+        chromium_pid=9999,
+        owner_daemon_pid=9998,
+    )
+    assert n == 7
+    assert leftover.killed == 1
+    assert via_cfg.killed == 1
+    assert via_cfg_env.killed == 1
+    assert via_cdp.killed == 1
+    assert shebang.killed == 1
+    assert via_npm.killed == 1
+    assert via_pin.killed == 1
+    assert codegen.killed == 0
+    assert isolated.killed == 0
+    assert other.killed == 0
+    assert agent_cli.killed == 0
     assert cdp_wins.killed == 0
     assert bash_parent.killed == 0
 

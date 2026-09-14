@@ -2243,15 +2243,106 @@ def _is_chrome_remote_interface_invocation(tokens: List[str]) -> bool:
     return False
 
 
-def _is_playwright_mcp_invocation(tokens: List[str]) -> bool:
-    """True when argv launches ``@playwright/mcp`` (npx, shebang node).
+def _token_is_bundled_playwright_cli(token: str) -> bool:
+    """Playwright CLI binary/script, not Agent ``playwright-cli`` / ``@playwright/mcp``.
 
-    Token-match only. ``npx @playwright/mcp`` without ``--cdp-endpoint``
-    launches its own Chrome and stays unknown. Do not match a bare ``mcp``
-    binary or ``@playwright/test``.
+    Official leftover Playwright 1.62+ is ``npx playwright mcp`` — the
+    bundled MCP server. ``playwright-cli`` is the Agent CLI leftover
+    (finding 109). ``@playwright/mcp`` is the standalone package
+    (finding 87 / 127).
+    """
+    if _token_is_playwright_mcp(token) or _token_basename_is(token, "playwright-cli"):
+        return False
+    raw = (token or "").strip().strip("\"'")
+    if raw and "playwright-cli" in [p.lower() for p in Path(raw).parts]:
+        return False
+    return _token_is_playwright_script(token)
+
+
+def _playwright_cli_mcp_subcommand(tokens: List[str]) -> bool:
+    """True when official leftover is ``playwright mcp`` (Playwright 1.62+).
+
+    ``npx playwright mcp`` / ``node …/playwright/cli.js mcp`` is the
+    bundled MCP server and reads the same ``PLAYWRIGHT_MCP_*`` /
+    ``--config`` pins as ``@playwright/mcp``. Finding 127 only matched
+    the scoped package token, so Take over left this writer running.
+    ``npx playwright codegen`` / ``playwright-cli attach`` are not MCP
+    and must not read those keys. A bare ``mcp`` binary is not.
     """
     if not tokens:
         return False
+    if _token_basename_is(tokens[0], "playwright"):
+        rest = _first_non_flag_tokens(tokens, skip=1)
+        return bool(rest) and rest[0] == "mcp"
+    if _token_basename_is(tokens[0], "playwright-cli"):
+        return False
+    name0 = _launcher_basename(tokens[0])
+    if name0 in _ENV_LAUNCHERS:
+        return _playwright_cli_mcp_subcommand(_env_command_tokens(tokens))
+    if name0 in _COREPACK_LAUNCHERS:
+        rest = _corepack_command_tokens(tokens)
+        return bool(rest) and _playwright_cli_mcp_subcommand(rest)
+    via = _invocation_via_package_exec(tokens, _playwright_cli_mcp_subcommand)
+    if via is not None:
+        if via:
+            return True
+        parts = _package_exec_parts(tokens)
+        if parts:
+            flag_pkgs, operands = parts
+            if (
+                flag_pkgs
+                and _token_basename_is(flag_pkgs[-1], "playwright")
+                and operands
+                and operands[0] == "mcp"
+            ):
+                return True
+        return False
+    via = _invocation_via_bun_x(tokens, _playwright_cli_mcp_subcommand)
+    if via is not None:
+        return via
+    if name0 in _NPX_LAUNCHERS:
+        rest = _npx_package_tokens(tokens)
+        if rest and _token_is_bundled_playwright_cli(rest[0]):
+            return _playwright_cli_mcp_subcommand(rest)
+        child = _npx_child_argv(tokens)
+        pins = _npx_package_pins(tokens)
+        if (
+            child
+            and pins
+            and _token_basename_is(pins[-1], "playwright")
+            and child[0] == "mcp"
+        ):
+            return True
+        return False
+    if name0 in _NODE_LAUNCHERS:
+        node_pm = _node_package_manager_argv(tokens)
+        if node_pm:
+            return _playwright_cli_mcp_subcommand(node_pm)
+        operands = _first_non_flag_tokens(tokens)
+        for i, tok in enumerate(operands):
+            if _token_is_bundled_playwright_cli(tok):
+                rest = operands[i + 1:]
+                return bool(rest) and rest[0] == "mcp"
+        return False
+    if _is_python_launcher(name0):
+        rest = _first_non_flag_tokens(tokens)
+        return bool(rest) and _playwright_cli_mcp_subcommand(rest)
+    return False
+
+
+def _is_playwright_mcp_invocation(tokens: List[str]) -> bool:
+    """True when argv launches Playwright MCP (package or ``playwright mcp``).
+
+    Token-match only. ``npx @playwright/mcp`` without ``--cdp-endpoint``
+    launches its own Chrome and stays unknown. Official leftover
+    Playwright 1.62+ also ships ``npx playwright mcp`` (finding 135) —
+    the same MCP server, same env / ``--config`` pins. Do not match a
+    bare ``mcp`` binary, ``@playwright/test``, or ``playwright codegen``.
+    """
+    if not tokens:
+        return False
+    if _playwright_cli_mcp_subcommand(tokens):
+        return True
     if _token_is_playwright_mcp(tokens[0]):
         return True
     name0 = _launcher_basename(tokens[0])
@@ -2538,9 +2629,12 @@ def _unregistered_cli_aims_at_dock(
     Playwright MCP leftover also pins the jar off argv (finding 127):
     ``PLAYWRIGHT_MCP_USER_DATA_DIR`` and ``--config`` /
     ``PLAYWRIGHT_MCP_CONFIG`` ``browser.userDataDir`` / ``cdpEndpoint``.
-    Finding 111 only checked ``--user-data-dir``. Regular Playwright
-    CLI does not read those MCP keys. ``--isolated`` / no pin stays
-    unknown.
+    Finding 111 only checked ``--user-data-dir``. Official leftover
+    Playwright 1.62+ is also ``npx playwright mcp`` (finding 135) —
+    finding 127 only matched ``@playwright/mcp``, so env / ``--config``
+    on the bundled subcommand stayed unknown. Regular Playwright CLI
+    (``codegen`` / ``test``) does not read those MCP keys.
+    ``--isolated`` / no pin stays unknown.
     """
     env = environ or {}
     if _is_browser_use_invocation(tokens) and not _is_agent_browser_invocation(tokens):
@@ -2582,11 +2676,11 @@ def _unregistered_cli_aims_at_dock(
             if _leftover_profile_pin_aims_at_dock(pinned, profile, cwd):
                 return True
             # Official MCP leftover launch / attach also lives in env
-            # and ``--config`` JSON (finding 127). Finding 111 only
-            # checked argv ``--user-data-dir``, so Take over left
-            # ``PLAYWRIGHT_MCP_USER_DATA_DIR=<dock>`` and
-            # ``--config {browser.userDataDir|cdpEndpoint}`` typing.
-            # Regular Playwright CLI does not read those keys.
+            # and ``--config`` JSON (finding 127 / 135). Finding 111
+            # only checked argv ``--user-data-dir``. Finding 127 only
+            # matched ``@playwright/mcp``, so ``npx playwright mcp``
+            # env / ``--config`` stayed unknown. Regular Playwright
+            # CLI (``codegen`` / ``test``) does not read those keys.
             if not _is_playwright_mcp_invocation(tokens):
                 return False
             pinned = (env.get("PLAYWRIGHT_MCP_USER_DATA_DIR") or "").strip()
