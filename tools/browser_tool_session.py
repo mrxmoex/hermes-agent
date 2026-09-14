@@ -2407,6 +2407,13 @@ def _unregistered_cli_aims_at_dock(
     launch that Chrome. A set ``--port`` that is not this dock stays
     another Chrome (do not guess an empty listen). LAN ``--hostname``
     does not launch local Chrome.
+
+    Playwright MCP leftover also pins the jar off argv (finding 127):
+    ``PLAYWRIGHT_MCP_USER_DATA_DIR`` and ``--config`` /
+    ``PLAYWRIGHT_MCP_CONFIG`` ``browser.userDataDir`` / ``cdpEndpoint``.
+    Finding 111 only checked ``--user-data-dir``. Regular Playwright
+    CLI does not read those MCP keys. ``--isolated`` / no pin stays
+    unknown.
     """
     env = environ or {}
     if _is_browser_use_invocation(tokens) and not _is_agent_browser_invocation(tokens):
@@ -2445,7 +2452,26 @@ def _unregistered_cli_aims_at_dock(
             # checked AGENT_BROWSER_PROFILE on the agent-browser
             # fallthrough, so Take over left these writers running.
             pinned = _flag_value(tokens, ("--user-data-dir", "--profile"))
-            return _leftover_profile_pin_aims_at_dock(pinned, profile, cwd)
+            if _leftover_profile_pin_aims_at_dock(pinned, profile, cwd):
+                return True
+            # Official MCP leftover launch / attach also lives in env
+            # and ``--config`` JSON (finding 127). Finding 111 only
+            # checked argv ``--user-data-dir``, so Take over left
+            # ``PLAYWRIGHT_MCP_USER_DATA_DIR=<dock>`` and
+            # ``--config {browser.userDataDir|cdpEndpoint}`` typing.
+            # Regular Playwright CLI does not read those keys.
+            if not _is_playwright_mcp_invocation(tokens):
+                return False
+            pinned = (env.get("PLAYWRIGHT_MCP_USER_DATA_DIR") or "").strip()
+            if _leftover_profile_pin_aims_at_dock(pinned, profile, cwd):
+                return True
+            cfg_cdp, cfg_dir = _playwright_mcp_config_pins(tokens, env, cwd)
+            if cfg_cdp:
+                if _cdp_url_is_bot_desktop_browser(cfg_cdp):
+                    return True
+                port = _loopback_cdp_port(cfg_cdp)
+                return dock_port is not None and port == dock_port
+            return _leftover_profile_pin_aims_at_dock(cfg_dir, profile, cwd)
         if _cdp_url_is_bot_desktop_browser(cdp):
             return True
         port = _loopback_cdp_port(cdp)
@@ -2545,6 +2571,58 @@ def _unregistered_cli_aims_at_dock(
     if not pinned:
         pinned = (env.get("AGENT_BROWSER_PROFILE") or "").strip()
     return _leftover_profile_pin_aims_at_dock(pinned, profile, cwd)
+
+
+_PLAYWRIGHT_MCP_CONFIG_MAX_BYTES = 256 * 1024
+
+
+def _playwright_mcp_config_pins(
+    tokens: List[str],
+    environ: Dict[str, str],
+    cwd: Optional[Path],
+) -> Tuple[Optional[str], Optional[str]]:
+    """``(cdpEndpoint, userDataDir)`` from leftover MCP ``--config`` / env.
+
+    Official leftover: ``npx @playwright/mcp --config mcp.json`` with
+    ``browser.cdpEndpoint`` / ``browser.userDataDir``. Finding 109
+    covered argv / ``PLAYWRIGHT_MCP_CDP_ENDPOINT``; finding 111 covered
+    argv ``--user-data-dir``. The config file hid both. Relative paths
+    resolve against the leftover writer cwd. Unreadable / oversized /
+    non-JSON stays unknown. ``remoteEndpoint`` is Playwright protocol,
+    not CDP.
+    """
+    path_text = _flag_value(tokens, ("--config",))
+    if not path_text:
+        path_text = (environ.get("PLAYWRIGHT_MCP_CONFIG") or "").strip()
+    text = (path_text or "").strip()
+    if not text:
+        return None, None
+    path = Path(text)
+    if not path.is_absolute():
+        base = cwd if cwd is not None else Path.cwd()
+        path = base / path
+    try:
+        if path.stat().st_size > _PLAYWRIGHT_MCP_CONFIG_MAX_BYTES:
+            return None, None
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
+        return None, None
+    if not isinstance(data, dict):
+        return None, None
+    browser = data.get("browser")
+    if not isinstance(browser, dict):
+        return None, None
+    cdp = browser.get("cdpEndpoint")
+    pinned = browser.get("userDataDir")
+    if not isinstance(cdp, str) or not cdp.strip():
+        cdp = None
+    else:
+        cdp = cdp.strip()
+    if not isinstance(pinned, str) or not pinned.strip():
+        pinned = None
+    else:
+        pinned = pinned.strip()
+    return cdp, pinned
 
 
 def _user_data_dir_from_chrome_flags(chrome_flags: Optional[str]) -> Optional[str]:

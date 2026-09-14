@@ -341,6 +341,65 @@ def test_agent_browser_invocation_is_token_match_not_substring():
          "--profile", str(_jar)],
         {}, _jar, 9333,
     )
+    # Official MCP leftover also pins off argv (finding 127).
+    # PLAYWRIGHT_MCP_USER_DATA_DIR / --config browser.userDataDir /
+    # cdpEndpoint. Regular Playwright CLI does not read those keys.
+    _mcp_cfg = _jar.parent / "pw-mcp-dock.json"
+    _mcp_cfg.write_text(json.dumps({"browser": {"userDataDir": str(_jar)}}))
+    _mcp_cdp = _jar.parent / "pw-mcp-cdp.json"
+    _mcp_cdp.write_text(json.dumps({
+        "browser": {"cdpEndpoint": "http://127.0.0.1:9333"},
+    }))
+    _mcp_other = _jar.parent / "pw-mcp-other.json"
+    _mcp_other.write_text(json.dumps({
+        "browser": {"userDataDir": "/tmp/other-chrome"},
+    }))
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "@playwright/mcp"],
+        {"PLAYWRIGHT_MCP_USER_DATA_DIR": str(_jar)}, _jar, None,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "@playwright/mcp"],
+        {"PLAYWRIGHT_MCP_USER_DATA_DIR": "browser-profile"},
+        _jar, None, cwd=_jar.parent,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "@playwright/mcp", "--config", str(_mcp_cfg)],
+        {}, _jar, None,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "@playwright/mcp"],
+        {"PLAYWRIGHT_MCP_CONFIG": str(_mcp_cfg)}, _jar, None,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "@playwright/mcp", "--config", "pw-mcp-dock.json"],
+        {}, _jar, None, cwd=_jar.parent,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "@playwright/mcp", "--config", str(_mcp_cdp)],
+        {}, _jar, 9333,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["npx", "playwright", "codegen"],
+        {"PLAYWRIGHT_MCP_USER_DATA_DIR": str(_jar)}, _jar, None,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["npx", "@playwright/mcp"],
+        {"PLAYWRIGHT_MCP_USER_DATA_DIR": "/tmp/other-chrome"}, _jar, None,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["npx", "@playwright/mcp", "--config", str(_mcp_other)],
+        {}, _jar, None,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["npx", "@playwright/mcp", "--isolated"],
+        {}, _jar, None,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["npx", "@playwright/mcp",
+         "--cdp-endpoint", "http://127.0.0.1:9222"],
+        {"PLAYWRIGHT_MCP_USER_DATA_DIR": str(_jar)}, _jar, 9333,
+    )
     # Leftover daemon freezes AGENT_BROWSER_CDP; connect <port> is the
     # in-flight attach (finding 112). --auto-connect cannot prove this jar.
     assert _unregistered_cli_aims_at_dock(
@@ -3192,6 +3251,120 @@ def test_unregistered_lighthouse_chrome_flags_user_data_dir_killed_on_takeover()
     assert lan.killed == 0
     assert debug_port.killed == 0
     assert no_pin.killed == 0
+    assert bash_parent.killed == 0
+
+
+def test_unregistered_playwright_mcp_env_and_config_killed_on_takeover():
+    """terminal() @playwright/mcp env / --config leftover hid launch-on-jar.
+
+    Official leftover pins ``PLAYWRIGHT_MCP_USER_DATA_DIR`` and
+    ``--config`` ``browser.userDataDir`` / ``cdpEndpoint``. Finding 111
+    only checked argv ``--user-data-dir``, so Take over left those
+    writers typing into the jar. Regular Playwright CLI, another jar,
+    ``--isolated``, argv CDP to another Chrome, and the bash ``-c``
+    parent stay up.
+    """
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    profile = bdb.profile_dir()
+    cfg = profile.parent / "pw-mcp-dock.json"
+    cfg.write_text(json.dumps({"browser": {"userDataDir": str(profile)}}))
+    cdp_cfg = profile.parent / "pw-mcp-cdp.json"
+    cdp_cfg.write_text(json.dumps({
+        "browser": {"cdpEndpoint": "http://127.0.0.1:9333"},
+    }))
+    other_cfg = profile.parent / "pw-mcp-other.json"
+    other_cfg.write_text(json.dumps({
+        "browser": {"userDataDir": "/tmp/other-chrome"},
+    }))
+    bdb.remember_dock_cdp_port(9333)
+    leftover = _FakeProc(
+        9500,
+        ["npx", "@playwright/mcp"],
+        {"PLAYWRIGHT_MCP_USER_DATA_DIR": str(profile)},
+    )
+    relative = _FakeProc(
+        9501,
+        ["npx", "@playwright/mcp"],
+        {"PLAYWRIGHT_MCP_USER_DATA_DIR": "browser-profile"},
+        cwd=profile.parent,
+    )
+    via_cfg = _FakeProc(
+        9502,
+        ["npx", "@playwright/mcp", "--config", str(cfg)],
+    )
+    via_cfg_env = _FakeProc(
+        9503,
+        ["npx", "@playwright/mcp"],
+        {"PLAYWRIGHT_MCP_CONFIG": str(cfg)},
+    )
+    via_rel_cfg = _FakeProc(
+        9504,
+        ["npx", "@playwright/mcp", "--config", "pw-mcp-dock.json"],
+        cwd=profile.parent,
+    )
+    via_cdp = _FakeProc(
+        9505,
+        ["npx", "@playwright/mcp", "--config", str(cdp_cfg)],
+    )
+    shebang = _FakeProc(
+        9506,
+        ["node", "/home/x/node_modules/@playwright/mcp/cli.js"],
+        {"PLAYWRIGHT_MCP_USER_DATA_DIR": str(profile)},
+    )
+    codegen = _FakeProc(
+        9507,
+        ["npx", "playwright", "codegen"],
+        {"PLAYWRIGHT_MCP_USER_DATA_DIR": str(profile)},
+    )
+    other = _FakeProc(
+        9508,
+        ["npx", "@playwright/mcp"],
+        {"PLAYWRIGHT_MCP_USER_DATA_DIR": "/tmp/other-chrome"},
+    )
+    isolated = _FakeProc(
+        9509,
+        ["npx", "@playwright/mcp", "--isolated"],
+    )
+    other_cfg_proc = _FakeProc(
+        9510,
+        ["npx", "@playwright/mcp", "--config", str(other_cfg)],
+    )
+    cdp_wins = _FakeProc(
+        9511,
+        ["npx", "@playwright/mcp",
+         "--cdp-endpoint", "http://127.0.0.1:9222"],
+        {"PLAYWRIGHT_MCP_USER_DATA_DIR": str(profile)},
+    )
+    bash_parent = _FakeProc(
+        9512,
+        ["/bin/bash", "-c",
+         f"PLAYWRIGHT_MCP_USER_DATA_DIR={profile} npx @playwright/mcp"],
+    )
+    lease.acquire("human")
+    n = interrupt_unregistered_dock_cli(
+        processes=[
+            leftover, relative, via_cfg, via_cfg_env, via_rel_cfg,
+            via_cdp, shebang, codegen, other, isolated, other_cfg_proc,
+            cdp_wins, bash_parent,
+        ],
+        chromium_pid=9999,
+        owner_daemon_pid=9998,
+    )
+    assert n == 7
+    assert leftover.killed == 1
+    assert relative.killed == 1
+    assert via_cfg.killed == 1
+    assert via_cfg_env.killed == 1
+    assert via_rel_cfg.killed == 1
+    assert via_cdp.killed == 1
+    assert shebang.killed == 1
+    assert codegen.killed == 0
+    assert other.killed == 0
+    assert isolated.killed == 0
+    assert other_cfg_proc.killed == 0
+    assert cdp_wins.killed == 0
     assert bash_parent.killed == 0
 
 
