@@ -833,6 +833,31 @@ def test_agent_browser_invocation_is_token_match_not_substring():
     assert _is_chrome_devtools_mcp_invocation(
         ["node", "/home/x/node_modules/chrome-devtools-mcp/build/src/bin/chrome-devtools.js",
          "start", "--browserUrl", "http://127.0.0.1:9333"])
+    # Official leftover start daemon (finding 139). start exits after
+    # spawning node …/daemon/daemon.js <mcpArgs>. A random daemon.js
+    # is not this package.
+    _cd_daemon = (
+        "/home/x/node_modules/chrome-devtools-mcp/build/src/daemon/daemon.js"
+    )
+    assert _is_chrome_devtools_mcp_invocation(
+        ["node", _cd_daemon, "--browserUrl=http://127.0.0.1:9333"])
+    assert _unregistered_cli_aims_at_dock(
+        ["node", _cd_daemon, "--browserUrl=http://127.0.0.1:9333"],
+        {}, None, 9333,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["node", _cd_daemon, f"--userDataDir={_jar}"],
+        {}, _jar, None,
+    )
+    assert not _is_chrome_devtools_mcp_invocation(
+        ["node", "/home/x/node_modules/other/daemon.js",
+         "--browserUrl=http://127.0.0.1:9333"])
+    assert not _is_chrome_devtools_mcp_invocation(
+        ["/usr/bin/cat", _cd_daemon])
+    assert not _unregistered_cli_aims_at_dock(
+        ["chrome-devtools", "fill", "1", "uid", "secret"],
+        {}, None, 9333,
+    )
     assert not _is_chrome_devtools_mcp_invocation(["npx", "chrome-devtools-frontend"])
     assert not _is_chrome_devtools_mcp_invocation(
         ["/bin/bash", "-c", "npx chrome-devtools-mcp --browserUrl http://127.0.0.1:9333"])
@@ -5193,6 +5218,98 @@ def test_unregistered_agent_browser_connect_after_globals_killed_on_takeover():
     assert shebang.killed == 1
     assert other.killed == 0
     assert no_connect.killed == 0
+    assert bash_parent.killed == 0
+
+
+def test_unregistered_chrome_devtools_daemon_killed_on_takeover():
+    """terminal() leftover chrome-devtools start daemon hid attach after CLI exited.
+
+    Official leftover ``start --browserUrl=<dock>`` spawns
+    ``node …/daemon/daemon.js <mcpArgs>`` detached and exits.
+    Findings 89 / 123 / 131 only matched the parent CLI / MCP bin, so
+    Take over left the long-lived holder. ``--autoConnect`` /
+    ``chrome-devtools fill`` without a pin / a random ``daemon.js`` /
+    another Chrome and the bash ``-c`` parent stay up.
+    """
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    profile = bdb.profile_dir()
+    cwd = profile.parent
+    cwd.mkdir(parents=True, exist_ok=True)
+    cfg = cwd / "cd-daemon-dock.json"
+    cfg.write_text(json.dumps({"userDataDir": str(profile)}))
+    daemon = (
+        "/home/x/node_modules/chrome-devtools-mcp/build/src/daemon/daemon.js"
+    )
+    bdb.remember_dock_cdp_port(9333)
+    leftover = _FakeProc(
+        10600,
+        ["node", daemon, "--browserUrl=http://127.0.0.1:9333"],
+    )
+    via_space = _FakeProc(
+        10601,
+        ["node", daemon, "--browserUrl", "http://127.0.0.1:9333"],
+    )
+    via_dir = _FakeProc(
+        10602,
+        ["node", daemon, f"--userDataDir={profile}"],
+    )
+    via_cfg = _FakeProc(
+        10603,
+        ["node", daemon, "--config", str(cfg)],
+    )
+    via_env = _FakeProc(
+        10604,
+        ["/usr/bin/env", "node", daemon,
+         "--browserUrl=http://127.0.0.1:9333"],
+    )
+    auto = _FakeProc(
+        10605,
+        ["node", daemon, "--autoConnect"],
+    )
+    other_url = _FakeProc(
+        10606,
+        ["node", daemon, "--browserUrl=http://127.0.0.1:9222"],
+    )
+    other_pkg = _FakeProc(
+        10607,
+        ["node", "/home/x/node_modules/other/daemon.js",
+         "--browserUrl=http://127.0.0.1:9333"],
+    )
+    unpinned_fill = _FakeProc(
+        10608,
+        ["chrome-devtools", "fill", "1", "uid", "secret"],
+    )
+    cat_script = _FakeProc(
+        10609,
+        ["/usr/bin/cat", daemon],
+    )
+    bash_parent = _FakeProc(
+        10610,
+        ["/bin/bash", "-c",
+         f"node {daemon} --browserUrl=http://127.0.0.1:9333"],
+    )
+    lease.acquire("human")
+    n = interrupt_unregistered_dock_cli(
+        processes=[
+            leftover, via_space, via_dir, via_cfg, via_env, auto,
+            other_url, other_pkg, unpinned_fill, cat_script, bash_parent,
+        ],
+        chromium_pid=9999,
+        owner_daemon_pid=9998,
+    )
+    assert n == 5
+    assert leftover.killed == 1
+    assert via_space.killed == 1
+    assert via_dir.killed == 1
+    assert via_cfg.killed == 1
+    assert via_env.killed == 1
+    assert auto.killed == 0
+    assert other_url.killed == 0
+    assert other_pkg.killed == 0
+    assert unpinned_fill.killed == 0
+    assert cat_script.killed == 0
     assert bash_parent.killed == 0
 
 
