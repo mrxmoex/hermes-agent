@@ -1045,6 +1045,7 @@ _COREPACK_NPX_SHIMS = frozenset({
 _PLAYWRIGHT_CDP_ENV = (
     "PW_TEST_CONNECT_WS_ENDPOINT",
     "PLAYWRIGHT_WS_ENDPOINT",
+    "PLAYWRIGHT_MCP_CDP_ENDPOINT",
     "BROWSER_CDP_URL",
 )
 
@@ -1472,6 +1473,21 @@ def _skip_manager_value_flag(
     return i + 1
 
 
+def _peel_exec_operand_separator(tokens: List[str]) -> List[str]:
+    """``npm exec pkg -- --port`` drops the manager ``--``, not the child's.
+
+    Finding 105 peels npx ``--`` only when no leftover operand remains.
+    ``npm exec lighthouse -- --port <dock>`` / ``npm exec playwright-cli
+    -- attach --cdp <dock>`` have an operand, so leftover flag parse
+    stopped at the manager ``--`` and missed the aim (finding 109).
+    The child does not see that ``--``. A later child ``--`` still ends
+    flag parse.
+    """
+    if len(tokens) >= 2 and tokens[1] == "--":
+        return [tokens[0]] + [str(t) for t in tokens[2:]]
+    return tokens
+
+
 def _package_exec_child_argv(tokens: List[str]) -> Optional[List[str]]:
     rewritten = _yarn_npm_as_npm_argv(tokens)
     if rewritten is not None:
@@ -1513,7 +1529,7 @@ def _package_exec_child_argv(tokens: List[str]) -> Optional[List[str]]:
                 i += 1
                 continue
             return None
-        return [str(t) for t in tokens[i:]]
+        return _peel_exec_operand_separator([str(t) for t in tokens[i:]])
     return [] if saw_sub else None
 
 
@@ -1539,7 +1555,7 @@ def _bun_x_child_argv(tokens: List[str]) -> Optional[List[str]]:
                 i += 1
                 continue
             return None
-        return [str(t) for t in tokens[i:]]
+        return _peel_exec_operand_separator([str(t) for t in tokens[i:]])
     return [] if saw_sub else None
 
 
@@ -1785,21 +1801,30 @@ def _is_browser_use_invocation(tokens: List[str]) -> bool:
 def _token_is_playwright_script(token: str) -> bool:
     """True when this token is the Playwright CLI or its Node entry.
 
-    ``…/playwright/cli.js`` is an invocation. ``…/@playwright/mcp/cli.js``
-    is not — Path parts are ``@playwright`` + ``mcp``, not ``playwright``.
+    ``…/playwright/cli.js`` is an invocation. ``playwright-cli`` is the
+    Agent CLI leftover writer (``attach --cdp=<dock>``).
+    ``…/@playwright/mcp/cli.js`` is not — Path parts are ``@playwright``
+    + ``mcp``, not ``playwright``. ``playwright-core`` is not.
     ``npx playwright install`` is an invocation but stays unknown without
     a CDP aim (not leftover action).
     """
-    if _token_basename_is(token, "playwright"):
+    if _token_basename_is(token, "playwright") or _token_basename_is(
+        token, "playwright-cli",
+    ):
         return True
     raw = (token or "").strip().strip("\"'")
     if not raw:
         return False
     path = Path(raw)
+    name = path.name.lower()
     parts = [p.lower() for p in path.parts]
+    if "playwright-cli" in parts:
+        return name in _PLAYWRIGHT_NODE_ENTRYPOINTS or name in {
+            "playwright-cli", "playwright-cli.js",
+        }
     if "playwright" not in parts:
         return False
-    return path.name.lower() in _PLAYWRIGHT_NODE_ENTRYPOINTS
+    return name in _PLAYWRIGHT_NODE_ENTRYPOINTS
 
 
 def _is_playwright_invocation(tokens: List[str]) -> bool:
@@ -1807,11 +1832,15 @@ def _is_playwright_invocation(tokens: List[str]) -> bool:
 
     Token-match only. ``npx playwright install`` is an invocation; it is
     not dock-aimed unless ``--cdp-endpoint`` / ``PW_TEST_CONNECT_*`` pin
-    this jar. Do not match ``@playwright/mcp`` by substring.
+    this jar. ``playwright-cli attach --cdp=<dock>`` is leftover attach
+    (finding 109). Do not match ``@playwright/mcp`` or ``playwright-core``
+    by substring.
     """
     if not tokens:
         return False
-    if _token_basename_is(tokens[0], "playwright"):
+    if _token_basename_is(tokens[0], "playwright") or _token_basename_is(
+        tokens[0], "playwright-cli",
+    ):
         return True
     name0 = _launcher_basename(tokens[0])
     if name0 in _ENV_LAUNCHERS:
@@ -1826,8 +1855,7 @@ def _is_playwright_invocation(tokens: List[str]) -> bool:
     if via is not None:
         return via
     if name0 in _NPX_LAUNCHERS:
-        return _npx_invocation_matches(
-            tokens, lambda t: _token_basename_is(t, "playwright"))
+        return _npx_invocation_matches(tokens, _token_is_playwright_script)
     if name0 in _NODE_LAUNCHERS:
         node_pm = _node_package_manager_argv(tokens)
         if node_pm:

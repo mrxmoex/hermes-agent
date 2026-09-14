@@ -292,6 +292,24 @@ def test_agent_browser_invocation_is_token_match_not_substring():
     assert not _is_playwright_invocation(["/usr/bin/cat", "playwright.log"])
     assert not _is_playwright_invocation(
         ["/bin/bash", "-c", "npx playwright codegen --cdp-endpoint http://127.0.0.1:9333"])
+    # Playwright Agent CLI leftover attach (finding 109).
+    assert _is_playwright_invocation(
+        ["playwright-cli", "attach", "--cdp", "http://127.0.0.1:9333"])
+    assert _is_playwright_invocation(
+        ["npx", "playwright-cli", "attach", "--cdp", "http://127.0.0.1:9333"])
+    assert _is_playwright_invocation(
+        ["npx", "--package=playwright-cli", "--",
+         "attach", "--cdp", "http://127.0.0.1:9333"])
+    assert _is_playwright_invocation(
+        ["node", "/home/x/node_modules/playwright-cli/cli.js",
+         "attach", "--cdp=http://127.0.0.1:9333"])
+    assert _is_playwright_invocation(
+        ["npm", "exec", "playwright-cli", "--",
+         "attach", "--cdp", "http://127.0.0.1:9333"])
+    assert not _is_playwright_invocation(
+        ["npx", "playwright-core", "attach", "--cdp", "http://127.0.0.1:9333"])
+    assert not _is_playwright_invocation(
+        ["/bin/bash", "-c", "playwright-cli attach --cdp http://127.0.0.1:9333"])
     from tools.browser_tool_session import _is_playwright_mcp_invocation
     assert _is_playwright_mcp_invocation(["npx", "-y", "@playwright/mcp@latest"])
     assert _is_playwright_mcp_invocation(
@@ -969,6 +987,106 @@ def test_unregistered_playwright_dock_cdp_killed_on_takeover():
     assert later_other.killed == 0
 
 
+def test_unregistered_playwright_cli_dock_cdp_killed_on_takeover():
+    """``playwright-cli attach --cdp=<dock>`` hid leftover Playwright attach.
+
+    The Agent CLI is argv0 ``playwright-cli``, not ``playwright``.
+    ``npm exec pkg -- --port`` hid the aim behind the manager ``--``.
+    ``--cdp chrome`` / ``--extension`` are a Chrome we cannot prove is
+    this jar. ``playwright-core`` is not an invocation. Bash ``-c``
+    parent is not the writer.
+    """
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    bdb.remember_dock_cdp_port(9333)
+    leftover = _FakeProc(
+        10300,
+        ["playwright-cli", "attach", "--cdp", "http://127.0.0.1:9333"],
+    )
+    equals = _FakeProc(
+        10301,
+        ["playwright-cli", "attach", "--cdp=http://127.0.0.1:9333"],
+    )
+    via_npx = _FakeProc(
+        10302,
+        ["npx", "playwright-cli", "attach", "--cdp", "http://127.0.0.1:9333"],
+    )
+    packaged = _FakeProc(
+        10303,
+        ["npx", "--package=playwright-cli", "--",
+         "attach", "--cdp", "http://127.0.0.1:9333"],
+    )
+    shebang = _FakeProc(
+        10304,
+        ["node", "/home/x/node_modules/playwright-cli/cli.js",
+         "attach", "--cdp=http://127.0.0.1:9333"],
+    )
+    npm_exec = _FakeProc(
+        10305,
+        ["npm", "exec", "playwright-cli", "--",
+         "attach", "--cdp", "http://127.0.0.1:9333"],
+    )
+    npm_lh = _FakeProc(
+        10311,
+        ["npm", "exec", "lighthouse", "--",
+         "--port", "9333", "https://example.com"],
+    )
+    pnpm_lh = _FakeProc(
+        10312,
+        ["pnpm", "exec", "lighthouse", "--", "--port", "9333"],
+    )
+    yarn_lh = _FakeProc(
+        10313,
+        ["yarn", "exec", "lighthouse", "--", "--port", "9333"],
+    )
+    bun_lh = _FakeProc(
+        10314,
+        ["bun", "x", "lighthouse", "--", "--port", "9333"],
+    )
+    channel = _FakeProc(10306, ["playwright-cli", "attach", "--cdp", "chrome"])
+    extension = _FakeProc(10307, ["playwright-cli", "attach", "--extension"])
+    core = _FakeProc(
+        10308,
+        ["npx", "playwright-core", "attach", "--cdp", "http://127.0.0.1:9333"],
+    )
+    other = _FakeProc(
+        10309,
+        ["playwright-cli", "attach", "--cdp", "http://127.0.0.1:9222"],
+    )
+    bash_parent = _FakeProc(
+        10310,
+        ["/bin/bash", "-c",
+         "playwright-cli attach --cdp http://127.0.0.1:9333"],
+    )
+    lease.acquire("human")
+    n = interrupt_unregistered_dock_cli(
+        processes=[
+            leftover, equals, via_npx, packaged, shebang, npm_exec,
+            npm_lh, pnpm_lh, yarn_lh, bun_lh,
+            channel, extension, core, other, bash_parent,
+        ],
+        chromium_pid=9999,
+        owner_daemon_pid=9998,
+    )
+    assert n == 10
+    assert leftover.killed == 1
+    assert equals.killed == 1
+    assert via_npx.killed == 1
+    assert packaged.killed == 1
+    assert shebang.killed == 1
+    assert npm_exec.killed == 1
+    assert npm_lh.killed == 1
+    assert pnpm_lh.killed == 1
+    assert yarn_lh.killed == 1
+    assert bun_lh.killed == 1
+    assert channel.killed == 0
+    assert extension.killed == 0
+    assert core.killed == 0
+    assert other.killed == 0
+    assert bash_parent.killed == 0
+
+
 def test_unregistered_playwright_mcp_dock_cdp_killed_on_takeover():
     """terminal() @playwright/mcp --cdp-endpoint on the dock is leftover action.
 
@@ -995,6 +1113,11 @@ def test_unregistered_playwright_mcp_dock_cdp_killed_on_takeover():
         ["npx", "@playwright/mcp"],
         {"PLAYWRIGHT_WS_ENDPOINT": "ws://127.0.0.1:9333/devtools/browser/x"},
     )
+    via_mcp_env = _FakeProc(
+        9006,
+        ["npx", "@playwright/mcp"],
+        {"PLAYWRIGHT_MCP_CDP_ENDPOINT": "http://127.0.0.1:9333"},
+    )
     no_cdp = _FakeProc(9003, ["npx", "@playwright/mcp"])
     other = _FakeProc(
         9004,
@@ -1006,14 +1129,15 @@ def test_unregistered_playwright_mcp_dock_cdp_killed_on_takeover():
     )
     lease.acquire("human")
     n = interrupt_unregistered_dock_cli(
-        processes=[leftover, shebang, via_env, no_cdp, other, bash_parent],
+        processes=[leftover, shebang, via_env, via_mcp_env, no_cdp, other, bash_parent],
         chromium_pid=9999,
         owner_daemon_pid=9998,
     )
-    assert n == 3
+    assert n == 4
     assert leftover.killed == 1
     assert shebang.killed == 1
     assert via_env.killed == 1
+    assert via_mcp_env.killed == 1
     assert no_cdp.killed == 0
     assert other.killed == 0
     assert bash_parent.killed == 0
