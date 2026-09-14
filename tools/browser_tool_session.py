@@ -2168,7 +2168,11 @@ def _unregistered_cli_aims_at_dock(
 
     A relative ``AGENT_BROWSER_PROFILE`` is the leftover writer's jar,
     resolved against *that* process cwd (finding 95 for Chromium argv).
-    Gateway cwd must not decide the pin.
+    Official leftover also pins the jar on argv: agent-browser
+    ``--profile`` and Playwright ``--user-data-dir`` / ``open --profile``
+    (finding 111). Env-only hid those writers. Explicit ``--cdp`` still
+    wins. Gateway cwd must not decide the pin. browser-use ``--profile``
+    is a Chrome profile *name* and stays unknown.
     """
     env = environ or {}
     if _is_browser_use_invocation(tokens) and not _is_agent_browser_invocation(tokens):
@@ -2202,7 +2206,12 @@ def _unregistered_cli_aims_at_dock(
                 if cdp:
                     break
         if not cdp:
-            return False
+            # Official leftover: ``codegen --user-data-dir=<dock>`` /
+            # ``playwright-cli open --profile=<dock>``. Finding 99 only
+            # checked AGENT_BROWSER_PROFILE on the agent-browser
+            # fallthrough, so Take over left these writers running.
+            pinned = _flag_value(tokens, ("--user-data-dir", "--profile"))
+            return _leftover_profile_pin_aims_at_dock(pinned, profile, cwd)
         if _cdp_url_is_bot_desktop_browser(cdp):
             return True
         port = _loopback_cdp_port(cdp)
@@ -2278,12 +2287,29 @@ def _unregistered_cli_aims_at_dock(
             return True
         port = _loopback_cdp_port(cdp)
         return dock_port is not None and port == dock_port
-    pinned = (env.get("AGENT_BROWSER_PROFILE") or "").strip()
-    if not pinned or profile is None:
+    pinned = _flag_value(tokens, ("--profile",))
+    if not pinned:
+        pinned = (env.get("AGENT_BROWSER_PROFILE") or "").strip()
+    return _leftover_profile_pin_aims_at_dock(pinned, profile, cwd)
+
+
+def _leftover_profile_pin_aims_at_dock(
+    pinned: Optional[str],
+    profile: Optional[Path],
+    cwd: Optional[Path],
+) -> bool:
+    """True when a leftover profile-dir pin is *this* dock jar.
+
+    Finding 99 resolved ``AGENT_BROWSER_PROFILE`` against the writer cwd.
+    Finding 111 is the official argv twin (``--profile`` /
+    ``--user-data-dir``). Empty / other / unreadable pins stay unknown.
+    """
+    text = (pinned or "").strip()
+    if not text or profile is None:
         return False
     try:
         from tools.bot_desktop.browser import _paths_same_user_data_dir
-        return _paths_same_user_data_dir(pinned, str(profile), cwd=cwd)
+        return _paths_same_user_data_dir(text, str(profile), cwd=cwd)
     except Exception:
         return False
 

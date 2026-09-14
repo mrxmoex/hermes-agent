@@ -301,6 +301,32 @@ def test_agent_browser_invocation_is_token_match_not_substring():
         ["browser-use", "--connect", "open", "https://example.com"],
         {}, None, 9333,
     )
+    from tools.bot_desktop import browser as _bdb
+    _jar = _bdb.profile_dir()
+    # Official leftover jar pin is ``--profile`` / ``--user-data-dir``
+    # (finding 111). Env-only hid those writers. ``--cdp`` still wins.
+    assert _unregistered_cli_aims_at_dock(
+        ["agent-browser", "--profile", str(_jar), "snapshot"],
+        {}, _jar, None,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "playwright", "codegen", "--user-data-dir", str(_jar)],
+        {}, _jar, None,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["playwright-cli", "open", f"--profile={_jar}"],
+        {}, _jar, None,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["agent-browser", "--cdp", "http://127.0.0.1:9222",
+         "--profile", str(_jar), "snapshot"],
+        {}, _jar, 9333,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["playwright-cli", "attach", "--cdp", "chrome",
+         "--profile", str(_jar)],
+        {}, _jar, 9333,
+    )
     from tools.browser_tool_session import _is_playwright_invocation
     assert _is_playwright_invocation(["playwright", "codegen"])
     assert _is_playwright_invocation(["npx", "--yes", "playwright", "install"])
@@ -776,6 +802,78 @@ def test_unregistered_kills_relative_env_pinned_profile():
     assert dotted.killed == 1
     assert here.killed == 1
     assert wrong_cwd.killed == 0
+
+
+def test_unregistered_kills_argv_profile_pin_without_cdp():
+    """``--profile`` / ``--user-data-dir`` hid leftover jar aim (finding 111).
+
+    Finding 99 only checked ``AGENT_BROWSER_PROFILE``. Official leftover
+    pins the dock jar on argv. Explicit ``--cdp`` still wins. Relative
+    ``--profile`` uses the writer cwd. ``--cdp chrome`` stays unknown.
+    Bash ``-c`` parent is still not the writer.
+    """
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    profile = bdb.profile_dir()
+    leftover = _FakeProc(
+        8120, ["agent-browser", "--profile", str(profile), "snapshot"],
+    )
+    equals = _FakeProc(
+        8121, ["agent-browser", f"--profile={profile}", "fill", "@e1", "x"],
+    )
+    relative = _FakeProc(
+        8122, ["agent-browser", "--profile", "browser-profile", "snapshot"],
+        cwd=profile.parent,
+    )
+    playwright = _FakeProc(
+        8123,
+        ["npx", "playwright", "codegen", "--user-data-dir", str(profile)],
+    )
+    playwright_cli = _FakeProc(
+        8124, ["playwright-cli", "open", f"--profile={profile}"],
+    )
+    other = _FakeProc(
+        8125, ["agent-browser", "--profile", "/tmp/other-chrome", "snapshot"],
+    )
+    cdp_wins = _FakeProc(
+        8126,
+        ["agent-browser", "--cdp", "http://127.0.0.1:9222",
+         "--profile", str(profile), "snapshot"],
+    )
+    channel = _FakeProc(
+        8127,
+        ["playwright-cli", "attach", "--cdp", "chrome",
+         "--profile", str(profile)],
+    )
+    wrong_cwd = _FakeProc(
+        8128, ["agent-browser", "--profile", "browser-profile", "snapshot"],
+        cwd=profile.parent.parent,
+    )
+    bash_parent = _FakeProc(
+        8129,
+        ["/bin/bash", "-c", f"agent-browser --profile {profile} snapshot"],
+    )
+    lease.acquire("human")
+    n = interrupt_unregistered_dock_cli(
+        processes=[
+            leftover, equals, relative, playwright, playwright_cli,
+            other, cdp_wins, channel, wrong_cwd, bash_parent,
+        ],
+        chromium_pid=9999,
+        owner_daemon_pid=9998,
+    )
+    assert n == 5
+    assert leftover.killed == 1
+    assert equals.killed == 1
+    assert relative.killed == 1
+    assert playwright.killed == 1
+    assert playwright_cli.killed == 1
+    assert other.killed == 0
+    assert cdp_wins.killed == 0
+    assert channel.killed == 0
+    assert wrong_cwd.killed == 0
+    assert bash_parent.killed == 0
 
 
 def test_unregistered_spares_lan_cdp_even_when_port_matches():
