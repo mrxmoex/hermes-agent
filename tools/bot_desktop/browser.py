@@ -738,9 +738,14 @@ def lock_listed_persist_port(user_data_dir: Optional[str] = None) -> Optional[in
     ``SingletonLock`` (finding 161) while chrome still inode-listens.
     177's lock-pid check then missed in-process memory, so 164
     shopped leftover file helpers and attach followed them. Memory
-    that this jar still inode-listens on is persist. File-only
-    (memory missing or no longer this-jar) stays None so 86 / 164
-    can still recover leftover helpers. No HTTP.
+    that this jar still inode-listens on is persist.     File-only leftover helpers matching DevTools stay None so
+    86 / 164 can still recover them. Finding 181: a process
+    restart clears memory. Persist file that this jar still
+    inode-listens on is the last live stamp; leftover
+    ``DevToolsActivePort`` helpers (several holders) must not
+    overwrite that chrome (unique holder). A different
+    file-named live listen with leftover persist holders is
+    still finding 172. No HTTP.
     """
     if user_data_dir is None:
         user_data_dir = str(profile_dir())
@@ -781,6 +786,37 @@ def lock_listed_persist_port(user_data_dir: Optional[str] = None) -> Optional[in
             hosts = ()
         if hosts:
             return memory
+    # Finding 181: process restart cleared memory. Persist file that
+    # this jar still inode-listens on is the last live stamp. File
+    # equal to DevTools stays None so 86 / 164 can recover leftover
+    # helpers. Persist unique + DevTools several is leftover helpers
+    # hiding chrome. Persist several + DevTools unique is finding 172.
+    if isinstance(persist, int) and 1 <= persist <= 65535:
+        try:
+            hosts = _this_jar_listen_connect_hosts(persist)
+        except Exception:
+            hosts = ()
+        if hosts:
+            named = None
+            try:
+                with open(
+                    os.path.join(user_data_dir, "DevToolsActivePort"),
+                    encoding="utf-8",
+                ) as fh:
+                    port_line = fh.readline().strip()
+                if port_line.isdigit():
+                    named = int(port_line)
+            except OSError:
+                named = None
+            if named is None or named == persist:
+                return None
+            try:
+                persist_n = len(_this_jar_listen_holders(persist, user_data_dir))
+                named_n = len(_this_jar_listen_holders(named, user_data_dir))
+            except Exception:
+                return None
+            if persist_n == 1 and named_n > 1:
+                return persist
     return None
 
 
@@ -833,8 +869,10 @@ def running_instance_cdp_port(user_data_dir: str, *, exclude_session: Optional[s
         # guess among ports when the file is gone too. Several this-jar
         # holders on that file-named number are not a guess (finding 164).
         # Finding 179: in-process memory may still name chrome after
-        # Take over unlinks the lock. Do not let 164 stamp leftover
-        # file helpers over that persist.
+        # Take over unlinks the lock. Finding 181: a process restart
+        # clears that memory; persist file that this jar still
+        # inode-listens on is the last live stamp. Do not let 164
+        # stamp leftover file helpers over that persist.
         if not port_line.isdigit():
             return None
         persist = lock_listed_persist_port(user_data_dir)
