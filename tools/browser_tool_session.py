@@ -2148,13 +2148,18 @@ def _is_playwright_mcp_invocation(tokens: List[str]) -> bool:
 
 
 def _token_is_chrome_devtools_mcp(token: str) -> bool:
-    """True when this token is ``chrome-devtools-mcp`` or its Node entry.
+    """True when this token is chrome-devtools-mcp or its official CLI bin.
 
-    Hermes docs teach this MCP as a live-Chrome attach. Token-match the
-    package only — ``npx chrome-devtools`` and ``cat chrome-devtools-mcp.log``
-    are not invocations.
+    The package ships two bins: ``chrome-devtools-mcp`` (MCP server) and
+    ``chrome-devtools`` (CLI wrapper — ``chrome-devtools start`` /
+    ``fill`` / ``click``). Finding 89 / 123 only matched the MCP name, so
+    leftover ``chrome-devtools start --userDataDir=<dock>`` never
+    counted as an invocation. ``chrome-devtools-frontend`` /
+    ``cat chrome-devtools-mcp.log`` are not.
     """
     if _token_basename_is(token, "chrome-devtools-mcp"):
+        return True
+    if _token_basename_is(token, "chrome-devtools"):
         return True
     raw = (token or "").strip().strip("\"'")
     if not raw:
@@ -2168,15 +2173,17 @@ def _token_is_chrome_devtools_mcp(token: str) -> bool:
         return True
     return name in {
         "cli.js", "cli.mjs", "cli.cjs", "index.js", "bin.js", "main.js",
+        "chrome-devtools.js", "chrome-devtools.mjs", "chrome-devtools.cjs",
     }
 
 
 def _is_chrome_devtools_mcp_invocation(tokens: List[str]) -> bool:
-    """True when argv launches chrome-devtools-mcp (npx, shebang node).
+    """True when argv launches chrome-devtools-mcp or chrome-devtools.
 
-    Token-match only. ``--autoConnect`` / no URL launches or attaches a
-    Chrome we cannot prove is this jar — stay unknown. Do not match a
-    bare ``chrome-devtools`` binary.
+    Token-match only. Official leftover CLI is argv0 ``chrome-devtools``
+    after ``npm i -g chrome-devtools-mcp``. ``--autoConnect`` / no pin
+    launches or attaches a Chrome we cannot prove is this jar — stay
+    unknown. ``chrome-devtools-frontend`` is not this package.
     """
     if not tokens:
         return False
