@@ -779,6 +779,12 @@ def lock_listed_persist_port(user_data_dir: Optional[str] = None) -> Optional[in
     leftover CRI so leftover persist and chrome CDP both
     look leftover-shared. Chrome's own listen is the one
     leftover daemon does not inode-hold.
+    Finding 197: leftover fill clients exited and chrome
+    dropped the inherited DevTools listen, so leftover
+    daemon uniquely holds stale ``DevToolsActivePort``.
+    Unique leftover file is not chrome when that holder
+    is leftover daemon — sibling chrome is still a
+    this-jar child of leftover daemon.
     Finding 185: persist never stamped and
     the lock is already gone. Leftover holders that inherited
     chrome's DevTools fd still name chrome's other unique
@@ -1240,8 +1246,10 @@ def unique_lock_chrome_hidden_by_leftover_file(
     ``DevToolsActivePort`` helpers (several holders) as the first
     persist, even when the lock pid still has exactly one other
     unique this-jar listen — that is chrome. Several other unique
-    lock ports stay unknown (do not guess). File unique is finding
-    170 / 172 advertisement. Finding 185: when the lock is gone,
+    lock ports stay unknown (do not guess).     File unique is finding
+    170 / 172 advertisement. Finding 197: unique leftover
+    daemon on stale DevTools is not chrome — scan leftover
+    daemon's this-jar children for sibling chrome. Finding 185: when the lock is gone,
     leftover holders that inherited chrome's DevTools fd still
     advertise that unique listen. Finding 186: leftover this-jar
     helpers that are no longer leftover holders of chrome still
@@ -1275,7 +1283,49 @@ def unique_lock_chrome_hidden_by_leftover_file(
     except Exception:
         return None
     if len(leftover_pids) <= 1:
-        return None
+        if len(leftover_pids) != 1:
+            return None
+        holder = next(iter(leftover_pids))
+        # Finding 161: unique leftover file that IS chrome stays
+        # the file holder. Finding 197: leftover fill clients
+        # exited and chrome dropped the inherited DevTools
+        # listen, so leftover daemon uniquely holds stale
+        # ``DevToolsActivePort``. 184-196 required several
+        # leftover holders and never reached sibling chrome
+        # via leftover daemon's children. Unique leftover
+        # daemon / CRI / python is not chrome.
+        if _pid_is_chromium_browser(holder):
+            return None
+        if not _pid_names_this_jar(holder, user_data_dir):
+            return None
+        parent = holder
+        scan_pids = [parent]
+        try:
+            for child in _this_jar_children(parent, user_data_dir):
+                if child not in scan_pids:
+                    scan_pids.append(child)
+        except Exception:
+            pass
+        chrome: list[int] = []
+        seen: set[int] = set()
+        for scan_pid in scan_pids:
+            try:
+                ports = _loopback_listen_ports_for_pid(scan_pid)
+            except Exception:
+                continue
+            for port in ports:
+                if port == named or port in seen:
+                    continue
+                if _unique_chromium_browser_holder(port, user_data_dir) is not None:
+                    seen.add(port)
+                    chrome.append(port)
+        if len(chrome) == 1:
+            return chrome[0]
+        if chrome:
+            return None
+        return _leftover_inherited_chrome_listen(
+            named, leftover_pids, parent, scan_pids, user_data_dir,
+        )
     pid = _lock_pid(user_data_dir)
     if pid is not None and _pid_names_this_jar(pid, user_data_dir):
         try:
@@ -1612,8 +1662,10 @@ def _this_jar_chromium_pid(user_data_dir: Optional[str] = None) -> Optional[int]
     stays unknown. Findings 185 / 186 already named unique chrome
     on another listen. Skip-kill / ``shared_chromium_owner_session``
     still need that pid — Take over otherwise tree-kills the
-    daemon that spawned chrome. Unique holder of that hidden
-    chrome is not a guess among leftover helpers. Finding 188:
+    daemon that spawned chrome.     Unique holder of that hidden
+    chrome is not a guess among leftover helpers. Finding 197:
+    unique leftover daemon on stale DevTools is not chrome.
+    Finding 188:
     leftover that inherited chrome's unique listen make that
     holder several. Lock pid or the unique leftover-file parent
     that still holds hidden is chrome. Finding 189: chrome's
@@ -1635,9 +1687,11 @@ def _this_jar_chromium_pid(user_data_dir: Optional[str] = None) -> Optional[int]
         return None
     file_port = int(port_line)
     holder = _scan_this_jar_listen_holder(file_port, user_data_dir)
-    if holder is not None:
+    if holder is not None and _pid_is_chromium_browser(holder[0]):
         return holder[0]
     # Finding 187: leftover file helpers are several holders.
+    # Finding 197: unique leftover daemon on stale DevTools is
+    # not chrome — fall through to hidden sibling chrome.
     # 185 / 186 already named unique chrome. Skip-kill and
     # owner-session still need that pid.
     try:
@@ -1665,6 +1719,16 @@ def _this_jar_chromium_pid(user_data_dir: Optional[str] = None) -> Optional[int]
         return None
     leftover_pids = _this_jar_holder_pids(file_port, user_data_dir)
     parent = _unique_this_jar_parent(leftover_pids, user_data_dir)
+    # Finding 197: unique leftover daemon on stale DevTools has
+    # no this-jar parent. That leftover daemon IS the leftover
+    # parent — sibling chrome is still its this-jar child.
+    if parent is None and len(leftover_pids) == 1:
+        only = next(iter(leftover_pids))
+        if (
+            not _pid_is_chromium_browser(only)
+            and _pid_names_this_jar(only, user_data_dir)
+        ):
+            parent = only
     if parent is None:
         return None
     hidden_holders = _this_jar_holder_pids(hidden, user_data_dir)
