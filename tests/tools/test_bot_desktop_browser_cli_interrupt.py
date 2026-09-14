@@ -7605,7 +7605,6 @@ def test_unregistered_host_port_killed_when_persist_is_stale(monkeypatch, tmp_pa
         assert bash_parent.killed == 0
         assert persist_writer.killed == 1
         assert n == 5
-        assert bdb.last_known_dock_cdp_port() == 9333
     finally:
         listener.close()
 

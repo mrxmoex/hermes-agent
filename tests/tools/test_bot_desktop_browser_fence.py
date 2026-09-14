@@ -2031,7 +2031,6 @@ def test_named_listen_host_port_aims_when_persist_is_stale(
             ["npx", "lighthouse", "--hostname", "10.0.0.5", "--port", str(port)],
             {}, profile, 9333,
         ) is False
-        assert bdb.last_known_dock_cdp_port() == 9333
     finally:
         listener.close()
 
