@@ -282,6 +282,25 @@ def test_agent_browser_invocation_is_token_match_not_substring():
         ["python3", "/home/x/.hermes/bin/browser-use", "exec"])
     assert not _is_browser_use_invocation(["/usr/bin/cat", "browser-use.log"])
     assert not _is_browser_use_invocation(["uvx", "ruff", "check"])
+    from tools.browser_tool_session import _unregistered_cli_aims_at_dock
+    # Official leftover attach is ``--cdp-url`` (finding 110). Env-only
+    # hid that writer. ``--connect`` cannot prove this jar.
+    assert _unregistered_cli_aims_at_dock(
+        ["browser-use", "--cdp-url", "http://127.0.0.1:9333", "open"],
+        {}, None, 9333,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["uvx", "browser-use", "--cdp-url=ws://127.0.0.1:9333/devtools/browser/x"],
+        {}, None, 9333,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["browser-use", "--cdp-url", "http://127.0.0.1:9222", "open"],
+        {"BU_CDP_URL": "http://127.0.0.1:9333"}, None, 9333,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["browser-use", "--connect", "open", "https://example.com"],
+        {}, None, 9333,
+    )
     from tools.browser_tool_session import _is_playwright_invocation
     assert _is_playwright_invocation(["playwright", "codegen"])
     assert _is_playwright_invocation(["npx", "--yes", "playwright", "install"])
@@ -926,6 +945,85 @@ def test_unregistered_browser_use_dock_env_killed_on_takeover():
     assert other.killed == 0
     assert unknown.killed == 0
     assert lan.killed == 0
+
+
+def test_unregistered_browser_use_cdp_url_killed_on_takeover():
+    """``browser-use --cdp-url <dock>`` hid leftover attach (finding 110).
+
+    Official leftover action is the argv flag. Finding 78 only checked
+    ``BU_CDP_*`` env. ``--connect`` / another loopback / LAN stay up.
+    Explicit ``--cdp-url`` wins over a dock env pin. Last ``--cdp-url``
+    wins. Bash ``-c`` parent is still not the writer.
+    """
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    bdb.remember_dock_cdp_port(9333)
+    leftover = _FakeProc(
+        8610,
+        ["browser-use", "--cdp-url", "http://127.0.0.1:9333", "open",
+         "https://example.com"],
+    )
+    equals = _FakeProc(
+        8611,
+        ["browser-use", "--cdp-url=ws://127.0.0.1:9333/devtools/browser/x",
+         "state"],
+    )
+    uvx = _FakeProc(
+        8612,
+        ["uvx", "browser-use", "--cdp-url", "http://127.0.0.1:9333", "open"],
+    )
+    via_python = _FakeProc(
+        8613,
+        ["python3", "/home/x/.local/bin/browser-use", "--cdp-url",
+         "http://127.0.0.1:9333", "exec"],
+    )
+    last_wins = _FakeProc(
+        8614,
+        ["browser-use", "--cdp-url", "http://127.0.0.1:1",
+         "--cdp-url", "http://127.0.0.1:9333", "open"],
+    )
+    other = _FakeProc(
+        8615,
+        ["browser-use", "--cdp-url", "http://127.0.0.1:9222", "open"],
+    )
+    flag_wins_env = _FakeProc(
+        8616,
+        ["browser-use", "--cdp-url", "http://127.0.0.1:9222", "open"],
+        {"BU_CDP_URL": "http://127.0.0.1:9333"},
+    )
+    connect = _FakeProc(
+        8617, ["browser-use", "--connect", "open", "https://example.com"],
+    )
+    lan = _FakeProc(
+        8618,
+        ["browser-use", "--cdp-url", "http://10.0.0.5:9333", "open"],
+    )
+    bash_parent = _FakeProc(
+        8619,
+        ["/bin/bash", "-c",
+         "browser-use --cdp-url http://127.0.0.1:9333 open"],
+    )
+    lease.acquire("human")
+    n = interrupt_unregistered_dock_cli(
+        processes=[
+            leftover, equals, uvx, via_python, last_wins, other,
+            flag_wins_env, connect, lan, bash_parent,
+        ],
+        chromium_pid=9999,
+        owner_daemon_pid=9998,
+    )
+    assert n == 5
+    assert leftover.killed == 1
+    assert equals.killed == 1
+    assert uvx.killed == 1
+    assert via_python.killed == 1
+    assert last_wins.killed == 1
+    assert other.killed == 0
+    assert flag_wins_env.killed == 0
+    assert connect.killed == 0
+    assert lan.killed == 0
+    assert bash_parent.killed == 0
 
 
 def test_unregistered_playwright_dock_cdp_killed_on_takeover():

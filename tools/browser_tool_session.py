@@ -2161,7 +2161,10 @@ def _unregistered_cli_aims_at_dock(
     ``--session`` without ``--cdp`` and without the env pin stays unknown.
 
     browser-use leftover writers (finding 78) aim via ``BU_CDP_*`` /
-    ``BROWSER_CDP_URL``. No CDP env stays unknown (cloud / own Chrome).
+    ``BROWSER_CDP_URL``. Official leftover attach is also
+    ``--cdp-url <dock>`` on argv (finding 110); env-only hid that
+    writer. ``--connect`` / no URL stays unknown (a Chrome we cannot
+    prove is this jar). Explicit ``--cdp-url`` wins over env.
 
     A relative ``AGENT_BROWSER_PROFILE`` is the leftover writer's jar,
     resolved against *that* process cwd (finding 95 for Chromium argv).
@@ -2169,6 +2172,16 @@ def _unregistered_cli_aims_at_dock(
     """
     env = environ or {}
     if _is_browser_use_invocation(tokens) and not _is_agent_browser_invocation(tokens):
+        # Official leftover attach: ``browser-use --cdp-url <dock>``.
+        # Finding 78 only checked BU_CDP_* env, so Take over left the
+        # argv-aimed writer running (finding 110). Do not guess
+        # ``--cdp`` (agent-browser) or treat ``--connect`` as this jar.
+        cdp = _flag_value(tokens, ("--cdp-url",))
+        if cdp:
+            if _cdp_url_is_bot_desktop_browser(cdp):
+                return True
+            port = _loopback_cdp_port(cdp)
+            return dock_port is not None and port == dock_port
         for key in ("BU_CDP_WS", "BU_CDP_URL", "BROWSER_CDP_URL"):
             val = (env.get(key) or "").strip()
             if not val:
