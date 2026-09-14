@@ -332,6 +332,25 @@ def test_agent_browser_invocation_is_token_match_not_substring():
     assert not _is_browser_use_invocation(["python3", "-m", "browser_use_cli"])
     assert not _is_browser_use_invocation(["python3", "-m", "browser_usage"])
     assert not _is_browser_use_invocation(["python3", "/tmp/browser_use"])
+    # Official leftover aliases / ``browser_use.cli`` (finding 149).
+    # Argv0 ``browser`` is every wrapper named that — not this leftover.
+    assert _is_browser_use_invocation(["browseruse", "exec"])
+    assert _is_browser_use_invocation(["bu", "--cdp-url", "http://127.0.0.1:9333"])
+    assert _is_browser_use_invocation(["browser-use-tui", "exec"])
+    assert _is_browser_use_invocation(["uvx", "browseruse"])
+    assert _is_browser_use_invocation(["uv", "run", "bu"])
+    assert _is_browser_use_invocation(
+        ["python3", "-m", "browser_use.cli", "--cdp-url",
+         "http://127.0.0.1:9333"])
+    assert _is_browser_use_invocation(
+        ["/usr/bin/env", "python3", "-m", "browser_use.cli"])
+    assert _is_browser_use_invocation(
+        ["python3",
+         "/home/x/.local/lib/python3.12/site-packages/browser_use/cli.py"])
+    assert not _is_browser_use_invocation(["browser", "exec"])
+    assert not _is_browser_use_invocation(
+        ["python3", "-m", "browser_use.cli.main"])
+    assert not _is_browser_use_invocation(["python3", "/tmp/cli.py"])
     assert not _is_browser_use_invocation(
         ["/bin/bash", "-c",
          "python3 -m browser_use --cdp-url http://127.0.0.1:9333"])
@@ -381,6 +400,23 @@ def test_agent_browser_invocation_is_token_match_not_substring():
     )
     assert not _unregistered_cli_aims_at_dock(
         ["browser-use", "--connect", "open", "https://example.com"],
+        {}, None, 9333,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["python3", "-m", "browser_use.cli", "--cdp-url",
+         "http://127.0.0.1:9333"],
+        {}, None, 9333,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["browseruse", "exec"],
+        {"BU_CDP_URL": "http://127.0.0.1:9333"}, None, 9333,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["bu", "--cdp-url=ws://127.0.0.1:9333/devtools/browser/x"],
+        {}, None, 9333,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["browser", "--cdp-url", "http://127.0.0.1:9333"],
         {}, None, 9333,
     )
     assert _unregistered_cli_aims_at_dock(
@@ -6417,6 +6453,103 @@ def test_unregistered_browser_harness_daemon_killed_on_takeover():
     assert other_py.killed == 0
     assert bash_parent.killed == 0
     assert n == 5
+
+
+def test_unregistered_browser_use_cli_module_and_aliases_killed_on_takeover():
+    """Official leftover ``browser_use.cli`` / aliases hid leftover attach.
+
+    Finding 79 matched ``python -m browser_use`` and argv0
+    ``browser-use``. Official leftover entry is
+    ``browser_use.cli:main`` plus unique aliases ``browseruse`` /
+    ``bu`` / ``browser-use-tui``. Take over left those writers
+    typing into the jar. Argv0 ``browser``, ``browser_use_cli``,
+    a random ``cli.py``, another Chrome, and the bash ``-c`` parent
+    stay up.
+    """
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    bdb.remember_dock_cdp_port(9333)
+    cli_py = (
+        "/home/x/.local/lib/python3.12/site-packages/browser_use/cli.py"
+    )
+    leftover = _FakeProc(
+        11126,
+        ["python3", "-m", "browser_use.cli", "--cdp-url",
+         "http://127.0.0.1:9333", "exec"],
+    )
+    via_env = _FakeProc(
+        11127,
+        ["/usr/bin/env", "python3", "-m", "browser_use.cli"],
+        {"BU_CDP_URL": "http://127.0.0.1:9333"},
+    )
+    via_path = _FakeProc(
+        11128,
+        ["python3", cli_py, "--cdp-url", "http://127.0.0.1:9333"],
+    )
+    via_alias = _FakeProc(
+        11129,
+        ["browseruse", "--cdp-url", "http://127.0.0.1:9333", "open"],
+    )
+    via_bu = _FakeProc(
+        11130,
+        ["bu", "exec"],
+        {"BU_CDP_WS": "ws://127.0.0.1:9333/devtools/browser/x"},
+    )
+    via_tui = _FakeProc(
+        11131,
+        ["browser-use-tui", "--cdp-url=http://127.0.0.1:9333"],
+    )
+    via_uvx = _FakeProc(
+        11132,
+        ["uvx", "browseruse", "--cdp-url", "http://127.0.0.1:9333"],
+    )
+    bare_browser = _FakeProc(
+        11133,
+        ["browser", "--cdp-url", "http://127.0.0.1:9333"],
+    )
+    other_mod = _FakeProc(
+        11134,
+        ["python3", "-m", "browser_use_cli", "--cdp-url",
+         "http://127.0.0.1:9333"],
+    )
+    random_cli = _FakeProc(
+        11135,
+        ["python3", "/tmp/cli.py", "--cdp-url",
+         "http://127.0.0.1:9333"],
+    )
+    sibling = _FakeProc(
+        11136,
+        ["browseruse", "--cdp-url", "http://127.0.0.1:9222"],
+    )
+    bash_parent = _FakeProc(
+        11137,
+        ["/bin/bash", "-c",
+         "python3 -m browser_use.cli --cdp-url http://127.0.0.1:9333"],
+    )
+    lease.acquire("human")
+    n = interrupt_unregistered_dock_cli(
+        processes=[
+            leftover, via_env, via_path, via_alias, via_bu, via_tui,
+            via_uvx, bare_browser, other_mod, random_cli, sibling,
+            bash_parent,
+        ],
+        chromium_pid=9999,
+        owner_daemon_pid=9998,
+    )
+    assert leftover.killed == 1
+    assert via_env.killed == 1
+    assert via_path.killed == 1
+    assert via_alias.killed == 1
+    assert via_bu.killed == 1
+    assert via_tui.killed == 1
+    assert via_uvx.killed == 1
+    assert bare_browser.killed == 0
+    assert other_mod.killed == 0
+    assert random_cli.killed == 0
+    assert sibling.killed == 0
+    assert bash_parent.killed == 0
+    assert n == 7
 
 
 def test_stop_reserved_calls_unregistered_interrupt(monkeypatch):

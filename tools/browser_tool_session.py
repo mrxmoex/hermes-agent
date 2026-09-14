@@ -2158,18 +2158,47 @@ def _is_agent_browser_invocation(tokens: List[str]) -> bool:
     return False
 
 
-def _token_is_browser_use_module(token: str) -> bool:
-    """True when this token is the official ``python -m browser_use`` module.
+_BROWSER_USE_SCRIPT_NAMES = (
+    "browser-use",
+    "browseruse",
+    "bu",
+    "browser-use-tui",
+)
 
-    The PyPI package's console script is ``browser-use``; its import name is
-    ``browser_use``. After ``python -m`` the leftover writer is ``python3``,
-    not argv0 ``browser-use``. A path named ``browser_use`` is a random
-    script, not the module. ``browser_use_cli`` / ``browser_usage`` are not.
+
+def _token_is_browser_use_script(token: str) -> bool:
+    """Official leftover console scripts except the too-broad ``browser``.
+
+    PyPI ``[project.scripts]`` also ships ``browser`` → ``cli:main``.
+    Argv0 ``browser`` is every wrapper named that; do not treat it as
+    this leftover. ``browseruse`` / ``bu`` / ``browser-use-tui`` are
+    the unique official aliases (finding 149).
+    """
+    return any(_token_basename_is(token, name) for name in _BROWSER_USE_SCRIPT_NAMES)
+
+
+def _token_is_browser_use_module(token: str) -> bool:
+    """True when this token is official leftover ``browser_use`` / ``.cli``.
+
+    The PyPI package's console script is ``browser-use``; its import
+    name is ``browser_use`` and the entry is ``browser_use.cli:main``.
+    Finding 79 matched ``python -m browser_use`` and missed
+    ``python -m browser_use.cli`` / ``…/browser_use/cli.py``, so Take
+    over left that writer typing into the jar. A path named
+    ``browser_use`` is a random script. ``browser_use_cli`` /
+    ``browser_usage`` / a random ``cli.py`` are not.
     """
     raw = (token or "").strip().strip("\"'")
-    if not raw or "/" in raw or "\\" in raw:
+    if not raw:
         return False
-    return _token_basename_is(raw, "browser_use")
+    if "/" not in raw and "\\" not in raw:
+        return _token_basename_is(raw, "browser_use") or _token_basename_is(
+            raw, "browser_use.cli",
+        )
+    path = Path(raw)
+    if path.name.lower() != "cli.py":
+        return False
+    return "browser_use" in [p.lower() for p in path.parts]
 
 
 def _is_browser_use_invocation(tokens: List[str]) -> bool:
@@ -2180,11 +2209,14 @@ def _is_browser_use_invocation(tokens: List[str]) -> bool:
     Official leftover when the console script is missing is
     ``python -m browser_use`` — finding 79 matched the hyphenated script
     path and missed the module form, so Take over left that writer in
-    the field a human was typing into.
+    the field a human was typing into. Finding 149: official leftover
+    is also ``python -m browser_use.cli`` and the unique aliases
+    ``browseruse`` / ``bu`` / ``browser-use-tui``. Argv0 ``browser``
+    stays unknown.
     """
     if not tokens:
         return False
-    if _token_basename_is(tokens[0], "browser-use"):
+    if _token_is_browser_use_script(tokens[0]):
         return True
     name0 = _launcher_basename(tokens[0])
     if name0 in _ENV_LAUNCHERS:
@@ -2201,7 +2233,7 @@ def _is_browser_use_invocation(tokens: List[str]) -> bool:
     if _is_python_launcher(name0):
         rest = _first_non_flag_tokens(tokens)
         return bool(rest) and (
-            _token_basename_is(rest[0], "browser-use")
+            _token_is_browser_use_script(rest[0])
             or _token_is_browser_use_module(rest[0])
         )
     if name0 not in _UVX_LAUNCHERS:
@@ -2210,12 +2242,12 @@ def _is_browser_use_invocation(tokens: List[str]) -> bool:
     if not rest:
         return False
     if name0 == "uvx":
-        return _token_basename_is(rest[0], "browser-use")
+        return _token_is_browser_use_script(rest[0])
     # uv tool run browser-use / uv run browser-use
     if rest[0] == "tool" and len(rest) >= 3 and rest[1] == "run":
-        return _token_basename_is(rest[2], "browser-use")
+        return _token_is_browser_use_script(rest[2])
     if rest[0] == "run" and len(rest) >= 2:
-        return _token_basename_is(rest[1], "browser-use")
+        return _token_is_browser_use_script(rest[1])
     return False
 
 
@@ -3067,7 +3099,11 @@ def _unregistered_cli_aims_at_dock(
     browser-use leftover writers (finding 78) aim via ``BU_CDP_*`` /
     ``BROWSER_CDP_URL``. Official leftover attach is also
     ``--cdp-url <dock>`` on argv (finding 110); env-only hid that
-    writer. Official leftover also leaves
+    writer. Finding 79 matched ``python -m browser_use`` and the
+    hyphenated script; official leftover is also
+    ``python -m browser_use.cli`` and the unique aliases
+    ``browseruse`` / ``bu`` / ``browser-use-tui`` (finding 149).
+    Argv0 ``browser`` stays unknown. Official leftover also leaves
     ``python -m browser_harness.daemon`` detached with those same
     env pins (finding 148) — finding 78 / 110 only matched the
     parent CLI, so Take over left the long-lived holder.
