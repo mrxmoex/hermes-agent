@@ -4927,8 +4927,10 @@ def _cdp_url_is_bot_desktop_browser(cdp_url: str) -> bool:
     then treated recover as a miss and stamped leftover ``--cdp`` /
     lighthouse ``--port`` aimed at stale file helpers, overwriting
     ``dock-cdp-port``. Persist still on the lock is current chrome —
-    identify the other listen, do not stamp it. 9222 and the other
-    family stay unknown.
+    identify the other listen, do not stamp it. Finding 177: that
+    persist may live only in ``_last_dock_cdp_port`` after a remember
+    miss or unlinked ``dock-cdp-port``. 9222 and the other family
+    stay unknown.
     """
     want = _loopback_cdp_port(cdp_url)
     if want is None:

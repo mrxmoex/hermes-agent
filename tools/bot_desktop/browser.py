@@ -728,25 +728,43 @@ def lock_listed_persist_port(user_data_dir: Optional[str] = None) -> Optional[in
     leftover identity must not stamp a different this-jar listen
     (stale file helpers) over that persist after a persist TCP miss.
     Finding 176: persist_live's configured fallback must not stamp
-    those helpers either. File still on the lock is finding 172. A
-    recycled lock pid is not this jar. No HTTP.
+    those helpers either. Finding 177: persist file then in-process
+    memory, same order as ``_remembered_dock_port_candidates``. A
+    remember miss or unlinked ``dock-cdp-port`` used to make 164 /
+    configured treat lock-listed chrome as "persist not on the lock"
+    and stamp leftover file helpers. First candidate still on this
+    pid wins. File still on the lock is finding 172. A recycled lock
+    pid is not this jar. No HTTP.
     """
     if user_data_dir is None:
         user_data_dir = str(profile_dir())
     pid = _lock_pid(user_data_dir)
     if pid is None or not _pid_names_this_jar(pid, user_data_dir):
         return None
+    candidates: list[int] = []
     try:
         persist = last_known_dock_cdp_port()
     except Exception:
         persist = None
-    if not (isinstance(persist, int) and 1 <= persist <= 65535):
+    if isinstance(persist, int) and 1 <= persist <= 65535:
+        candidates.append(persist)
+    try:
+        from hermes_constants import hermes_home_key
+        from tools.browser_tool_session import _last_dock_cdp_port
+        memory = _last_dock_cdp_port.get(hermes_home_key())
+    except Exception:
+        memory = None
+    if isinstance(memory, int) and 1 <= memory <= 65535 and memory not in candidates:
+        candidates.append(memory)
+    if not candidates:
         return None
     try:
-        if persist in _loopback_listen_ports_for_pid(pid):
-            return persist
+        lock_ports = _loopback_listen_ports_for_pid(pid)
     except Exception:
         return None
+    for port in candidates:
+        if port in lock_ports:
+            return port
     return None
 
 
@@ -772,8 +790,10 @@ def running_instance_cdp_port(user_data_dir: str, *, exclude_session: Optional[s
     stamp another family's holder (finding 165). If recover is unknown
     because Chromium has several specific loopbacks (finding 85) and
     the lock pid still lists stamped persist — not the file — persist
-    is current chrome (finding 172 / 174). Do not let 164 overwrite
-    that stamp with a stale ``DevToolsActivePort`` helpers still hold.
+    is current chrome (finding 172 / 174). Finding 177: that persist
+    may live only in ``_last_dock_cdp_port`` after a remember miss.
+    Do not let 164 overwrite that stamp with a stale
+    ``DevToolsActivePort`` helpers still hold.
     An instance
     agent-browser launched for ``exclude_session`` itself is reported as ``None``:
     its daemon already owns that browser, and handing it ``--cdp`` would make it
@@ -1010,8 +1030,9 @@ def _configured_listen_port_for_this_jar() -> Optional[int]:
     # inherited leftover — not the current chrome. Identity already
     # refuses to stamp that listen (finding 175); persist_live must
     # not fall through to the same URL and overwrite lock-listed
-    # persist. Finding 86 still stamps configured when persist is
-    # *not* on the lock.
+    # persist. Finding 177: lock-listed persist includes in-process
+    # memory when the persist file is missing. Finding 86 still
+    # stamps configured when persist is *not* on the lock.
     listed = lock_listed_persist_port()
     if listed is not None and listed != want:
         return None
@@ -1029,7 +1050,8 @@ def persist_live_dock_cdp_port() -> Optional[int]:
     this jar actually listens on is still this profile's DevTools port.
     Finding 176: persist_live must not fall through to a configured
     listen that names leftover file helpers while persist is still
-    on the lock.
+    on the lock. Finding 177: that persist may live only in
+    ``_last_dock_cdp_port`` after a remember miss.
     """
     try:
         port = running_instance_cdp_port(str(profile_dir()))
