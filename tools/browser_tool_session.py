@@ -1766,11 +1766,29 @@ def _is_agent_browser_invocation(tokens: List[str]) -> bool:
     return False
 
 
+def _token_is_browser_use_module(token: str) -> bool:
+    """True when this token is the official ``python -m browser_use`` module.
+
+    The PyPI package's console script is ``browser-use``; its import name is
+    ``browser_use``. After ``python -m`` the leftover writer is ``python3``,
+    not argv0 ``browser-use``. A path named ``browser_use`` is a random
+    script, not the module. ``browser_use_cli`` / ``browser_usage`` are not.
+    """
+    raw = (token or "").strip().strip("\"'")
+    if not raw or "/" in raw or "\\" in raw:
+        return False
+    return _token_basename_is(raw, "browser_use")
+
+
 def _is_browser_use_invocation(tokens: List[str]) -> bool:
     """True when argv launches the browser-use CLI (direct, uvx, uv run, python).
 
     Token-match only. ``cat browser-use.log`` and ``uvx ruff`` are not
     invocations. Finding 42 only tracks Hermes-spawned ``browser_exec``.
+    Official leftover when the console script is missing is
+    ``python -m browser_use`` — finding 79 matched the hyphenated script
+    path and missed the module form, so Take over left that writer in
+    the field a human was typing into.
     """
     if not tokens:
         return False
@@ -1790,7 +1808,10 @@ def _is_browser_use_invocation(tokens: List[str]) -> bool:
         return via
     if _is_python_launcher(name0):
         rest = _first_non_flag_tokens(tokens)
-        return bool(rest) and _token_basename_is(rest[0], "browser-use")
+        return bool(rest) and (
+            _token_basename_is(rest[0], "browser-use")
+            or _token_is_browser_use_module(rest[0])
+        )
     if name0 not in _UVX_LAUNCHERS:
         return False
     rest = _first_non_flag_tokens(tokens)

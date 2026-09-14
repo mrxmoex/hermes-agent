@@ -280,6 +280,20 @@ def test_agent_browser_invocation_is_token_match_not_substring():
     assert _is_browser_use_invocation(["uv", "run", "browser-use"])
     assert _is_browser_use_invocation(
         ["python3", "/home/x/.hermes/bin/browser-use", "exec"])
+    # Official leftover when the console script is missing: ``python -m``.
+    assert _is_browser_use_invocation(["python3", "-m", "browser_use", "exec"])
+    assert _is_browser_use_invocation(
+        ["/usr/bin/python3", "-m", "browser_use", "--cdp-url",
+         "http://127.0.0.1:9333"])
+    assert _is_browser_use_invocation(["python3.12", "-m", "browser_use"])
+    assert _is_browser_use_invocation(["python", "-m", "browser_use"])
+    assert not _is_browser_use_invocation(["python3", "-m", "ruff"])
+    assert not _is_browser_use_invocation(["python3", "-m", "browser_use_cli"])
+    assert not _is_browser_use_invocation(["python3", "-m", "browser_usage"])
+    assert not _is_browser_use_invocation(["python3", "/tmp/browser_use"])
+    assert not _is_browser_use_invocation(
+        ["/bin/bash", "-c",
+         "python3 -m browser_use --cdp-url http://127.0.0.1:9333"])
     assert not _is_browser_use_invocation(["/usr/bin/cat", "browser-use.log"])
     assert not _is_browser_use_invocation(["uvx", "ruff", "check"])
     from tools.browser_tool_session import _unregistered_cli_aims_at_dock
@@ -1225,6 +1239,84 @@ def test_unregistered_browser_use_cdp_url_killed_on_takeover():
     assert flag_wins_env.killed == 0
     assert connect.killed == 0
     assert lan.killed == 0
+    assert bash_parent.killed == 0
+
+
+def test_unregistered_python_module_browser_use_killed_on_takeover():
+    """``python -m browser_use --cdp-url <dock>`` hid leftover attach.
+
+    Finding 79 matched the hyphenated console-script path
+    (``python3 …/browser-use``). Official leftover when that script is
+    missing is ``python -m browser_use`` — the writer that stays attached
+    is python, and Take over left it typing into the jar. A random
+    ``/tmp/browser_use`` script, ``browser_use_cli``, another loopback,
+    ``--connect``, and the bash ``-c`` parent stay up.
+    """
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    bdb.remember_dock_cdp_port(9333)
+    leftover = _FakeProc(
+        8620,
+        ["python3", "-m", "browser_use", "--cdp-url",
+         "http://127.0.0.1:9333", "exec"],
+    )
+    equals = _FakeProc(
+        8621,
+        ["/usr/bin/python3", "-m", "browser_use",
+         "--cdp-url=ws://127.0.0.1:9333/devtools/browser/x"],
+    )
+    via_env = _FakeProc(
+        8622,
+        ["python3.12", "-m", "browser_use", "exec"],
+        {"BU_CDP_URL": "http://127.0.0.1:9333"},
+    )
+    via_python = _FakeProc(
+        8623,
+        ["python", "-m", "browser_use", "--cdp-url",
+         "http://127.0.0.1:9333"],
+    )
+    other = _FakeProc(
+        8624,
+        ["python3", "-m", "browser_use", "--cdp-url",
+         "http://127.0.0.1:9222"],
+    )
+    random_script = _FakeProc(
+        8625,
+        ["python3", "/tmp/browser_use", "--cdp-url",
+         "http://127.0.0.1:9333"],
+    )
+    other_mod = _FakeProc(
+        8626,
+        ["python3", "-m", "browser_use_cli", "--cdp-url",
+         "http://127.0.0.1:9333"],
+    )
+    connect = _FakeProc(
+        8627, ["python3", "-m", "browser_use", "--connect", "open"],
+    )
+    bash_parent = _FakeProc(
+        8628,
+        ["/bin/bash", "-c",
+         "python3 -m browser_use --cdp-url http://127.0.0.1:9333"],
+    )
+    lease.acquire("human")
+    n = interrupt_unregistered_dock_cli(
+        processes=[
+            leftover, equals, via_env, via_python, other, random_script,
+            other_mod, connect, bash_parent,
+        ],
+        chromium_pid=9999,
+        owner_daemon_pid=9998,
+    )
+    assert n == 4
+    assert leftover.killed == 1
+    assert equals.killed == 1
+    assert via_env.killed == 1
+    assert via_python.killed == 1
+    assert other.killed == 0
+    assert random_script.killed == 0
+    assert other_mod.killed == 0
+    assert connect.killed == 0
     assert bash_parent.killed == 0
 
 
