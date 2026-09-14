@@ -327,6 +327,29 @@ def test_agent_browser_invocation_is_token_match_not_substring():
          "--profile", str(_jar)],
         {}, _jar, 9333,
     )
+    # Leftover daemon freezes AGENT_BROWSER_CDP; connect <port> is the
+    # in-flight attach (finding 112). --auto-connect cannot prove this jar.
+    assert _unregistered_cli_aims_at_dock(
+        ["agent-browser", "snapshot"],
+        {"AGENT_BROWSER_CDP": "9333"}, None, 9333,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["agent-browser", "connect", "9333"],
+        {}, None, 9333,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["agent-browser", "--session", "foo", "connect",
+         "http://127.0.0.1:9333"],
+        {}, None, 9333,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["agent-browser", "--auto-connect", "snapshot"],
+        {}, None, 9333,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["agent-browser", "--cdp", "9222", "snapshot"],
+        {"AGENT_BROWSER_CDP": "9333"}, None, 9333,
+    )
     from tools.browser_tool_session import _is_playwright_invocation
     assert _is_playwright_invocation(["playwright", "codegen"])
     assert _is_playwright_invocation(["npx", "--yes", "playwright", "install"])
@@ -873,6 +896,87 @@ def test_unregistered_kills_argv_profile_pin_without_cdp():
     assert cdp_wins.killed == 0
     assert channel.killed == 0
     assert wrong_cwd.killed == 0
+    assert bash_parent.killed == 0
+
+
+def test_unregistered_agent_browser_connect_and_cdp_env_killed_on_takeover():
+    """Leftover daemon ``AGENT_BROWSER_CDP`` / ``connect <dock>`` (finding 112).
+
+    Official leftover that stays after ``connect`` is the daemon with
+    ``AGENT_BROWSER_CDP`` frozen — no ``--cdp`` on argv. In-flight
+    ``connect 9333`` / ``connect http://…`` is the same attach.
+    ``--auto-connect`` / another loopback / LAN stay unknown. Explicit
+    ``--cdp`` wins over a dock env pin. Bash ``-c`` parent is still
+    not the writer.
+    """
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    bdb.remember_dock_cdp_port(9333)
+    daemon = _FakeProc(
+        8130, ["agent-browser", "snapshot"],
+        {"AGENT_BROWSER_CDP": "9333", "AGENT_BROWSER_DAEMON": "1"},
+    )
+    daemon_url = _FakeProc(
+        8131, ["agent-browser", "snapshot"],
+        {"AGENT_BROWSER_CDP": "http://127.0.0.1:9333"},
+    )
+    connect = _FakeProc(8132, ["agent-browser", "connect", "9333"])
+    connect_url = _FakeProc(
+        8133,
+        ["agent-browser", "connect", "ws://127.0.0.1:9333/devtools/browser/x"],
+    )
+    session_connect = _FakeProc(
+        8134,
+        ["agent-browser", "--session", "foo", "connect",
+         "http://127.0.0.1:9333"],
+    )
+    npx_connect = _FakeProc(
+        8135, ["npx", "agent-browser", "connect", "9333"],
+    )
+    other_env = _FakeProc(
+        8136, ["agent-browser", "snapshot"],
+        {"AGENT_BROWSER_CDP": "9222"},
+    )
+    other_connect = _FakeProc(
+        8137, ["agent-browser", "connect", "9222"],
+    )
+    auto = _FakeProc(
+        8138, ["agent-browser", "--auto-connect", "snapshot"],
+    )
+    cdp_wins = _FakeProc(
+        8139, ["agent-browser", "--cdp", "9222", "snapshot"],
+        {"AGENT_BROWSER_CDP": "9333"},
+    )
+    lan = _FakeProc(
+        8140, ["agent-browser", "connect", "http://10.0.0.5:9333"],
+    )
+    bash_parent = _FakeProc(
+        8141,
+        ["/bin/bash", "-c", "agent-browser connect 9333"],
+    )
+    lease.acquire("human")
+    n = interrupt_unregistered_dock_cli(
+        processes=[
+            daemon, daemon_url, connect, connect_url, session_connect,
+            npx_connect, other_env, other_connect, auto, cdp_wins, lan,
+            bash_parent,
+        ],
+        chromium_pid=9999,
+        owner_daemon_pid=9998,
+    )
+    assert n == 6
+    assert daemon.killed == 1
+    assert daemon_url.killed == 1
+    assert connect.killed == 1
+    assert connect_url.killed == 1
+    assert session_connect.killed == 1
+    assert npx_connect.killed == 1
+    assert other_env.killed == 0
+    assert other_connect.killed == 0
+    assert auto.killed == 0
+    assert cdp_wins.killed == 0
+    assert lan.killed == 0
     assert bash_parent.killed == 0
 
 

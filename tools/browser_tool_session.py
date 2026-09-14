@@ -1145,6 +1145,14 @@ def _launcher_basename(token: str) -> str:
 
 
 _LAUNCHER_VALUE_FLAGS = frozenset({"--from"})
+# agent-browser globals that take a value before ``connect <port|url>``.
+# ``--session foo connect 9333`` must see ``connect``, not ``foo``.
+_AGENT_BROWSER_VALUE_FLAGS = frozenset({
+    "--session", "--profile", "--cdp", "--cdp-endpoint",
+    "-p", "--headers", "--executable-path", "--args",
+    "--user-agent", "--proxy", "--proxy-bypass", "--name", "-n",
+    "--color-scheme",
+})
 # Global options that take a path / selector *before* exec|dlx|x.
 # Space-separated values used to become the "command" (``pnpm --dir /tmp
 # exec lighthouse`` → rest[0] == ``/tmp``), so leftover unwrap missed
@@ -2146,6 +2154,32 @@ def _cdp_arg_from_argv(tokens: List[str]) -> Optional[str]:
     return _flag_value(tokens, ("--cdp-endpoint", "--cdp"))
 
 
+def _agent_browser_connect_target(tokens: List[str]) -> Optional[str]:
+    """``agent-browser connect <port|url>`` leftover attach, or None.
+
+    Official leftover: connect once, then later commands have no ``--cdp``.
+    The in-flight writer is ``connect 9333`` / ``connect http://…``.
+    ``--session foo connect 9333`` must not treat ``foo`` as the target.
+    ``--auto-connect`` is not a port. ``connect`` with no operand stays
+    unknown.
+    """
+    if not tokens or not _is_agent_browser_invocation(tokens):
+        return None
+    work = _leftover_flag_tokens(tokens)
+    rest = _first_non_flag_tokens(work, value_flags=_AGENT_BROWSER_VALUE_FLAGS)
+    if rest and (
+        _token_basename_is_agent_browser(rest[0])
+        or _token_is_agent_browser_script(rest[0])
+    ):
+        rest = rest[1:]
+    if len(rest) < 2 or rest[0] != "connect":
+        return None
+    target = str(rest[1]) if rest[1] is not None else ""
+    if not target or target.startswith("-"):
+        return None
+    return target
+
+
 def _unregistered_cli_aims_at_dock(
     tokens: List[str],
     environ: Optional[Dict[str, str]],
@@ -2158,7 +2192,11 @@ def _unregistered_cli_aims_at_dock(
 
     Explicit ``--cdp`` wins: another loopback Chrome, a LAN endpoint, or a
     cloud URL is not the dock even if ``AGENT_BROWSER_PROFILE`` is pinned.
-    ``--session`` without ``--cdp`` and without the env pin stays unknown.
+    Official leftover that *stays* after ``connect <dock>`` is the
+    daemon with ``AGENT_BROWSER_CDP`` frozen (finding 112). Positional
+    ``connect <port|url>`` is the in-flight attach. ``--auto-connect`` /
+    ``AGENT_BROWSER_AUTO_CONNECT`` stay unknown (a Chrome we cannot
+    prove is this jar). ``--session`` without a CDP pin stays unknown.
 
     browser-use leftover writers (finding 78) aim via ``BU_CDP_*`` /
     ``BROWSER_CDP_URL``. Official leftover attach is also
@@ -2282,6 +2320,10 @@ def _unregistered_cli_aims_at_dock(
             return False
         return dock_port is not None and port == dock_port
     cdp = _cdp_arg_from_argv(tokens)
+    if not cdp and _is_agent_browser_invocation(tokens):
+        cdp = _agent_browser_connect_target(tokens)
+    if not cdp and _is_agent_browser_invocation(tokens):
+        cdp = (env.get("AGENT_BROWSER_CDP") or "").strip() or None
     if cdp:
         if _cdp_url_is_bot_desktop_browser(cdp):
             return True
