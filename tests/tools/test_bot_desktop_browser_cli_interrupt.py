@@ -478,6 +478,38 @@ def test_agent_browser_invocation_is_token_match_not_substring():
         ["/usr/bin/cat", _bh_daemon])
     assert not _is_browser_harness_daemon_invocation(
         ["/bin/bash", "-c", "python3 -m browser_harness.daemon"])
+    # Finding 154: leftover ``uv run -m`` / ``uv run python -m`` /
+    # ``uvx --from … python -m`` hid the same daemon. Findings 151 /
+    # 153 already unwrapped those for browser-use and harness MCP.
+    # ``uv run browser-harness``, ``uv run -m browser_harness``,
+    # ``uv run pytest -m``, ``uvx -m``, and ``uv tool run -m`` are not.
+    assert _is_browser_harness_daemon_invocation(
+        ["uv", "run", "-m", "browser_harness.daemon"])
+    assert _is_browser_harness_daemon_invocation(
+        ["uv", "run", "--module", "browser_harness.daemon"])
+    assert _is_browser_harness_daemon_invocation(
+        ["uv", "run", "python", "-m", "browser_harness.daemon"])
+    assert _is_browser_harness_daemon_invocation(
+        ["uvx", "--from", "browser-harness", "python", "-m",
+         "browser_harness.daemon"])
+    assert _is_browser_harness_daemon_invocation(
+        ["uv", "run", "--with", "ruff", "-m", "browser_harness.daemon"])
+    assert _is_browser_harness_daemon_invocation(
+        ["/usr/bin/env", "uv", "run", "-m", "browser_harness.daemon"])
+    assert _is_browser_harness_daemon_invocation(
+        ["uv", "tool", "run", "python", "-m", "browser_harness.daemon"])
+    assert not _is_browser_harness_daemon_invocation(
+        ["uv", "run", "-m", "browser_harness"])
+    assert not _is_browser_harness_daemon_invocation(
+        ["uv", "run", "browser-harness"])
+    assert not _is_browser_harness_daemon_invocation(
+        ["uv", "run", "pytest", "-m", "browser_harness.daemon"])
+    assert not _is_browser_harness_daemon_invocation(
+        ["uvx", "-m", "browser_harness.daemon"])
+    assert not _is_browser_harness_daemon_invocation(
+        ["uv", "tool", "run", "-m", "browser_harness.daemon"])
+    assert not _is_browser_harness_daemon_invocation(
+        ["uv", "run", "-m", "ruff"])
     # Finding 153: official leftover MCP is ``browser-harness-mcp``
     # (``browser_harness.mcp_cli:main`` / ``docs/MCP.md``). Finding
     # 148 matched the daemon only. ``browser-harness`` (run.py),
@@ -7095,6 +7127,119 @@ def test_unregistered_browser_harness_mcp_killed_on_takeover():
     assert random_cli.killed == 0
     assert bash_parent.killed == 0
     assert n == 7
+
+
+def test_unregistered_uv_wrapped_harness_daemon_killed_on_takeover():
+    """Official leftover ``uv run -m browser_harness.daemon`` hid leftover attach.
+
+    Finding 148 matched ``python -m browser_harness.daemon``. Findings
+    151 / 153 unwrapped leftover ``uv run -m`` / ``uvx --from`` for
+    browser-use and harness MCP only, so Take over left the uv-wrapped
+    daemon typing into the jar. ``uv run browser-harness``,
+    ``uv run -m browser_harness``, ``uv run pytest -m``, ``uvx -m``,
+    ``uv tool run -m``, an unpinned leftover, another Chrome, and the
+    bash ``-c`` parent stay up.
+    """
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    bdb.remember_dock_cdp_port(9333)
+    via_m = _FakeProc(
+        11188,
+        ["uv", "run", "-m", "browser_harness.daemon"],
+        {"BU_CDP_URL": "http://127.0.0.1:9333"},
+    )
+    via_module = _FakeProc(
+        11189,
+        ["uv", "run", "--module", "browser_harness.daemon"],
+        {"BU_CDP_WS": "ws://127.0.0.1:9333/devtools/browser/x"},
+    )
+    via_py = _FakeProc(
+        11190,
+        ["uv", "run", "python", "-m", "browser_harness.daemon"],
+        {"BU_CDP_URL": "http://127.0.0.1:9333"},
+    )
+    via_from = _FakeProc(
+        11191,
+        ["uvx", "--from", "browser-harness", "python", "-m",
+         "browser_harness.daemon"],
+        {"BU_CDP_URL": "http://127.0.0.1:9333"},
+    )
+    via_with = _FakeProc(
+        11192,
+        ["uv", "run", "--with", "ruff", "-m", "browser_harness.daemon"],
+        {"BU_CDP_URL": "http://127.0.0.1:9333"},
+    )
+    via_env = _FakeProc(
+        11193,
+        ["/usr/bin/env", "uv", "run", "-m", "browser_harness.daemon"],
+        {"BU_CDP_URL": "http://127.0.0.1:9333"},
+    )
+    admin = _FakeProc(
+        11194,
+        ["uv", "run", "-m", "browser_harness"],
+        {"BU_CDP_URL": "http://127.0.0.1:9333"},
+    )
+    run_py = _FakeProc(
+        11195,
+        ["uv", "run", "browser-harness"],
+        {"BU_CDP_URL": "http://127.0.0.1:9333"},
+    )
+    pytest_marker = _FakeProc(
+        11196,
+        ["uv", "run", "pytest", "-m", "browser_harness.daemon"],
+        {"BU_CDP_URL": "http://127.0.0.1:9333"},
+    )
+    uvx_dash_m = _FakeProc(
+        11197,
+        ["uvx", "-m", "browser_harness.daemon"],
+        {"BU_CDP_URL": "http://127.0.0.1:9333"},
+    )
+    tool_dash_m = _FakeProc(
+        11198,
+        ["uv", "tool", "run", "-m", "browser_harness.daemon"],
+        {"BU_CDP_URL": "http://127.0.0.1:9333"},
+    )
+    unpinned = _FakeProc(
+        11199,
+        ["uv", "run", "-m", "browser_harness.daemon"],
+    )
+    sibling = _FakeProc(
+        11200,
+        ["uv", "run", "-m", "browser_harness.daemon"],
+        {"BU_CDP_URL": "http://127.0.0.1:9222"},
+    )
+    bash_parent = _FakeProc(
+        11201,
+        ["/bin/bash", "-c",
+         "uv run -m browser_harness.daemon"],
+        {"BU_CDP_URL": "http://127.0.0.1:9333"},
+    )
+    lease.acquire("human")
+    n = interrupt_unregistered_dock_cli(
+        processes=[
+            via_m, via_module, via_py, via_from, via_with, via_env,
+            admin, run_py, pytest_marker, uvx_dash_m, tool_dash_m,
+            unpinned, sibling, bash_parent,
+        ],
+        chromium_pid=9999,
+        owner_daemon_pid=9998,
+    )
+    assert via_m.killed == 1
+    assert via_module.killed == 1
+    assert via_py.killed == 1
+    assert via_from.killed == 1
+    assert via_with.killed == 1
+    assert via_env.killed == 1
+    assert admin.killed == 0
+    assert run_py.killed == 0
+    assert pytest_marker.killed == 0
+    assert uvx_dash_m.killed == 0
+    assert tool_dash_m.killed == 0
+    assert unpinned.killed == 0
+    assert sibling.killed == 0
+    assert bash_parent.killed == 0
+    assert n == 6
 
 
 def test_stop_reserved_calls_unregistered_interrupt(monkeypatch):

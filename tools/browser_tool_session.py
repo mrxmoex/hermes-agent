@@ -2428,6 +2428,23 @@ def _token_is_browser_harness_daemon(token: str) -> bool:
     return "browser_harness" in [p.lower() for p in path.parts]
 
 
+def _uv_browser_harness_daemon_command(cmd_tokens: List[str]) -> bool:
+    """True when leftover uvx/uv operands launch ``browser_harness.daemon``.
+
+    Finding 148 matched ``python -m``. Official leftover ``uv run``
+    / ``uvx --from`` after finding 151 is also ``python -m
+    browser_harness.daemon`` (``-m`` is skipped by
+    ``_first_non_flag_tokens``). ``uvx python -m ruff`` /
+    ``uv run browser-harness`` are not.
+    """
+    if not cmd_tokens:
+        return False
+    if _is_python_launcher(_launcher_basename(cmd_tokens[0])):
+        more = cmd_tokens[1:]
+        return bool(more) and _token_is_browser_harness_daemon(more[0])
+    return False
+
+
 def _is_browser_harness_daemon_invocation(tokens: List[str]) -> bool:
     """True when argv is official leftover ``python -m browser_harness.daemon``.
 
@@ -2437,7 +2454,10 @@ def _is_browser_harness_daemon_invocation(tokens: List[str]) -> bool:
     (``start_new_session``). ``interrupt_reserved_browser_harness``
     only kills Hermes-registered ``browser_exec`` daemons, so a
     terminal-spawned leftover holder stayed typing into the jar a
-    human holds. Unpinned daemons stay unknown — official
+    human holds. Finding 154: leftover ``uv run -m`` / ``uv run
+    python -m`` / ``uvx --from … python -m`` hid the same holder
+    (findings 151 / 153 already unwrapped those for browser-use and
+    harness MCP). Unpinned daemons stay unknown — official
     ``get_ws_url()`` can scan default Chrome / 9222 when ``BU_CDP_*``
     is unset. Do not fold this into ``_is_browser_use_invocation``.
     """
@@ -2449,6 +2469,20 @@ def _is_browser_harness_daemon_invocation(tokens: List[str]) -> bool:
     if _is_python_launcher(name0):
         rest = _first_non_flag_tokens(tokens)
         return bool(rest) and _token_is_browser_harness_daemon(rest[0])
+    if name0 not in _UVX_LAUNCHERS:
+        return False
+    rest = _first_non_flag_tokens(tokens, value_flags=_UV_VALUE_FLAGS)
+    if not rest:
+        return False
+    if name0 == "uvx":
+        return _uv_browser_harness_daemon_command(rest)
+    mod = _uv_run_module(tokens)
+    if mod and _token_is_browser_harness_daemon(mod):
+        return True
+    if rest[0] == "tool" and len(rest) >= 3 and rest[1] == "run":
+        return _uv_browser_harness_daemon_command(rest[2:])
+    if rest[0] == "run" and len(rest) >= 2:
+        return _uv_browser_harness_daemon_command(rest[1:])
     return False
 
 
