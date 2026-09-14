@@ -749,6 +749,30 @@ def _configured_cdp_override_url() -> str:
         return ""
 
 
+def _this_jar_listen_connect_hosts(want: Optional[int]) -> Tuple[str, ...]:
+    """This jar's connect hosts for leftover-named ``want``, or empty.
+
+    Named-listen identity (finding 155 / 161) does not need
+    ``DevToolsActivePort``. Family check used ``_this_jar_chromium_pid``,
+    which does — so a missing lock *and* missing file left leftover
+    ``--cdp http://127.0.0.1:<port>`` looking like this jar when the
+    dock was ``::1``-only (finding 162). Same lock-pid / unique-scan
+    path as ``_this_jar_listens_on_port``. Empty hosts stay port-only.
+    Persist still needs the file to stamp. No HTTP.
+    """
+    if not isinstance(want, int) or not (1 <= want <= 65535):
+        return ()
+    user_data_dir = str(profile_dir())
+    pid = _lock_pid(user_data_dir)
+    if pid is not None and _pid_names_this_jar(pid, user_data_dir):
+        if want in _loopback_listen_ports_for_pid(pid):
+            return _listen_connect_hosts(pid, want)
+    holder = _scan_this_jar_listen_holder(want, user_data_dir)
+    if holder is None:
+        return ()
+    return holder[1]
+
+
 def _this_jar_listens_on_port(want: Optional[int]) -> bool:
     """True when this profile's Chromium inode-listens on ``want``.
 
@@ -761,18 +785,7 @@ def _this_jar_listens_on_port(want: Optional[int]) -> bool:
     inode-listens there (finding 161). A sibling on 9222, empty
     inodes, and a recycled pid are not. No HTTP.
     """
-    if not isinstance(want, int) or not (1 <= want <= 65535):
-        return False
-    user_data_dir = str(profile_dir())
-    pid = _lock_pid(user_data_dir)
-    if pid is not None and _pid_names_this_jar(pid, user_data_dir):
-        if want in _loopback_listen_ports_for_pid(pid):
-            hosts = _listen_connect_hosts(pid, want)
-            return bool(hosts) and _cdp_port_reachable(want, hosts)
-    holder = _scan_this_jar_listen_holder(want, user_data_dir)
-    if holder is None:
-        return False
-    _pid, hosts = holder
+    hosts = _this_jar_listen_connect_hosts(want)
     return bool(hosts) and _cdp_port_reachable(want, hosts)
 
 

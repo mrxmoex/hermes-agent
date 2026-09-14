@@ -1007,9 +1007,20 @@ def _dock_listen_connect_hosts(port: int) -> Tuple[str, ...]:
     ``--cdp http://127.0.0.1:<persist>`` then looked like a sibling
     squat when that pid was ``::1``-only (finding 159). Recover /
     Take over already refuse that pid. Empty hosts stay port-only.
+
+    Finding 162: ``_this_jar_chromium_pid`` needs the lock or
+    ``DevToolsActivePort``. Named listen does not. Take over can
+    unlink both while Chromium still holds DevTools — leftover
+    IPv4 to a ``::1``-only jar then skipped the family check.
     """
     from tools.bot_desktop import browser as _bd_browser
 
+    try:
+        hosts = _bd_browser._this_jar_listen_connect_hosts(port)
+    except Exception:
+        hosts = ()
+    if hosts:
+        return hosts
     try:
         pid = _bd_browser._this_jar_chromium_pid()
     except Exception:

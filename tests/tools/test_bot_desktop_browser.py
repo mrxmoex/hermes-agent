@@ -848,6 +848,53 @@ def test_missing_lock_still_stamps_named_listen(tmp_path, monkeypatch):
         listener.close()
 
 
+def test_missing_lock_and_file_keeps_listen_family(tmp_path, monkeypatch):
+    """Finding 162: named listen without lock/file still has a family.
+
+    Persist must not guess a port when both files are gone. Leftover
+    already named the listen — family hosts must still be this jar's
+    ``::1`` so leftover IPv4 does not look like the dock.
+    """
+    import threading
+
+    listener = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+    listener.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+    listener.bind(("::1", 0))
+    listener.listen(8)
+
+    def _drain():
+        while True:
+            try:
+                conn, _ = listener.accept()
+            except OSError:
+                return
+            try:
+                conn.close()
+            except OSError:
+                pass
+
+    threading.Thread(target=_drain, daemon=True).start()
+    port = listener.getsockname()[1]
+    monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path)
+    monkeypatch.setattr(browser, "profile_dir", lambda: tmp_path)
+    monkeypatch.setattr(
+        browser,
+        "_chromium_cmdline_tokens",
+        lambda pid: ["chrome", f"--user-data-dir={tmp_path}"],
+    )
+    try:
+        assert not (tmp_path / "SingletonLock").exists()
+        assert not (tmp_path / "DevToolsActivePort").exists()
+        assert browser._lock_pid(str(tmp_path)) is None
+        assert browser._this_jar_chromium_pid(str(tmp_path)) is None
+        assert browser.running_instance_cdp_port(str(tmp_path)) is None
+        assert browser._this_jar_listens_on_port(port) is True
+        assert browser._this_jar_listen_connect_hosts(port) == ("::1",)
+        assert browser._this_jar_listen_connect_hosts(9222) == ()
+    finally:
+        listener.close()
+
+
 def test_devtools_file_does_not_stamp_recycled_lock_pid(tmp_path, monkeypatch):
     """Finding 158: DevToolsActivePort trusted a recycled lock pid.
 
