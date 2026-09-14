@@ -4868,9 +4868,16 @@ def _cdp_url_is_bot_desktop_browser(cdp_url: str) -> bool:
     even when persist and the override both miss. Do not stamp an
     arbitrary connected loopback; do not skip the family check.
 
-    Persist is family-correct (finding 144). A leftover URL on the other
-    loopback family of the same port is a sibling squat, not this jar
-    (finding 145). Port-only / localhost stay unknown-family.
+    Finding 166: persist / ``_this_jar_listens_on_port`` require a fresh
+    TCP accept (finding 165 must not stamp another family's holder when
+    the lock pid still lists a dead family). Leftover may already hold
+    the CDP socket — a failed probe is not "another Chrome". Identify
+    from inode hosts + family without stamping persist. A leftover URL
+    on the other loopback family of the same port is still a sibling
+    squat (finding 145).
+
+    Persist is family-correct (finding 144). Port-only / localhost stay
+    unknown-family.
     """
     want = _loopback_cdp_port(cdp_url)
     if want is None:
@@ -4883,15 +4890,22 @@ def _cdp_url_is_bot_desktop_browser(cdp_url: str) -> bool:
         _last_dock_cdp_port[key] = live
         _bd_browser.remember_dock_cdp_port(live)
         return live == want and _leftover_cdp_host_matches_this_jar(cdp_url, live)
-    # Named port this jar still listens on beats a stale persist file
-    # and does not need the operator override (finding 155).
+    # Named port this jar still inode-listens on beats a stale persist
+    # file and does not need the operator override (finding 155).
+    # Stamp persist only when a fresh TCP accept works (finding 165).
+    # Leftover identity does not wait on that probe (finding 166).
     try:
-        named = _bd_browser._this_jar_listens_on_port(want)
+        hosts = _bd_browser._this_jar_listen_connect_hosts(want)
     except Exception:
-        named = False
-    if named:
-        _last_dock_cdp_port[key] = want
-        _bd_browser.remember_dock_cdp_port(want)
+        hosts = ()
+    if hosts:
+        try:
+            named = _bd_browser._this_jar_listens_on_port(want)
+        except Exception:
+            named = False
+        if named:
+            _last_dock_cdp_port[key] = want
+            _bd_browser.remember_dock_cdp_port(want)
         return _leftover_cdp_host_matches_this_jar(cdp_url, want)
     remembered = _last_dock_cdp_port.get(key)
     if remembered is None:

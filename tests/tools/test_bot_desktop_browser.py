@@ -1000,6 +1000,11 @@ def test_lock_pid_dead_family_does_not_shop_holder_squat(tmp_path, monkeypatch):
     family's socket on that number then stamped the IPv4 squat after
     ::1 died. Helpers after a *dropped* listen still persist (164).
     Skip-kill stays the lock pid. 9222 stays unknown.
+
+    Finding 166: leftover ``--cdp http://[::1]:<port>`` still aims at
+    that listed family when the fresh TCP probe fails (leftover may
+    already hold the CDP socket). Do not stamp persist. Leftover IPv4
+    to the squat stays another Chrome.
     """
     monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path)
     monkeypatch.setattr(browser, "profile_dir", lambda: tmp_path)
@@ -1037,6 +1042,23 @@ def test_lock_pid_dead_family_does_not_shop_holder_squat(tmp_path, monkeypatch):
     assert browser._this_jar_listen_connect_hosts(40141) == ("::1",)
     assert browser._this_jar_listens_on_port(40141) is False
     assert browser._this_jar_listens_on_port(9222) is False
+    from tools.browser_tool_session import (
+        _cdp_url_is_bot_desktop_browser,
+        _leftover_cdp_host_matches_this_jar,
+        _last_dock_cdp_port,
+    )
+    monkeypatch.setattr(browser, "_configured_cdp_override_url", lambda: "")
+    _last_dock_cdp_port.clear()
+    # Finding 166: leftover already named the lock pid's listed family.
+    # A failed TCP probe must not hide that writer. Do not stamp persist
+    # (165). Leftover IPv4 to the squat stays another Chrome.
+    assert _leftover_cdp_host_matches_this_jar("http://[::1]:40141", 40141) is True
+    assert _leftover_cdp_host_matches_this_jar("http://127.0.0.1:40141", 40141) is False
+    assert _cdp_url_is_bot_desktop_browser("http://[::1]:40141") is True
+    assert _cdp_url_is_bot_desktop_browser("http://127.0.0.1:40141") is False
+    assert _cdp_url_is_bot_desktop_browser("http://127.0.0.1:9222") is False
+    assert browser.last_known_dock_cdp_port() is None
+    assert browser.running_instance_cdp_port(str(tmp_path)) is None
 
 
 def test_devtools_file_does_not_stamp_recycled_lock_pid(tmp_path, monkeypatch):
