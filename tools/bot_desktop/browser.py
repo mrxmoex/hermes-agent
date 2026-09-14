@@ -484,6 +484,37 @@ def _file_named_this_jar_listen_port(
     return candidate
 
 
+def file_named_dock_listen_port(user_data_dir: Optional[str] = None) -> Optional[int]:
+    """``DevToolsActivePort`` when this jar still inode-listens, or ``None``.
+
+    Persist / ``running_instance_cdp_port`` require a fresh TCP accept
+    (finding 165 must not stamp another family's holder). Leftover
+    holding the CDP socket is that miss — leftover identity already
+    trusts the file-named listen (finding 166). Agent attach did not:
+    persist may never have been stamped, so finding 168 launched
+    ``--session`` into the jar a human holds (finding 170). The file
+    already named the listen. Lock pid still listing that number uses
+    only that pid's family (finding 165). Do not stamp persist. No HTTP.
+    """
+    if user_data_dir is None:
+        user_data_dir = str(profile_dir())
+    try:
+        with open(os.path.join(user_data_dir, "DevToolsActivePort"), encoding="utf-8") as fh:
+            port_line = fh.readline().strip()
+    except OSError:
+        return None
+    if not port_line.isdigit():
+        return None
+    port = int(port_line)
+    if not (1 <= port <= 65535):
+        return None
+    try:
+        hosts = _this_jar_listen_connect_hosts(port)
+    except Exception:
+        hosts = ()
+    return port if hosts else None
+
+
 def _connect_hosts_for_listen_ip(ip: str) -> Tuple[str, ...]:
     """Hosts to TCP-probe for a ``/proc`` listen address. No other family.
 

@@ -5259,14 +5259,24 @@ def _remembered_dock_attach_port(*, exclude_session: Optional[str] = None) -> Op
     (finding 167). Persist file beats stale ``_last_dock_cdp_port``
     (finding 169): ``remember_dock_cdp_port`` writes the file only, so
     an earlier identity cache hid the live stamp. Memory-only (persist
-    unlinked) still attaches. ``exclude_session`` stays None when that
-    session owns the lock pid (``--cdp`` would close its own browser).
-    A holder of one candidate does not hide the other. Do not stamp
-    persist. 9222 stays unknown unless this jar inode-listens there.
+    unlinked) still attaches. File-named ``DevToolsActivePort`` with
+    inode hosts still attaches when persist was never stamped
+    (finding 170) — that is not a guess among ports. Empty-hosts
+    persist must not hide that file. ``exclude_session`` stays None
+    when that session owns the lock pid (``--cdp`` would close its
+    own browser). A holder of one candidate does not hide the other.
+    Do not stamp persist. 9222 stays unknown unless this jar
+    inode-listens there.
     """
     from tools.bot_desktop import browser as _bd_browser
 
     candidates = _remembered_dock_port_candidates()
+    try:
+        named = _bd_browser.file_named_dock_listen_port()
+    except Exception:
+        named = None
+    if isinstance(named, int) and named not in candidates:
+        candidates.append(named)
     if not candidates:
         return None
     user_data_dir = str(_bd_browser.profile_dir())
