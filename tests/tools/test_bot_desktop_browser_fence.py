@@ -2680,3 +2680,112 @@ def test_resolve_cdp_override_does_not_http_probe_owner_dock_after_multiplex_tur
                     pass
         _restore_session_state(bt, saved)
 
+
+def test_browser_exec_uses_session_owner_lease_after_multiplex_turn(monkeypatch, tmp_path):
+    """Finding 115 scoped vault attach / discovery. ``browser_exec`` still
+    admitted the dock with no home, stamped launch ``lease.json``, spawned
+    leftover browser-use on the sibling jar, and registered the harness
+    under the launch home so Take over of the owner never killed it.
+    """
+    import tools.bot_desktop.browser as bdb
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.bot_desktop.lease import _path
+    from tools import browser_tool as bt
+    from tools import browser_use_cli as bu
+
+    launch, bot = _sibling_homes(tmp_path)
+    saved = _session_state()[1]
+    spawned: list = []
+
+    class _Done:
+        returncode = 0
+        stdout = "SECRET"
+        stderr = ""
+
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: 9333)
+    monkeypatch.setattr(bu, "_find_cli", lambda: ["browser-use"])
+    monkeypatch.setattr(bu, "_blocked_url_in_code", lambda code: None)
+    monkeypatch.setattr(bu, "_route_backend", lambda env, *a, **k: env.__setitem__(
+        "BU_CDP_WS", "ws://127.0.0.1:9333/devtools/browser/x") or None)
+    monkeypatch.setattr(bu, "_attach_vault_supervisor", lambda *a, **k: None)
+    monkeypatch.setattr(
+        bu, "_run_cli_killing_process_group",
+        lambda *a, **k: spawned.append("cli") or _Done(),
+    )
+    token_bot = set_hermes_home_override(str(bot))
+    try:
+        for name in saved:
+            getattr(bt, name).clear()
+        bt._session_owner_homes["review"] = str(bot)
+        lease.acquire("human-viewer")
+    finally:
+        reset_hermes_home_override(token_bot)
+
+    token_launch = set_hermes_home_override(str(launch))
+    try:
+        out = json.loads(bu.browser_exec("print(page_info())", task_id="review"))
+        assert spawned == []
+        assert out.get("code") == "human_has_control"
+        assert "SECRET" not in json.dumps(out)
+    finally:
+        reset_hermes_home_override(token_launch)
+        for home in (launch, bot):
+            for f in (_path(str(home)), _path(str(home)).with_suffix(".lock")):
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+        _restore_session_state(bt, saved)
+
+
+def test_browser_exec_does_not_fence_on_the_launch_profile_lease(monkeypatch, tmp_path):
+    """A human on the launch bot must not void a sibling browser_exec."""
+    import tools.bot_desktop.browser as bdb
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.bot_desktop.lease import _path
+    from tools import browser_tool as bt
+    from tools import browser_use_cli as bu
+
+    launch, bot = _sibling_homes(tmp_path)
+    saved = _session_state()[1]
+    spawned: list = []
+
+    class _Done:
+        returncode = 0
+        stdout = "ok"
+        stderr = ""
+
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: 9333)
+    monkeypatch.setattr(bu, "_find_cli", lambda: ["browser-use"])
+    monkeypatch.setattr(bu, "_blocked_url_in_code", lambda code: None)
+    monkeypatch.setattr(bu, "_route_backend", lambda env, *a, **k: env.__setitem__(
+        "BU_CDP_WS", "ws://127.0.0.1:9333/devtools/browser/x") or None)
+    monkeypatch.setattr(bu, "_attach_vault_supervisor", lambda *a, **k: None)
+    monkeypatch.setattr(
+        bu, "_run_cli_killing_process_group",
+        lambda *a, **k: spawned.append("cli") or _Done(),
+    )
+    token_launch = set_hermes_home_override(str(launch))
+    try:
+        lease.acquire("human-viewer")
+    finally:
+        reset_hermes_home_override(token_launch)
+
+    token_launch = set_hermes_home_override(str(launch))
+    try:
+        for name in saved:
+            getattr(bt, name).clear()
+        bt._session_owner_homes["review"] = str(bot)
+        out = json.loads(bu.browser_exec("print(page_info())", task_id="review"))
+        assert spawned == ["cli"]
+        assert out.get("success") is True
+    finally:
+        reset_hermes_home_override(token_launch)
+        for home in (launch, bot):
+            for f in (_path(str(home)), _path(str(home)).with_suffix(".lock")):
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+        _restore_session_state(bt, saved)
+

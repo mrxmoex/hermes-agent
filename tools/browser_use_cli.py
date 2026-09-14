@@ -554,14 +554,23 @@ def _route_backend(env: dict, session: str, task_id: Optional[str], local: bool)
     BEFORE provider resolution so a hit short-circuits the cloud path via the BU_CDP_* env contract. Named
     sessions compose with the backend: BU_NAME namespaces the harness daemon (IPC socket, log, pid) and on
     provider backends additionally keys its own cloud browser."""
-    rp_err = _resolve_real_profile_cdp(env, force_local=local)
-    if rp_err:
-        return rp_err
-    # local=True is only served by the real-profile route; consent off must not pretend.
-    if local and not _has_cdp_env(env) and not _real_profile_consented():
-        return ("local=true was requested but browser.use_real_profile is off. Enable it in config.yaml "
-                "(browser.use_real_profile: true) or the desktop Settings → Browser section, then retry.")
-    return _resolve_backend_cdp(env, task_id, session_name=session)
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.browser_tool_session import _session_owner_home
+
+    owner = _session_owner_home(task_id)
+    token = set_hermes_home_override(owner) if owner else None
+    try:
+        rp_err = _resolve_real_profile_cdp(env, force_local=local)
+        if rp_err:
+            return rp_err
+        # local=True is only served by the real-profile route; consent off must not pretend.
+        if local and not _has_cdp_env(env) and not _real_profile_consented():
+            return ("local=true was requested but browser.use_real_profile is off. Enable it in config.yaml "
+                    "(browser.use_real_profile: true) or the desktop Settings → Browser section, then retry.")
+        return _resolve_backend_cdp(env, task_id, session_name=session)
+    finally:
+        if token is not None:
+            reset_hermes_home_override(token)
 
 
 def _group_popen_kwargs() -> dict:
@@ -676,8 +685,13 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     if cdp:
         try:
             from tools.bot_desktop.lease import HumanHasControl
-            from tools.browser_tool_session import _admit_shared_browser
-            admitted = _admit_shared_browser(cdp_url=cdp)
+            from tools.browser_tool_session import _admit_shared_browser, _session_owner_home
+            # After a multiplex turn the process home is the launch profile.
+            # Ambient admit then stamps launch ``lease.json`` (agent, missing
+            # file) so leftover browser-use still ran on the sibling jar, the
+            # harness registered under the launch home, and epoch discard
+            # never saw the owner's Take over.
+            admitted = _admit_shared_browser(cdp_url=cdp, home=_session_owner_home(task_id))
         except HumanHasControl as e:
             return tool_error(str(e), code="human_has_control")
     _attach_vault_supervisor(env, task_id)
