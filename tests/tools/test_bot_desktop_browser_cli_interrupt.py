@@ -470,6 +470,43 @@ def test_agent_browser_invocation_is_token_match_not_substring():
     assert not _is_lighthouse_invocation(
         ["/bin/bash", "-c",
          "node /usr/share/yarn/bin/yarn.js npm exec --package=lighthouse -- --port 9333"])
+    # Corepack dist shims hid leftover ``--package=`` after shebang (108).
+    assert _is_lighthouse_invocation(
+        ["node", "/usr/lib/node_modules/corepack/dist/corepack.js",
+         "yarn", "npm", "exec", "--package=lighthouse", "--", "--port", "9333"])
+    assert _is_lighthouse_invocation(
+        ["node", "/usr/lib/node_modules/corepack/dist/corepack.js",
+         "pnpm", "exec", "--package=lighthouse", "--", "--port", "9333"])
+    assert _is_lighthouse_invocation(
+        ["node", "/usr/lib/node_modules/corepack/dist/corepack.js", "npx",
+         "--package=lighthouse", "--", "--port", "9333"])
+    assert _is_lighthouse_invocation(
+        ["node", "/usr/lib/node_modules/corepack/dist/yarn.js", "npm", "exec",
+         "--package=lighthouse", "--", "--port", "9333"])
+    assert _is_lighthouse_invocation(
+        ["node", "/usr/lib/node_modules/corepack/dist/yarnpkg.js", "npm", "exec",
+         "--package=lighthouse", "--", "--port", "9333"])
+    assert _is_lighthouse_invocation(
+        ["node", "/usr/lib/node_modules/corepack/dist/pnpm.js", "exec",
+         "--package=lighthouse", "--", "--port", "9333"])
+    assert _is_lighthouse_invocation(
+        ["node", "/usr/lib/node_modules/corepack/dist/npm.js", "exec",
+         "--package=lighthouse", "--", "--port", "9333"])
+    assert _is_lighthouse_invocation(
+        ["node", "/usr/lib/node_modules/corepack/dist/pnpx.js",
+         "--package=lighthouse", "--", "--port", "9333"])
+    assert _is_chrome_devtools_mcp_invocation(
+        ["node", "/usr/lib/node_modules/corepack/dist/corepack.js", "npx",
+         "--package=chrome-devtools-mcp", "--",
+         "--browserUrl", "http://127.0.0.1:9333"])
+    assert not _is_lighthouse_invocation(
+        ["node", "/tmp/corepack.js", "yarn", "npm", "exec",
+         "--package=lighthouse", "--", "--port", "9333"])
+    assert not _is_lighthouse_invocation(
+        ["node", "/usr/lib/node_modules/corepack/dist/corepack.js", "enable"])
+    assert not _is_lighthouse_invocation(
+        ["node", "/usr/lib/node_modules/corepack/dist/yarn.js", "npm",
+         "install", "lighthouse"])
     assert _is_lighthouse_invocation(
         ["node", "/home/x/node_modules/lighthouse/cli/index.js",
          "--port=9333", "https://example.com"])
@@ -1681,6 +1718,125 @@ def test_unregistered_shebang_node_pm_dock_cli_killed_on_takeover():
     assert pnpm_cjs.killed == 1
     assert mcp.killed == 1
     assert other_js.killed == 0
+    assert other_port.killed == 0
+    assert bash_parent.killed == 0
+
+
+def test_unregistered_corepack_shim_dock_cli_killed_on_takeover():
+    """Corepack ``yarn`` / ``corepack.js`` shebangs hid leftover ``--package=``.
+
+    Field ``yarn`` on Node 16+ is ``#!/usr/bin/env node`` →
+    ``…/corepack/dist/yarn.js``. Finding 107 required a ``yarn/``
+    package dir, so leftover unwrap never ran. ``node /tmp/corepack.js``
+    is not a package-manager entry. Bash ``-c`` parent is not the writer.
+    """
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    bdb.remember_dock_cdp_port(9333)
+    corepack_yarn = _FakeProc(
+        10200,
+        ["node", "/usr/lib/node_modules/corepack/dist/corepack.js",
+         "yarn", "npm", "exec", "--package=lighthouse", "--",
+         "--port", "9333", "https://example.com"],
+    )
+    corepack_pnpm = _FakeProc(
+        10201,
+        ["node", "/usr/lib/node_modules/corepack/dist/corepack.js",
+         "pnpm", "exec", "--package=lighthouse", "--",
+         "--port", "9333", "https://example.com"],
+    )
+    corepack_npx = _FakeProc(
+        10202,
+        ["node", "/usr/lib/node_modules/corepack/dist/corepack.js", "npx",
+         "--package=lighthouse", "--",
+         "--port", "9333", "https://example.com"],
+    )
+    yarn_shim = _FakeProc(
+        10203,
+        ["node", "/usr/lib/node_modules/corepack/dist/yarn.js", "npm", "exec",
+         "--package=lighthouse", "--",
+         "--port", "9333", "https://example.com"],
+    )
+    yarnpkg = _FakeProc(
+        10204,
+        ["node", "/usr/lib/node_modules/corepack/dist/yarnpkg.js", "npm", "exec",
+         "--package=lighthouse", "--",
+         "--port", "9333", "https://example.com"],
+    )
+    pnpm_shim = _FakeProc(
+        10205,
+        ["node", "/usr/lib/node_modules/corepack/dist/pnpm.js", "exec",
+         "--package=lighthouse", "--",
+         "--port", "9333", "https://example.com"],
+    )
+    npm_shim = _FakeProc(
+        10206,
+        ["node", "/usr/lib/node_modules/corepack/dist/npm.js", "exec",
+         "--package=lighthouse", "--",
+         "--port", "9333", "https://example.com"],
+    )
+    pnpx_shim = _FakeProc(
+        10207,
+        ["node", "/usr/lib/node_modules/corepack/dist/pnpx.js",
+         "--package=lighthouse", "--",
+         "--port", "9333", "https://example.com"],
+    )
+    mcp = _FakeProc(
+        10208,
+        ["node", "/usr/lib/node_modules/corepack/dist/corepack.js", "npx",
+         "--package=chrome-devtools-mcp", "--",
+         "--browserUrl", "http://127.0.0.1:9333"],
+    )
+    tmp_js = _FakeProc(
+        10209,
+        ["node", "/tmp/corepack.js", "yarn", "npm", "exec",
+         "--package=lighthouse", "--",
+         "--port", "9333", "https://example.com"],
+    )
+    enable = _FakeProc(
+        10210,
+        ["node", "/usr/lib/node_modules/corepack/dist/corepack.js", "enable"],
+    )
+    install = _FakeProc(
+        10211,
+        ["node", "/usr/lib/node_modules/corepack/dist/yarn.js", "npm",
+         "install", "lighthouse"],
+    )
+    other_port = _FakeProc(
+        10212,
+        ["node", "/usr/lib/node_modules/corepack/dist/yarn.js", "npm", "exec",
+         "--package=lighthouse", "--",
+         "--port", "9222", "https://example.com"],
+    )
+    bash_parent = _FakeProc(
+        10213,
+        ["/bin/bash", "-c",
+         "node /usr/lib/node_modules/corepack/dist/yarn.js npm exec --package=lighthouse -- --port 9333"],
+    )
+    lease.acquire("human")
+    n = interrupt_unregistered_dock_cli(
+        processes=[
+            corepack_yarn, corepack_pnpm, corepack_npx, yarn_shim, yarnpkg,
+            pnpm_shim, npm_shim, pnpx_shim, mcp, tmp_js, enable, install,
+            other_port, bash_parent,
+        ],
+        chromium_pid=9999,
+        owner_daemon_pid=9998,
+    )
+    assert n == 9
+    assert corepack_yarn.killed == 1
+    assert corepack_pnpm.killed == 1
+    assert corepack_npx.killed == 1
+    assert yarn_shim.killed == 1
+    assert yarnpkg.killed == 1
+    assert pnpm_shim.killed == 1
+    assert npm_shim.killed == 1
+    assert pnpx_shim.killed == 1
+    assert mcp.killed == 1
+    assert tmp_js.killed == 0
+    assert enable.killed == 0
+    assert install.killed == 0
     assert other_port.killed == 0
     assert bash_parent.killed == 0
 

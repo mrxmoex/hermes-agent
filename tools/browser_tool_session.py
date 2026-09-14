@@ -1031,6 +1031,17 @@ _PNPM_NODE_ENTRYPOINTS = frozenset({
     "pnpm", "pnpm.js", "pnpm.cjs", "pnpm.mjs",
     "cli.js", "cli.cjs", "cli.mjs",
 })
+_COREPACK_NODE_ENTRYPOINTS = frozenset({
+    "corepack", "corepack.js", "corepack.cjs", "corepack.mjs",
+})
+_COREPACK_YARN_SHIMS = frozenset({
+    "yarn.js", "yarn.cjs", "yarn.mjs", "yarnpkg.js", "yarnpkg.cjs",
+})
+_COREPACK_PNPM_SHIMS = frozenset({"pnpm.js", "pnpm.cjs", "pnpm.mjs"})
+_COREPACK_NPM_SHIMS = frozenset({"npm.js", "npm.cjs"})
+_COREPACK_NPX_SHIMS = frozenset({
+    "pnpx.js", "pnpx.cjs", "pnpx.mjs",
+})
 _PLAYWRIGHT_CDP_ENV = (
     "PW_TEST_CONNECT_WS_ENDPOINT",
     "PLAYWRIGHT_WS_ENDPOINT",
@@ -1553,6 +1564,10 @@ def _token_is_yarn_script(token: str) -> bool:
     path = Path(raw)
     name = path.name.lower()
     parts = [p.lower() for p in path.parts]
+    # Corepack's ``yarn`` bin is ``…/corepack/dist/yarn.js`` — no ``yarn/``
+    # package dir, so finding 107's yarn-pkg walk missed it (finding 108).
+    if _path_has_pkg(parts, "corepack") and name in _COREPACK_YARN_SHIMS:
+        return True
     if not _path_has_pkg(parts, "yarn"):
         return False
     if name in _YARN_NODE_ENTRYPOINTS:
@@ -1562,12 +1577,17 @@ def _token_is_yarn_script(token: str) -> bool:
 
 def _token_is_npx_script(token: str) -> bool:
     """True when this token is npx's Node entry (``npx-cli.js`` under npm)."""
-    if _token_basename_is(token, "npx"):
+    if _token_basename_is(token, "npx") or _token_basename_is(token, "pnpx"):
         return True
     raw = (token or "").strip().strip("\"'")
     if not raw:
         return False
-    return Path(raw).name.lower() in _NPX_NODE_ENTRYPOINTS
+    path = Path(raw)
+    name = path.name.lower()
+    if name in _NPX_NODE_ENTRYPOINTS:
+        return True
+    parts = [p.lower() for p in path.parts]
+    return _path_has_pkg(parts, "corepack") and name in _COREPACK_NPX_SHIMS
 
 
 def _token_is_npm_script(token: str) -> bool:
@@ -1581,7 +1601,10 @@ def _token_is_npm_script(token: str) -> bool:
     name = path.name.lower()
     if name not in _NPM_NODE_ENTRYPOINTS:
         return False
-    return _path_has_pkg([p.lower() for p in path.parts], "npm") or name.startswith("npm-")
+    parts = [p.lower() for p in path.parts]
+    if _path_has_pkg(parts, "corepack") and name in _COREPACK_NPM_SHIMS:
+        return True
+    return _path_has_pkg(parts, "npm") or name.startswith("npm-")
 
 
 def _token_is_pnpm_script(token: str) -> bool:
@@ -1594,9 +1617,26 @@ def _token_is_pnpm_script(token: str) -> bool:
     path = Path(raw)
     name = path.name.lower()
     parts = [p.lower() for p in path.parts]
+    if _path_has_pkg(parts, "corepack") and name in _COREPACK_PNPM_SHIMS:
+        return True
     if not _path_has_pkg(parts, "pnpm"):
         return False
     return name in _PNPM_NODE_ENTRYPOINTS
+
+
+def _token_is_corepack_script(token: str) -> bool:
+    """True when this token is Corepack's Node entry (``corepack.js``)."""
+    if _token_basename_is(token, "corepack"):
+        return True
+    raw = (token or "").strip().strip("\"'")
+    if not raw:
+        return False
+    path = Path(raw)
+    name = path.name.lower()
+    parts = [p.lower() for p in path.parts]
+    if not _path_has_pkg(parts, "corepack"):
+        return False
+    return name in _COREPACK_NODE_ENTRYPOINTS
 
 
 def _node_package_manager_argv(tokens: List[str]) -> Optional[List[str]]:
@@ -1605,8 +1645,10 @@ def _node_package_manager_argv(tokens: List[str]) -> Optional[List[str]]:
     Finding 79 matches shebang ``node …/lighthouse/cli.js``. After
     shebang the leftover *writer* for ``yarn npm exec --package=`` /
     ``npx --package=`` is still ``node``, so findings 105–106 never
-    ran (finding 107). ``node /tmp/other.js --package=lighthouse``
-    is not a package-manager entry.
+    ran (finding 107). Corepack's ``yarn`` / ``pnpm`` bins are
+    ``…/corepack/dist/yarn.js`` — no ``yarn/`` package dir — so 107
+    missed those shims (finding 108). ``node /tmp/other.js
+    --package=lighthouse`` is not a package-manager entry.
     """
     if not tokens or _launcher_basename(tokens[0]) not in _NODE_LAUNCHERS:
         return None
@@ -1621,11 +1663,19 @@ def _node_package_manager_argv(tokens: List[str]) -> Optional[List[str]]:
         if _token_is_yarn_script(raw):
             return ["yarn"] + [str(t) for t in tokens[i + 1:]]
         if _token_is_npx_script(raw):
-            return ["npx"] + [str(t) for t in tokens[i + 1:]]
+            name = Path(raw).name.lower()
+            launcher = (
+                "pnpx"
+                if name.startswith("pnpx") or _token_basename_is(raw, "pnpx")
+                else "npx"
+            )
+            return [launcher] + [str(t) for t in tokens[i + 1:]]
         if _token_is_npm_script(raw):
             return ["npm"] + [str(t) for t in tokens[i + 1:]]
         if _token_is_pnpm_script(raw):
             return ["pnpm"] + [str(t) for t in tokens[i + 1:]]
+        if _token_is_corepack_script(raw):
+            return ["corepack"] + [str(t) for t in tokens[i + 1:]]
         return None
     return None
 
