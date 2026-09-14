@@ -2401,12 +2401,18 @@ def _unregistered_cli_aims_at_dock(
     ``--autoConnect`` / no pin stays unknown.
 
     lighthouse leftover launch pin is ``--chrome-flags=--user-data-dir=<dock>``
-    (finding 126). Official attach is still ``--port``. chrome-launcher
-    appends chrome-flags *after* its temp ``--user-data-dir``, so
-    Chromium last-wins the dock jar. ``--port=0`` / missing ``--port``
-    launch that Chrome. A set ``--port`` that is not this dock stays
-    another Chrome (do not guess an empty listen). LAN ``--hostname``
-    does not launch local Chrome.
+    (finding 126). Official leftover also hides ``--port`` /
+    ``--chrome-flags`` in ``--cli-flags-path`` / ``--cliFlagsPath`` JSON
+    (finding 128) — yargs ``config: true``. Finding 126 only checked
+    argv, so Take over left that writer running. CLI flags still
+    override the file. Official attach is still ``--port``.
+    chrome-launcher appends chrome-flags *after* its temp
+    ``--user-data-dir``, so Chromium last-wins the dock jar.
+    ``--port=0`` / missing ``--port`` launch that Chrome. A set
+    ``--port`` that is not this dock stays another Chrome (do not
+    guess an empty listen). LAN ``--hostname`` does not launch local
+    Chrome. ``--config-path`` is Lighthouse audit config, not CLI
+    flags.
 
     Playwright MCP leftover also pins the jar off argv (finding 127):
     ``PLAYWRIGHT_MCP_USER_DATA_DIR`` and ``--config`` /
@@ -2556,7 +2562,14 @@ def _unregistered_cli_aims_at_dock(
             tokens, ("--chrome-flags", "--chromeFlags"),
         )
         pinned = _user_data_dir_from_chrome_flags(chrome_flags)
-        return _leftover_profile_pin_aims_at_dock(pinned, profile, cwd)
+        if _leftover_profile_pin_aims_at_dock(pinned, profile, cwd):
+            return True
+        # Official leftover also hides ``--port`` / ``--chrome-flags``
+        # in ``--cli-flags-path`` JSON (finding 128). Finding 126 only
+        # checked argv. CLI flags still override the file (yargs).
+        return _lighthouse_cli_flags_path_aims_at_dock(
+            tokens, profile, dock_port, cwd,
+        )
     cdp = _cdp_arg_from_argv(tokens)
     if not cdp and _is_agent_browser_invocation(tokens):
         cdp = _agent_browser_connect_target(tokens)
@@ -2623,6 +2636,70 @@ def _playwright_mcp_config_pins(
     else:
         pinned = pinned.strip()
     return cdp, pinned
+
+
+_LIGHTHOUSE_CLI_FLAGS_MAX_BYTES = 256 * 1024
+
+
+def _lighthouse_cli_flags_path_aims_at_dock(
+    tokens: List[str],
+    profile: Optional[Path],
+    dock_port: Optional[int],
+    cwd: Optional[Path],
+) -> bool:
+    """True when leftover ``--cli-flags-path`` JSON aims at this dock.
+
+    Official leftover: ``lighthouse URL --cli-flags-path=flags.json``
+    with ``port`` / ``chromeFlags`` / ``chrome-flags``. Finding 126
+    only checked argv ``--port`` / ``--chrome-flags``, so Take over
+    left that writer running. yargs CLI flags override the file:
+    a set argv ``--port`` (including ``0``) / ``--hostname`` /
+    ``--chrome-flags`` wins that key. ``--config-path`` is audit
+    config, not this file. Unreadable / oversized / non-JSON stays
+    unknown. Relative paths resolve against the leftover writer cwd.
+    """
+    path_text = _flag_value(tokens, ("--cli-flags-path", "--cliFlagsPath"))
+    text = (path_text or "").strip()
+    if not text:
+        return False
+    path = Path(text)
+    if not path.is_absolute():
+        base = cwd if cwd is not None else Path.cwd()
+        path = base / path
+    try:
+        if path.stat().st_size > _LIGHTHOUSE_CLI_FLAGS_MAX_BYTES:
+            return False
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    if _flag_value(tokens, ("--hostname",)) is None:
+        host = data.get("hostname")
+        if isinstance(host, str) and host.strip() and not _is_loopback_cdp_host(host):
+            return False
+    if _flag_value(tokens, ("--port",)) is None:
+        raw_port = data.get("port")
+        port: Optional[int] = None
+        if isinstance(raw_port, bool):
+            port = None
+        elif isinstance(raw_port, int):
+            port = raw_port
+        elif isinstance(raw_port, str) and raw_port.strip().isdigit():
+            port = int(raw_port.strip())
+        if port is not None and 1 <= port <= 65535:
+            return dock_port is not None and port == dock_port
+    if _flag_value_allow_leading_dash(
+        tokens, ("--chrome-flags", "--chromeFlags"),
+    ) is not None:
+        return False
+    raw_flags = data.get("chromeFlags")
+    if not isinstance(raw_flags, str) or not raw_flags.strip():
+        raw_flags = data.get("chrome-flags")
+    if not isinstance(raw_flags, str):
+        return False
+    pinned = _user_data_dir_from_chrome_flags(raw_flags)
+    return _leftover_profile_pin_aims_at_dock(pinned, profile, cwd)
 
 
 def _user_data_dir_from_chrome_flags(chrome_flags: Optional[str]) -> Optional[str]:

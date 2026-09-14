@@ -619,6 +619,100 @@ def test_agent_browser_invocation_is_token_match_not_substring():
         ["npx", "lighthouse", "https://example.com"],
         {}, _jar, None,
     )
+    # Official leftover also hides --port / --chrome-flags in
+    # --cli-flags-path JSON (finding 128). Finding 126 only checked
+    # argv. CLI flags still override the file. --config-path is
+    # audit config, not this file.
+    _lh_flags = _jar.parent / "lh-flags.json"
+    _lh_flags.parent.mkdir(parents=True, exist_ok=True)
+    _lh_flags.write_text(json.dumps({
+        "chromeFlags": f"--user-data-dir={_jar}",
+        "quiet": True,
+    }))
+    _lh_kebab = _jar.parent / "lh-kebab.json"
+    _lh_kebab.write_text(json.dumps({
+        "chrome-flags": f"--headless --user-data-dir={_jar}",
+    }))
+    _lh_port = _jar.parent / "lh-port.json"
+    _lh_port.write_text(json.dumps({"port": 9333}))
+    _lh_rel = _jar.parent / "lh-rel.json"
+    _lh_rel.write_text(json.dumps({
+        "chromeFlags": "--user-data-dir=browser-profile",
+    }))
+    _lh_other = _jar.parent / "lh-other.json"
+    _lh_other.write_text(json.dumps({
+        "chromeFlags": "--user-data-dir=/tmp/other-chrome",
+    }))
+    _lh_lan = _jar.parent / "lh-lan.json"
+    _lh_lan.write_text(json.dumps({
+        "hostname": "10.0.0.5",
+        "chromeFlags": f"--user-data-dir={_jar}",
+    }))
+    _lh_audit = _jar.parent / "lh-audit.json"
+    _lh_audit.write_text(json.dumps({
+        "chromeFlags": f"--user-data-dir={_jar}",
+    }))
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "lighthouse", "https://example.com",
+         "--cli-flags-path", str(_lh_flags)],
+        {}, _jar, None,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["lighthouse", "https://example.com",
+         f"--cli-flags-path={_lh_flags}"],
+        {}, _jar, None,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "lighthouse", "https://example.com",
+         "--cliFlagsPath", str(_lh_flags)],
+        {}, _jar, None,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "lighthouse", "https://example.com",
+         "--cli-flags-path", str(_lh_kebab)],
+        {}, _jar, None,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "lighthouse", "https://example.com",
+         "--cli-flags-path", "lh-rel.json"],
+        {}, _jar, None, cwd=_jar.parent,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "lighthouse", "https://example.com",
+         "--cli-flags-path", str(_lh_port)],
+        {}, _jar, 9333,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "lighthouse", "--port=0", "https://example.com",
+         "--cli-flags-path", str(_lh_flags)],
+        {}, _jar, None,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["npx", "lighthouse", "https://example.com",
+         "--cli-flags-path", str(_lh_other)],
+        {}, _jar, None,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["npx", "lighthouse", "https://example.com",
+         "--cli-flags-path", str(_lh_lan)],
+        {}, _jar, None,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["npx", "lighthouse", "--port", "9222",
+         "--cli-flags-path", str(_lh_flags), "https://example.com"],
+        {}, _jar, 9333,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["npx", "lighthouse", "--chrome-flags",
+         "--user-data-dir=/tmp/other-chrome",
+         "--cli-flags-path", str(_lh_flags), "https://example.com"],
+        {}, _jar, None,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["npx", "lighthouse", "https://example.com",
+         "--config-path", str(_lh_audit)],
+        {}, _jar, None,
+    )
     assert _is_playwright_invocation(
         ["npm", "exec", "--", "playwright", "codegen"])
     assert _is_playwright_mcp_invocation(
@@ -3251,6 +3345,150 @@ def test_unregistered_lighthouse_chrome_flags_user_data_dir_killed_on_takeover()
     assert other_port.killed == 0
     assert lan.killed == 0
     assert debug_port.killed == 0
+    assert no_pin.killed == 0
+    assert bash_parent.killed == 0
+
+
+def test_unregistered_lighthouse_cli_flags_path_killed_on_takeover():
+    """terminal() lighthouse --cli-flags-path leftover hid launch/attach.
+
+    Official leftover loads ``port`` / ``chromeFlags`` from JSON
+    (yargs ``config: true``). Finding 126 only checked argv, so Take
+    over left that writer typing into the jar. CLI flags still
+    override the file. Another jar, LAN hostname, argv ``--port`` to
+    another Chrome, ``--config-path`` audit config, and the bash
+    ``-c`` parent stay up.
+    """
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    profile = bdb.profile_dir()
+    flags = profile.parent / "lh-flags.json"
+    flags.parent.mkdir(parents=True, exist_ok=True)
+    flags.write_text(json.dumps({
+        "chromeFlags": f"--user-data-dir={profile}",
+        "quiet": True,
+    }))
+    kebab = profile.parent / "lh-kebab.json"
+    kebab.write_text(json.dumps({
+        "chrome-flags": f"--headless --user-data-dir={profile}",
+    }))
+    port_flags = profile.parent / "lh-port.json"
+    port_flags.write_text(json.dumps({"port": 9333}))
+    other = profile.parent / "lh-other.json"
+    other.write_text(json.dumps({
+        "chromeFlags": "--user-data-dir=/tmp/other-chrome",
+    }))
+    lan = profile.parent / "lh-lan.json"
+    lan.write_text(json.dumps({
+        "hostname": "10.0.0.5",
+        "chromeFlags": f"--user-data-dir={profile}",
+    }))
+    audit = profile.parent / "lh-audit.json"
+    audit.write_text(json.dumps({
+        "chromeFlags": f"--user-data-dir={profile}",
+    }))
+    bdb.remember_dock_cdp_port(9333)
+    leftover = _FakeProc(
+        9600,
+        ["npx", "lighthouse", "https://example.com",
+         "--cli-flags-path", str(flags)],
+    )
+    equals = _FakeProc(
+        9601,
+        ["lighthouse", "https://example.com",
+         f"--cli-flags-path={flags}"],
+    )
+    camel = _FakeProc(
+        9602,
+        ["npx", "lighthouse", "https://example.com",
+         "--cliFlagsPath", str(flags)],
+    )
+    via_kebab = _FakeProc(
+        9603,
+        ["npx", "lighthouse", "https://example.com",
+         "--cli-flags-path", str(kebab)],
+    )
+    via_port = _FakeProc(
+        9604,
+        ["npx", "lighthouse", "https://example.com",
+         "--cli-flags-path", str(port_flags)],
+    )
+    relative = _FakeProc(
+        9605,
+        ["npx", "lighthouse", "https://example.com",
+         "--cli-flags-path", "lh-flags.json"],
+        cwd=profile.parent,
+    )
+    shebang = _FakeProc(
+        9606,
+        ["node", "/home/x/node_modules/lighthouse/cli/index.js",
+         "https://example.com", "--cli-flags-path", str(flags)],
+    )
+    ephemeral = _FakeProc(
+        9607,
+        ["npx", "lighthouse", "--port=0", "https://example.com",
+         "--cli-flags-path", str(flags)],
+    )
+    other_jar = _FakeProc(
+        9608,
+        ["npx", "lighthouse", "https://example.com",
+         "--cli-flags-path", str(other)],
+    )
+    lan_host = _FakeProc(
+        9609,
+        ["npx", "lighthouse", "https://example.com",
+         "--cli-flags-path", str(lan)],
+    )
+    other_port = _FakeProc(
+        9610,
+        ["npx", "lighthouse", "--port", "9222",
+         "--cli-flags-path", str(flags), "https://example.com"],
+    )
+    argv_overrides = _FakeProc(
+        9611,
+        ["npx", "lighthouse", "--chrome-flags",
+         "--user-data-dir=/tmp/other-chrome",
+         "--cli-flags-path", str(flags), "https://example.com"],
+    )
+    via_audit = _FakeProc(
+        9612,
+        ["npx", "lighthouse", "https://example.com",
+         "--config-path", str(audit)],
+    )
+    no_pin = _FakeProc(
+        9613,
+        ["npx", "lighthouse", "https://example.com"],
+    )
+    bash_parent = _FakeProc(
+        9614,
+        ["/bin/bash", "-c",
+         f"npx lighthouse --cli-flags-path={flags} https://example.com"],
+    )
+    lease.acquire("human")
+    n = interrupt_unregistered_dock_cli(
+        processes=[
+            leftover, equals, camel, via_kebab, via_port, relative,
+            shebang, ephemeral, other_jar, lan_host, other_port,
+            argv_overrides, via_audit, no_pin, bash_parent,
+        ],
+        chromium_pid=9999,
+        owner_daemon_pid=9998,
+    )
+    assert n == 8
+    assert leftover.killed == 1
+    assert equals.killed == 1
+    assert camel.killed == 1
+    assert via_kebab.killed == 1
+    assert via_port.killed == 1
+    assert relative.killed == 1
+    assert shebang.killed == 1
+    assert ephemeral.killed == 1
+    assert other_jar.killed == 0
+    assert lan_host.killed == 0
+    assert other_port.killed == 0
+    assert argv_overrides.killed == 0
+    assert via_audit.killed == 0
     assert no_pin.killed == 0
     assert bash_parent.killed == 0
 
