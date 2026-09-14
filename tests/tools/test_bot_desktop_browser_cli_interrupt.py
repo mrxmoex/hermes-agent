@@ -283,6 +283,28 @@ def test_agent_browser_invocation_is_token_match_not_substring():
         ["node", "/tmp/agent-browser/malware.js"])
     assert not _is_agent_browser_invocation(
         ["/bin/bash", "-c", "agent-browser --cdp http://127.0.0.1:9333 fill"])
+    # Finding 141: official leftover (agent-browser 0.37.x) re-execs
+    # the published native binary as the daemon. Finding 112 used
+    # exact argv0 agent-browser; finding 140 matched Node daemon.js.
+    # Neither matched agent-browser-linux-x64. npm bin is
+    # bin/agent-browser.js. agent-browser-mcp / a lone
+    # /tmp/agent-browser.js are not.
+    assert _is_agent_browser_invocation(
+        ["/usr/lib/agent-browser/agent-browser-linux-x64"])
+    assert _is_agent_browser_invocation(["agent-browser-linux-arm64"])
+    assert _is_agent_browser_invocation(["agent-browser-linux-musl-x64"])
+    assert _is_agent_browser_invocation(["agent-browser-linux-musl-arm64"])
+    assert _is_agent_browser_invocation(["agent-browser-darwin-x64"])
+    assert _is_agent_browser_invocation(["agent-browser-darwin-arm64"])
+    assert _is_agent_browser_invocation(["agent-browser-win32-x64.exe"])
+    assert _is_agent_browser_invocation(["agent-browser-win32-arm64.exe"])
+    assert _is_agent_browser_invocation(
+        ["node", "/home/x/node_modules/agent-browser/bin/agent-browser.js",
+         "--cdp", "http://127.0.0.1:9333"])
+    assert not _is_agent_browser_invocation(["agent-browser-linux"])
+    assert not _is_agent_browser_invocation(
+        ["/usr/bin/cat", "agent-browser-linux-x64"])
+    assert not _is_agent_browser_invocation(["node", "/tmp/agent-browser.js"])
     assert _is_browser_use_invocation(["browser-use", "exec"])
     assert _is_browser_use_invocation(["uvx", "browser-use"])
     assert _is_browser_use_invocation(["uvx", "--from", "browser-use==1", "browser-use"])
@@ -343,6 +365,24 @@ def test_agent_browser_invocation_is_token_match_not_substring():
     )
     assert not _unregistered_cli_aims_at_dock(
         ["node", "/home/x/node_modules/other/daemon.js"],
+        {"AGENT_BROWSER_CDP": "http://127.0.0.1:9333"}, None, 9333,
+    )
+    # Finding 141: native leftover daemon. Env pin aims; no pin /
+    # agent-browser-mcp stay unknown.
+    assert _unregistered_cli_aims_at_dock(
+        ["/usr/lib/agent-browser/agent-browser-linux-x64"],
+        {"AGENT_BROWSER_CDP": "http://127.0.0.1:9333"}, None, 9333,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["agent-browser-darwin-arm64"],
+        {"AGENT_BROWSER_CDP": "9333"}, None, 9333,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["/usr/lib/agent-browser/agent-browser-linux-x64"],
+        {}, None, 9333,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["agent-browser-mcp"],
         {"AGENT_BROWSER_CDP": "http://127.0.0.1:9333"}, None, 9333,
     )
     # Official leftover jar pin is ``--profile`` / ``--user-data-dir``
@@ -5536,6 +5576,112 @@ def test_unregistered_agent_browser_daemon_killed_on_takeover():
     assert other_pkg.killed == 0
     assert unpinned_fill.killed == 0
     assert cat_script.killed == 0
+    assert bash_parent.killed == 0
+
+
+def test_unregistered_agent_browser_native_daemon_killed_on_takeover():
+    """terminal() leftover agent-browser native connect daemon hid attach.
+
+    Official leftover (vercel-labs/agent-browser 0.37.x) ``connect
+    <dock>`` re-execs ``env::current_exe()`` as
+    ``AGENT_BROWSER_DAEMON=1 AGENT_BROWSER_CDP=<dock>
+    /path/to/agent-browser-<triple>`` with no extra argv. Finding 112
+    used exact argv0 ``agent-browser``; finding 140 matched Node
+    ``daemon.js``. Neither matched ``agent-browser-linux-x64``. The
+    npm bin is ``bin/agent-browser.js``. ``agent-browser-mcp`` /
+    incomplete ``agent-browser-linux`` / later ``fill`` without a pin
+    / another Chrome / ``cat`` / the bash ``-c`` parent stay up.
+    """
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    native = "/usr/lib/agent-browser/agent-browser-linux-x64"
+    shebang = "/home/x/node_modules/agent-browser/bin/agent-browser.js"
+    bdb.remember_dock_cdp_port(9333)
+    leftover = _FakeProc(
+        10800,
+        [native],
+        {"AGENT_BROWSER_CDP": "http://127.0.0.1:9333",
+         "AGENT_BROWSER_DAEMON": "1"},
+    )
+    via_darwin = _FakeProc(
+        10801,
+        ["/opt/agent-browser/agent-browser-darwin-arm64"],
+        {"AGENT_BROWSER_CDP": "9333", "AGENT_BROWSER_DAEMON": "1"},
+    )
+    via_win = _FakeProc(
+        10802,
+        ["agent-browser-win32-x64.exe"],
+        {"AGENT_BROWSER_CDP": "ws://127.0.0.1:9333/devtools/browser/x",
+         "AGENT_BROWSER_DAEMON": "1"},
+    )
+    via_musl = _FakeProc(
+        10803,
+        ["/usr/lib/agent-browser/agent-browser-linux-musl-x64"],
+        {"AGENT_BROWSER_CDP": "http://127.0.0.1:9333",
+         "AGENT_BROWSER_DAEMON": "1"},
+    )
+    via_shebang = _FakeProc(
+        10804,
+        ["node", shebang, "--cdp", "http://127.0.0.1:9333"],
+    )
+    no_pin = _FakeProc(
+        10805,
+        [native],
+        {"AGENT_BROWSER_DAEMON": "1"},
+    )
+    other_port = _FakeProc(
+        10806,
+        [native],
+        {"AGENT_BROWSER_CDP": "9222", "AGENT_BROWSER_DAEMON": "1"},
+    )
+    mcp = _FakeProc(
+        10807,
+        ["agent-browser-mcp"],
+        {"AGENT_BROWSER_CDP": "http://127.0.0.1:9333"},
+    )
+    incomplete = _FakeProc(
+        10808,
+        ["/usr/bin/agent-browser-linux"],
+        {"AGENT_BROWSER_CDP": "http://127.0.0.1:9333",
+         "AGENT_BROWSER_DAEMON": "1"},
+    )
+    unpinned_fill = _FakeProc(
+        10809,
+        ["agent-browser", "fill", "@e1", "secret"],
+    )
+    cat_bin = _FakeProc(
+        10810,
+        ["/usr/bin/cat", native],
+    )
+    bash_parent = _FakeProc(
+        10811,
+        ["/bin/bash", "-c",
+         "AGENT_BROWSER_CDP=http://127.0.0.1:9333 "
+         "/usr/lib/agent-browser/agent-browser-linux-x64"],
+    )
+    lease.acquire("human")
+    n = interrupt_unregistered_dock_cli(
+        processes=[
+            leftover, via_darwin, via_win, via_musl, via_shebang,
+            no_pin, other_port, mcp, incomplete, unpinned_fill,
+            cat_bin, bash_parent,
+        ],
+        chromium_pid=9999,
+        owner_daemon_pid=9998,
+    )
+    assert n == 5
+    assert leftover.killed == 1
+    assert via_darwin.killed == 1
+    assert via_win.killed == 1
+    assert via_musl.killed == 1
+    assert via_shebang.killed == 1
+    assert no_pin.killed == 0
+    assert other_port.killed == 0
+    assert mcp.killed == 0
+    assert incomplete.killed == 0
+    assert unpinned_fill.killed == 0
+    assert cat_bin.killed == 0
     assert bash_parent.killed == 0
 
 

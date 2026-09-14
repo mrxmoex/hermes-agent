@@ -1124,8 +1124,16 @@ _NODE_LAUNCHERS = frozenset({"node", "nodejs", "iojs"})
 _ENV_LAUNCHERS = frozenset({"env"})
 _COREPACK_LAUNCHERS = frozenset({"corepack"})
 _AGENT_BROWSER_NODE_ENTRYPOINTS = frozenset({
-    "agent-browser", "cli.js", "cli.mjs", "cli.cjs", "index.js",
-    "daemon.js",
+    "agent-browser", "agent-browser.js", "cli.js", "cli.mjs", "cli.cjs",
+    "index.js", "daemon.js",
+})
+# Official leftover native daemon: ``ensure_daemon`` re-execs
+# ``env::current_exe()`` — published names from the npm ``bin/`` set.
+_AGENT_BROWSER_NATIVE_TRIPLES = frozenset({
+    "linux-x64", "linux-arm64",
+    "linux-musl-x64", "linux-musl-arm64",
+    "darwin-x64", "darwin-arm64",
+    "win32-x64", "win32-arm64",
 })
 _PLAYWRIGHT_NODE_ENTRYPOINTS = frozenset({
     "playwright", "cli.js", "cli.mjs", "cli.cjs",
@@ -1187,8 +1195,33 @@ def _token_basename_is(token: str, name: str) -> bool:
     return lower == name.lower()
 
 
+def _token_is_agent_browser_native_binary(token: str) -> bool:
+    """True when this token is an official leftover native ``agent-browser-*``.
+
+    Finding 112 matched basename ``agent-browser``. Official leftover
+    ``connect`` re-execs ``env::current_exe()`` as the daemon — the
+    published binaries ``agent-browser-linux-x64`` /
+    ``agent-browser-darwin-arm64`` / ``agent-browser-win32-x64.exe`` /
+    ``agent-browser-linux-musl-*``. ``agent-browser-mcp`` /
+    ``cat agent-browser-linux-x64`` are not.
+    """
+    raw = (token or "").strip().strip("\"'")
+    if not raw:
+        return False
+    name = Path(raw).name.lower()
+    if name.endswith((".exe", ".cmd", ".bat")):
+        name = Path(name).stem.lower()
+    prefix = "agent-browser-"
+    if not name.startswith(prefix):
+        return False
+    return name[len(prefix):] in _AGENT_BROWSER_NATIVE_TRIPLES
+
+
 def _token_basename_is_agent_browser(token: str) -> bool:
-    return _token_basename_is(token, "agent-browser")
+    return (
+        _token_basename_is(token, "agent-browser")
+        or _token_is_agent_browser_native_binary(token)
+    )
 
 
 def _is_python_launcher(name0: str) -> bool:
@@ -1221,8 +1254,10 @@ def _token_is_agent_browser_script(token: str) -> bool:
     Linux shebang rewrites argv0 to ``node`` and the script path. A package
     path ``…/agent-browser/dist/cli.js`` is an invocation; ``cli.js`` outside
     that package and ``--user-data-dir=…/agent-browser`` are not.
-    ``…/agent-browser/dist/daemon.js`` is the leftover connect daemon
-    (finding 140).
+    ``…/agent-browser/dist/daemon.js`` is the leftover Node connect
+    daemon (finding 140). Official leftover today re-execs the
+    published native binary ``agent-browser-<os>-<arch>`` (finding
+    141); the npm bin is ``bin/agent-browser.js``.
     """
     if _token_basename_is_agent_browser(token):
         return True
@@ -1918,9 +1953,16 @@ def _is_agent_browser_invocation(tokens: List[str]) -> bool:
     ``terminal()`` is ``bash -c`` (new session). After Linux shebang the
     leftover writer is ``node /path/to/agent-browser``, not argv0
     ``agent-browser``. Official leftover ``connect`` also leaves
-    ``node …/agent-browser/dist/daemon.js`` (finding 140). Do not treat
-    the bash parent as the writer — PID-only kill of bash orphans the
-    Node child still sending CDP.
+    ``node …/agent-browser/dist/daemon.js`` (finding 140). Finding
+    141: current official leftover (vercel-labs/agent-browser 0.37.x)
+    re-execs the published native binary
+    ``agent-browser-<os>-<arch>`` as the daemon (no extra argv;
+    ``AGENT_BROWSER_CDP`` frozen). Finding 112 used exact argv0
+    ``agent-browser``; finding 140 matched Node ``daemon.js``.
+    Neither matched ``agent-browser-linux-x64``. The npm bin is
+    ``bin/agent-browser.js``. ``agent-browser-mcp`` is not a
+    published triple. Do not treat the bash parent as the writer —
+    PID-only kill of bash orphans the child still sending CDP.
     """
     if not tokens:
         return False
@@ -2750,7 +2792,13 @@ def _unregistered_cli_aims_at_dock(
     112 matched argv0 ``agent-browser`` / ``cli.js``. Official leftover
     also leaves ``node …/agent-browser/dist/daemon.js`` detached
     (finding 140) — Path name ``daemon.js`` was not an agent-browser
-    entry, so Take over left the long-lived holder. Positional
+    entry, so Take over left the long-lived holder. Finding 141:
+    current official leftover re-execs
+    ``AGENT_BROWSER_DAEMON=1 AGENT_BROWSER_CDP=<dock>
+    /path/to/agent-browser-<triple>`` with no extra argv. Finding 112
+    used exact argv0 ``agent-browser``; finding 140 matched Node
+    ``daemon.js``. Neither matched ``agent-browser-linux-x64``.
+    ``agent-browser-mcp`` is not a published triple. Positional
     ``connect <port|url>`` is the in-flight attach. Official leftover
     globals before ``connect`` (finding 134) — ``--state`` /
     ``--provider`` / ``--headed false`` — hid that attach; finding 133
