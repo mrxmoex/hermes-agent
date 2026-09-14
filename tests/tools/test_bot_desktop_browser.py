@@ -898,10 +898,11 @@ def test_missing_lock_and_file_keeps_listen_family(tmp_path, monkeypatch):
 def test_several_this_jar_listen_holders_still_name_the_port(tmp_path, monkeypatch):
     """Finding 163: leftover identity must survive several this-jar holders.
 
-    Unique-holder persist / skip-kill stay unknown. Leftover already
-    named the listen — a forked helper that inherited the fd and still
-    names ``--user-data-dir`` must not make that port another Chrome.
-    Persist still does not guess. 9222 stays unknown.
+    Unique-holder skip-kill stays unknown. Leftover already named the
+    listen — a forked helper that inherited the fd and still names
+    ``--user-data-dir`` must not make that port another Chrome.
+    Without the port file persist still does not guess. The file-named
+    port is that listen (finding 164). 9222 stays unknown.
     """
     monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path)
     monkeypatch.setattr(browser, "profile_dir", lambda: tmp_path)
@@ -934,9 +935,57 @@ def test_several_this_jar_listen_holders_still_name_the_port(tmp_path, monkeypat
     (tmp_path / "DevToolsActivePort").write_text(
         "40141\n/devtools/browser/abc\n", encoding="utf-8",
     )
-    assert browser.running_instance_cdp_port(str(tmp_path)) is None
+    # Finding 164: the file named the port. Several holders are not a
+    # guess among ports. Skip-kill still needs a unique pid.
+    assert browser.running_instance_cdp_port(str(tmp_path)) == 40141
     assert browser._this_jar_chromium_pid(str(tmp_path)) is None
     assert browser._this_jar_listens_on_port(40141) is True
+
+
+def test_file_named_port_survives_lock_pid_that_dropped_the_listen(tmp_path, monkeypatch):
+    """Finding 164: lock pid that no longer listens must not hide persist.
+
+    SingletonLock can still name this jar after a helper inherited the
+    DevTools fd. Recover from that pid is empty / unknown. The file
+    already named the port — helpers that still name this jar and
+    inode-hold it are that port. Skip-kill still uses the lock pid.
+    9222 stays unknown. No file still does not guess.
+    """
+    monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path)
+    monkeypatch.setattr(browser, "profile_dir", lambda: tmp_path)
+    monkeypatch.setattr(browser, "_lock_pid", lambda d: 4240)
+    monkeypatch.setattr(
+        browser,
+        "_chromium_cmdline_tokens",
+        lambda pid: ["chrome", f"--user-data-dir={tmp_path}"],
+    )
+    monkeypatch.setattr(browser, "_loopback_listen_ports_for_pid", lambda pid: set())
+    monkeypatch.setattr(browser, "_recover_cdp_port_from_singleton", lambda *a, **k: None)
+    monkeypatch.setattr(
+        browser,
+        "_loopback_listen_inodes_for_port",
+        lambda port: {7: {"::1"}} if port == 40141 else {},
+    )
+    monkeypatch.setattr(
+        browser,
+        "_pids_holding_socket_inodes",
+        lambda want: {4242: {7}, 4243: {7}} if 7 in want else {},
+    )
+    monkeypatch.setattr(
+        browser,
+        "_cdp_port_reachable",
+        lambda port, hosts: port == 40141 and "::1" in hosts,
+    )
+    assert browser.running_instance_cdp_port(str(tmp_path)) is None
+    (tmp_path / "DevToolsActivePort").write_text(
+        "40141\n/devtools/browser/abc\n", encoding="utf-8",
+    )
+    assert browser.running_instance_cdp_port(str(tmp_path)) == 40141
+    assert browser._this_jar_chromium_pid(str(tmp_path)) == 4240
+    assert browser._this_jar_listens_on_port(40141) is True
+    assert browser._this_jar_listens_on_port(9222) is False
+    (tmp_path / "DevToolsActivePort").unlink()
+    assert browser.running_instance_cdp_port(str(tmp_path)) is None
 
 
 def test_devtools_file_does_not_stamp_recycled_lock_pid(tmp_path, monkeypatch):

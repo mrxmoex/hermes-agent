@@ -440,13 +440,46 @@ def _scan_this_jar_listen_holder(
 
     Finding 161: Take over / overlay copies can unlink SingletonLock
     while Chromium still holds DevTools. Leftover already named *want*
-    — that is not a guess among ports. Persist / skip-kill still need
-    one pid. Several this-jar holders stay unknown here; leftover
-    identity unions their hosts (finding 163). A sibling on the same
-    number is not this jar. No HTTP.
+    — that is not a guess among ports. Skip-kill / ``_this_jar_chromium_pid``
+    still need one pid. Several this-jar holders stay unknown here;
+    leftover identity unions their hosts (finding 163). Persist of a
+    file-named port does not need a unique pid (finding 164). A sibling
+    on the same number is not this jar. No HTTP.
     """
     holders = _this_jar_listen_holders(want, user_data_dir)
     return holders[0] if len(holders) == 1 else None
+
+
+def _file_named_this_jar_listen_port(
+    candidate: int,
+    user_data_dir: str,
+    *,
+    exclude_session: Optional[str] = None,
+) -> Optional[int]:
+    """``DevToolsActivePort`` *candidate* when this jar still inode-listens.
+
+    Finding 161 required a unique holder so persist / skip-kill did not
+    pick a random pid. Finding 163 unions leftover identity hosts when
+    several this-jar pids inherit the listen. Persist returns a *port*,
+    not a pid — the file already named *candidate*. Several holders on
+    that number are not a guess among ports (finding 164). A lock pid
+    that no longer holds the listen must not hide those helpers.
+    ``exclude_session`` stays None when any holder is that session's
+    own browser. A sibling cmdline is not this jar. No HTTP.
+    """
+    if not isinstance(candidate, int) or not (1 <= candidate <= 65535):
+        return None
+    holders = _this_jar_listen_holders(candidate, user_data_dir)
+    hosts = _union_listen_hosts(holders)
+    if not holders or not hosts:
+        return None
+    if exclude_session and any(
+        _launched_by_session(pid) == exclude_session for pid, _ in holders
+    ):
+        return None
+    if not _cdp_port_reachable(candidate, hosts):
+        return None
+    return candidate
 
 
 def _connect_hosts_for_listen_ip(ip: str) -> Tuple[str, ...]:
@@ -662,12 +695,15 @@ def running_instance_cdp_port(user_data_dir: str, *, exclude_session: Optional[s
     the pid must be alive AND still name this ``user-data-dir`` AND this
     pid must still listen on that port AND the listen must accept a
     connection. When the lock is gone the file port is still this jar
-    if a unique this-jar pid inode-listens there (finding 161). A sibling Chrome that reused the stale file port, or a
+    if this-jar pids inode-listen there (finding 161 unique pid;
+    finding 164 several holders — persist is a port, not a pid). A sibling Chrome that reused the stale file port, or a
     recycled lock pid that does not name this jar, is not the dock. When
     the port file is gone or stale but the lock pid is still this
     profile's Chromium, recover the port from that pid (explicit
     ``--remote-debugging-port=N`` this pid still listens on, or a unique
-    loopback listen). An instance
+    loopback listen). When the lock pid no longer holds the file listen
+    and recover is unknown, helpers that still name this jar and
+    inode-hold the file port are that port (finding 164). An instance
     agent-browser launched for ``exclude_session`` itself is reported as ``None``:
     its daemon already owns that browser, and handing it ``--cdp`` would make it
     close the browser as a config change and then attach to the port that just died with it.
@@ -685,19 +721,15 @@ def running_instance_cdp_port(user_data_dir: str, *, exclude_session: Optional[s
         # Finding 161: SingletonLock can be gone while Chromium still
         # holds DevTools. The file still names a port — leftover that
         # already aimed there used to look like another Chrome. Do not
-        # guess among ports when the file is gone too.
+        # guess among ports when the file is gone too. Several this-jar
+        # holders on that file-named number are not a guess (finding 164).
         if not port_line.isdigit():
             return None
-        candidate = int(port_line)
-        holder = _scan_this_jar_listen_holder(candidate, user_data_dir)
-        if holder is None:
+        port = _file_named_this_jar_listen_port(
+            int(port_line), user_data_dir, exclude_session=exclude_session,
+        )
+        if port is None:
             return None
-        pid, hosts = holder
-        if exclude_session and _launched_by_session(pid) == exclude_session:
-            return None
-        if not hosts or not _cdp_port_reachable(candidate, hosts):
-            return None
-        port = candidate
     else:
         # Recover already refuses a recycled lock pid whose cmdline /
         # ``CHROME_USER_DATA_DIR`` is not this jar. The DevToolsActivePort
@@ -719,12 +751,23 @@ def running_instance_cdp_port(user_data_dir: str, *, exclude_session: Optional[s
                     port = candidate
         if port is None:
             recovered = _recover_cdp_port_from_singleton(user_data_dir, pid)
-            if recovered is None or recovered not in _loopback_listen_ports_for_pid(pid):
-                return None
-            hosts = _listen_connect_hosts(pid, recovered)
-            if not hosts or not _cdp_port_reachable(recovered, hosts):
-                return None
-            port = recovered
+            if (
+                recovered is not None
+                and recovered in _loopback_listen_ports_for_pid(pid)
+            ):
+                hosts = _listen_connect_hosts(pid, recovered)
+                if hosts and _cdp_port_reachable(recovered, hosts):
+                    port = recovered
+        if port is None and port_line.isdigit():
+            # Finding 164: lock pid is still this jar but no longer holds
+            # the file listen (fork inherit). Helpers that name this jar
+            # and inode-hold that number are the file-named dock port.
+            # Do not guess when the file is gone too.
+            port = _file_named_this_jar_listen_port(
+                int(port_line), user_data_dir, exclude_session=exclude_session,
+            )
+        if port is None:
+            return None
     try:
         if Path(user_data_dir).resolve() == profile_dir().resolve():
             remember_dock_cdp_port(port)

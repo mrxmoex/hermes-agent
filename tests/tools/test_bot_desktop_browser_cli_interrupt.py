@@ -8091,6 +8091,74 @@ def test_unregistered_several_this_jar_holders_still_interrupt(monkeypatch):
     assert bdb._this_jar_chromium_pid(str(profile)) is None
 
 
+def test_unregistered_several_holders_file_named_port_persists(monkeypatch):
+    """Finding 164: file-named port persists when holders are several.
+
+    Unique-holder skip-kill stays unknown. ``DevToolsActivePort`` already
+    named the listen — persist used to require one pid, so Take over
+    left ``dock-cdp-port`` empty. Official leftover ``--cdp`` still
+    interrupts. Production Take over does not pass ``chromium_pid``.
+    9222 and the bash ``-c`` parent stay up.
+    """
+    from tools.bot_desktop import browser as bdb
+    from tools.bot_desktop import runtime
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    profile = bdb.profile_dir()
+    profile.mkdir(parents=True, exist_ok=True)
+    (profile / "DevToolsActivePort").write_text(
+        "40141\n/devtools/browser/abc\n", encoding="utf-8",
+    )
+    lock = profile / "SingletonLock"
+    if lock.exists() or lock.is_symlink():
+        lock.unlink()
+    monkeypatch.setattr(runtime, "state_dir", lambda: profile.parent)
+    monkeypatch.setattr(bdb, "_configured_cdp_override_url", lambda: "")
+    monkeypatch.setattr(bdb, "_lock_pid", lambda d: None)
+    monkeypatch.setattr(
+        bdb,
+        "_chromium_cmdline_tokens",
+        lambda pid: ["chrome", f"--user-data-dir={profile}"],
+    )
+    monkeypatch.setattr(
+        bdb,
+        "_loopback_listen_inodes_for_port",
+        lambda port: {7: {"::1"}} if port == 40141 else {},
+    )
+    monkeypatch.setattr(
+        bdb,
+        "_pids_holding_socket_inodes",
+        lambda want: {4242: {7}, 4243: {7}} if 7 in want else {},
+    )
+    monkeypatch.setattr(
+        bdb,
+        "_cdp_port_reachable",
+        lambda port, hosts: port == 40141 and "::1" in hosts,
+    )
+    squat = "http://127.0.0.1:40141"
+    dock = "http://[::1]:40141"
+    leftover_v4 = _FakeProc(11252, ["agent-browser", "--cdp", squat, "fill"])
+    leftover_v6 = _FakeProc(11253, ["agent-browser", "--cdp", dock, "fill"])
+    sibling = _FakeProc(
+        11254, ["agent-browser", "--cdp", "http://127.0.0.1:9222", "fill"],
+    )
+    bash_parent = _FakeProc(
+        11255, ["/bin/bash", "-c", f"agent-browser --cdp {dock} fill"],
+    )
+    lease.acquire("human")
+    n = interrupt_unregistered_dock_cli(
+        processes=[leftover_v4, leftover_v6, sibling, bash_parent],
+    )
+    assert leftover_v4.killed == 0
+    assert leftover_v6.killed == 1
+    assert sibling.killed == 0
+    assert bash_parent.killed == 0
+    assert n == 1
+    assert bdb.running_instance_cdp_port(str(profile)) == 40141
+    assert bdb.last_known_dock_cdp_port() == 40141
+    assert bdb._this_jar_chromium_pid(str(profile)) is None
+
+
 def test_stop_reserved_calls_unregistered_interrupt(monkeypatch):
     from tools.browser_tool_session import interrupt_unregistered_dock_cli as real
     from tools.browser_tool_supervisor_lease import stop_reserved_supervisors
