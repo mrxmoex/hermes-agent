@@ -2452,6 +2452,105 @@ def _is_browser_harness_daemon_invocation(tokens: List[str]) -> bool:
     return False
 
 
+def _token_is_browser_harness_mcp_script(token: str) -> bool:
+    """Official leftover console script ``browser-harness-mcp``.
+
+    ``[project.scripts]`` is ``browser-harness-mcp`` →
+    ``browser_harness.mcp_cli:main``. ``browser-harness`` (``run.py``)
+    / ``browser-harness[mcp]`` (the extra, not this script) /
+    ``browser_harness_mcp`` are not.
+    """
+    name = _pep508_requirement_name(token)
+    return _token_basename_is(name, "browser-harness-mcp")
+
+
+def _token_is_browser_harness_mcp_module(token: str) -> bool:
+    """True when this token is official leftover ``browser_harness.mcp_cli``.
+
+    Finding 148 matched ``python -m browser_harness.daemon``. Official
+    leftover MCP is ``python -m browser_harness.mcp_cli`` /
+    ``…/browser_harness/mcp_cli.py``. ``python -m mcp_server`` (too
+    broad) / ``browser_harness.admin`` / a random ``mcp_cli.py``
+    are not.
+    """
+    raw = (token or "").strip().strip("\"'")
+    if not raw:
+        return False
+    if "/" not in raw and "\\" not in raw:
+        return _token_basename_is(raw, "browser_harness.mcp_cli")
+    path = Path(raw)
+    if path.name.lower() != "mcp_cli.py":
+        return False
+    return path.parent.name.lower() == "browser_harness"
+
+
+def _uv_browser_harness_mcp_command(cmd_tokens: List[str]) -> bool:
+    """True when leftover uvx/uv operands launch ``browser-harness-mcp``."""
+    if not cmd_tokens:
+        return False
+    if _token_is_browser_harness_mcp_script(cmd_tokens[0]):
+        return True
+    if _is_python_launcher(_launcher_basename(cmd_tokens[0])):
+        more = cmd_tokens[1:]
+        return bool(more) and (
+            _token_is_browser_harness_mcp_script(more[0])
+            or _token_is_browser_harness_mcp_module(more[0])
+        )
+    return False
+
+
+def _is_browser_harness_mcp_invocation(tokens: List[str]) -> bool:
+    """True when argv launches official leftover ``browser-harness-mcp``.
+
+    Finding 148 matched the detached ``python -m browser_harness.daemon``
+    holder. Official leftover MCP is the long-lived stdio server
+    (``docs/MCP.md``): ``uvx --from 'browser-harness[mcp]'
+    browser-harness-mcp`` / ``uv run --extra mcp browser-harness-mcp``
+    / ``python -m browser_harness.mcp_cli``. It calls
+    ``ensure_daemon()`` then ``type_text`` / ``fill_input`` against
+    ``BU_CDP_*``. ``browser-harness`` (``run.py``), ``python -m
+    mcp_server``, ``python -m browser_harness``, an unpinned leftover
+    (official leftover can scan 9222), and ``cat mcp_cli.py`` are not.
+    """
+    if not tokens:
+        return False
+    if _token_is_browser_harness_mcp_script(tokens[0]):
+        return True
+    name0 = _launcher_basename(tokens[0])
+    if name0 in _ENV_LAUNCHERS:
+        return _is_browser_harness_mcp_invocation(_env_command_tokens(tokens))
+    if name0 in _COREPACK_LAUNCHERS:
+        rest = _corepack_command_tokens(tokens)
+        return bool(rest) and _is_browser_harness_mcp_invocation(rest)
+    via = _invocation_via_package_exec(tokens, _is_browser_harness_mcp_invocation)
+    if via is not None:
+        return via
+    via = _invocation_via_bun_x(tokens, _is_browser_harness_mcp_invocation)
+    if via is not None:
+        return via
+    if _is_python_launcher(name0):
+        rest = _first_non_flag_tokens(tokens)
+        return bool(rest) and (
+            _token_is_browser_harness_mcp_script(rest[0])
+            or _token_is_browser_harness_mcp_module(rest[0])
+        )
+    if name0 not in _UVX_LAUNCHERS:
+        return False
+    rest = _first_non_flag_tokens(tokens, value_flags=_UV_VALUE_FLAGS)
+    if not rest:
+        return False
+    if name0 == "uvx":
+        return _uv_browser_harness_mcp_command(rest)
+    mod = _uv_run_module(tokens)
+    if mod and _token_is_browser_harness_mcp_module(mod):
+        return True
+    if rest[0] == "tool" and len(rest) >= 3 and rest[1] == "run":
+        return _uv_browser_harness_mcp_command(rest[2:])
+    if rest[0] == "run" and len(rest) >= 2:
+        return _uv_browser_harness_mcp_command(rest[1:])
+    return False
+
+
 def _token_is_playwright_cli_daemon(token: str) -> bool:
     """True when this token is official leftover Agent CLI ``cliDaemon.js``.
 
@@ -3163,6 +3262,7 @@ def _is_unregistered_dock_cli_invocation(tokens: List[str]) -> bool:
         _is_agent_browser_invocation(tokens)
         or _is_browser_use_invocation(tokens)
         or _is_browser_harness_daemon_invocation(tokens)
+        or _is_browser_harness_mcp_invocation(tokens)
         or _is_playwright_invocation(tokens)
         or _is_playwright_mcp_invocation(tokens)
         or _is_chrome_remote_interface_invocation(tokens)
@@ -3367,14 +3467,17 @@ def _unregistered_cli_aims_at_dock(
     if (
         _is_browser_use_invocation(tokens)
         or _is_browser_harness_daemon_invocation(tokens)
+        or _is_browser_harness_mcp_invocation(tokens)
     ) and not _is_agent_browser_invocation(tokens):
         # Official leftover attach: ``browser-use --cdp-url <dock>``.
         # Finding 78 only checked BU_CDP_* env, so Take over left the
         # argv-aimed writer running (finding 110). Official leftover
         # ``ensure_daemon`` also leaves ``python -m
         # browser_harness.daemon`` with those env pins (finding 148).
-        # Do not guess ``--cdp`` (agent-browser) or treat
-        # ``--connect`` as this jar.
+        # Finding 153: leftover ``browser-harness-mcp`` is the
+        # long-lived stdio writer (``docs/MCP.md``) on the same
+        # ``BU_CDP_*`` pins. Do not guess ``--cdp`` (agent-browser)
+        # or treat ``--connect`` as this jar.
         cdp = _flag_value(tokens, ("--cdp-url",))
         if cdp:
             return _leftover_cdp_aims_at_dock(cdp, dock_port)

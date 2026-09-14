@@ -249,6 +249,7 @@ def test_agent_browser_invocation_is_token_match_not_substring():
     from tools.browser_tool_session import (
         _is_agent_browser_invocation,
         _is_browser_harness_daemon_invocation,
+        _is_browser_harness_mcp_invocation,
         _is_browser_use_invocation,
     )
 
@@ -477,6 +478,47 @@ def test_agent_browser_invocation_is_token_match_not_substring():
         ["/usr/bin/cat", _bh_daemon])
     assert not _is_browser_harness_daemon_invocation(
         ["/bin/bash", "-c", "python3 -m browser_harness.daemon"])
+    # Finding 153: official leftover MCP is ``browser-harness-mcp``
+    # (``browser_harness.mcp_cli:main`` / ``docs/MCP.md``). Finding
+    # 148 matched the daemon only. ``browser-harness`` (run.py),
+    # ``python -m mcp_server``, ``browser-harness[mcp]`` as the
+    # command, and a random ``mcp_cli.py`` are not.
+    _bh_mcp = (
+        "/home/x/.local/lib/python3.12/site-packages/browser_harness/mcp_cli.py"
+    )
+    assert _is_browser_harness_mcp_invocation(["browser-harness-mcp"])
+    assert _is_browser_harness_mcp_invocation(
+        ["uvx", "--from", "browser-harness[mcp]", "browser-harness-mcp"])
+    assert _is_browser_harness_mcp_invocation(
+        ["uv", "run", "--extra", "mcp", "browser-harness-mcp"])
+    assert _is_browser_harness_mcp_invocation(
+        ["python3", "-m", "browser_harness.mcp_cli"])
+    assert _is_browser_harness_mcp_invocation(["python3", _bh_mcp])
+    assert _is_browser_harness_mcp_invocation(
+        ["/usr/bin/env", "python3", "-m", "browser_harness.mcp_cli"])
+    assert _is_browser_harness_mcp_invocation(
+        ["uv", "run", "-m", "browser_harness.mcp_cli"])
+    assert _is_browser_harness_mcp_invocation(
+        ["uvx", "--from", "browser-harness", "python", "-m",
+         "browser_harness.mcp_cli"])
+    assert _is_browser_harness_mcp_invocation(
+        ["uv", "tool", "run", "browser-harness-mcp"])
+    assert not _is_browser_harness_mcp_invocation(["browser-harness"])
+    assert not _is_browser_harness_mcp_invocation(
+        ["python3", "-m", "browser_harness"])
+    assert not _is_browser_harness_mcp_invocation(
+        ["python3", "-m", "mcp_server"])
+    assert not _is_browser_harness_mcp_invocation(
+        ["uvx", "browser-harness[mcp]"])
+    assert not _is_browser_harness_mcp_invocation(
+        ["python3", "/tmp/mcp_cli.py"])
+    assert not _is_browser_harness_mcp_invocation(
+        ["python3", "-m", "browser_harness.admin"])
+    assert not _is_browser_use_invocation(["browser-harness-mcp"])
+    assert not _is_browser_harness_daemon_invocation(
+        ["browser-harness-mcp"])
+    assert not _is_browser_harness_mcp_invocation(
+        ["/bin/bash", "-c", "browser-harness-mcp"])
     from tools.browser_tool_session import _unregistered_cli_aims_at_dock
     # Official leftover attach is ``--cdp-url`` (finding 110). Env-only
     # hid that writer. ``--connect`` cannot prove this jar.
@@ -6938,6 +6980,119 @@ def test_unregistered_browser_use_mcp_module_killed_on_takeover():
     assert random_main.killed == 0
     assert sibling.killed == 0
     assert pytest_marker.killed == 0
+    assert bash_parent.killed == 0
+    assert n == 7
+
+
+def test_unregistered_browser_harness_mcp_killed_on_takeover():
+    """Official leftover ``browser-harness-mcp`` hid leftover attach.
+
+    Finding 148 matched ``python -m browser_harness.daemon``. Official
+    leftover MCP is the long-lived stdio server
+    (``browser_harness.mcp_cli:main`` / ``docs/MCP.md``):
+    ``uvx --from 'browser-harness[mcp]' browser-harness-mcp`` with
+    ``BU_CDP_*``. Take over left that writer typing into the jar.
+    ``browser-harness`` (``run.py``), ``python -m mcp_server``,
+    ``uvx 'browser-harness[mcp]'``, an unpinned leftover, another
+    Chrome, and the bash ``-c`` parent stay up.
+    """
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    bdb.remember_dock_cdp_port(9333)
+    mcp_cli = (
+        "/home/x/.local/lib/python3.12/site-packages/browser_harness/mcp_cli.py"
+    )
+    leftover = _FakeProc(
+        11174,
+        ["browser-harness-mcp"],
+        {"BU_CDP_URL": "http://127.0.0.1:9333"},
+    )
+    via_uvx = _FakeProc(
+        11175,
+        ["uvx", "--from", "browser-harness[mcp]", "browser-harness-mcp"],
+        {"BU_CDP_WS": "ws://127.0.0.1:9333/devtools/browser/x"},
+    )
+    via_uv_extra = _FakeProc(
+        11176,
+        ["uv", "run", "--extra", "mcp", "browser-harness-mcp"],
+        {"BU_CDP_URL": "http://127.0.0.1:9333"},
+    )
+    via_mod = _FakeProc(
+        11177,
+        ["python3", "-m", "browser_harness.mcp_cli"],
+        {"BU_CDP_URL": "http://127.0.0.1:9333"},
+    )
+    via_path = _FakeProc(
+        11178,
+        ["python3", mcp_cli],
+        {"BU_CDP_URL": "http://127.0.0.1:9333"},
+    )
+    via_uv_m = _FakeProc(
+        11179,
+        ["uv", "run", "-m", "browser_harness.mcp_cli"],
+        {"BU_CDP_URL": "http://127.0.0.1:9333"},
+    )
+    via_from_py = _FakeProc(
+        11180,
+        ["uvx", "--from", "browser-harness", "python", "-m",
+         "browser_harness.mcp_cli"],
+        {"BU_CDP_URL": "http://127.0.0.1:9333"},
+    )
+    run_py = _FakeProc(
+        11181,
+        ["browser-harness"],
+        {"BU_CDP_URL": "http://127.0.0.1:9333"},
+    )
+    top_mod = _FakeProc(
+        11182,
+        ["python3", "-m", "mcp_server"],
+        {"BU_CDP_URL": "http://127.0.0.1:9333"},
+    )
+    extra_as_cmd = _FakeProc(
+        11183,
+        ["uvx", "browser-harness[mcp]"],
+        {"BU_CDP_URL": "http://127.0.0.1:9333"},
+    )
+    unpinned = _FakeProc(11184, ["browser-harness-mcp"])
+    sibling = _FakeProc(
+        11185,
+        ["browser-harness-mcp"],
+        {"BU_CDP_URL": "http://127.0.0.1:9222"},
+    )
+    random_cli = _FakeProc(
+        11186,
+        ["python3", "/tmp/mcp_cli.py"],
+        {"BU_CDP_URL": "http://127.0.0.1:9333"},
+    )
+    bash_parent = _FakeProc(
+        11187,
+        ["/bin/bash", "-c",
+         "BU_CDP_URL=http://127.0.0.1:9333 browser-harness-mcp"],
+    )
+    lease.acquire("human")
+    n = interrupt_unregistered_dock_cli(
+        processes=[
+            leftover, via_uvx, via_uv_extra, via_mod, via_path, via_uv_m,
+            via_from_py, run_py, top_mod, extra_as_cmd, unpinned, sibling,
+            random_cli, bash_parent,
+        ],
+        chromium_pid=9999,
+        owner_daemon_pid=9998,
+    )
+    assert leftover.killed == 1
+    assert via_uvx.killed == 1
+    assert via_uv_extra.killed == 1
+    assert via_mod.killed == 1
+    assert via_path.killed == 1
+    assert via_uv_m.killed == 1
+    assert via_from_py.killed == 1
+    assert run_py.killed == 0
+    assert top_mod.killed == 0
+    assert extra_as_cmd.killed == 0
+    assert unpinned.killed == 0
+    assert sibling.killed == 0
+    assert random_cli.killed == 0
     assert bash_parent.killed == 0
     assert n == 7
 
