@@ -1958,6 +1958,84 @@ def test_named_listen_host_port_aims_when_persist_and_override_miss(
         listener.close()
 
 
+def test_named_listen_host_port_aims_when_persist_is_stale(
+    monkeypatch, tmp_path,
+):
+    """Finding 171: stale persist ``dock_port`` hid leftover ``--port``.
+
+    Finding 156 identified lighthouse / CRI ``--port`` when persist and
+    the override both miss. Interrupt still stamps ``dock_port`` from
+    ``last_known_dock_cdp_port`` after leftover holds CDP (finding
+    165/166). An older persist then rejected ``port != dock_port``
+    before named-listen identity, so Take over left writers aimed at
+    the live listen. Identity first. 9222, the other family, and LAN
+    stay unknown. Do not stamp persist.
+    """
+    import os
+    import socket
+
+    import tools.bot_desktop.browser as bdb
+    from tools.browser_tool_session import (
+        _leftover_cdp_aims_at_dock,
+        _leftover_host_port_aims_at_dock,
+        _unregistered_cli_aims_at_dock,
+    )
+
+    profile = tmp_path / "browser-profile"
+    profile.mkdir()
+    os.symlink(f"host-{os.getpid()}", profile / "SingletonLock")
+    monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path)
+    monkeypatch.setattr(bdb, "profile_dir", lambda: profile)
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: None)
+    monkeypatch.setattr(
+        bdb,
+        "_chromium_cmdline_tokens",
+        lambda pid: ["chrome", f"--user-data-dir={profile}"],
+    )
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(8)
+    _drain_listen(listener)
+    port = listener.getsockname()[1]
+    monkeypatch.setattr(bdb, "_loopback_listen_ports_for_pid", lambda pid: {port, port + 1})
+    monkeypatch.setattr(
+        bdb,
+        "_loopback_listen_targets_for_pid",
+        lambda pid: {("127.0.0.1", port), ("::1", port + 1)},
+    )
+    monkeypatch.setattr(bdb, "_configured_cdp_override_url", lambda: "")
+    try:
+        bdb.remember_dock_cdp_port(9333)
+        assert bdb.last_known_dock_cdp_port() == 9333
+        assert bdb.persist_live_dock_cdp_port() is None
+        assert bdb.last_known_dock_cdp_port() == 9333
+        assert _leftover_cdp_aims_at_dock(f"http://127.0.0.1:{port}", 9333) is True
+        assert _leftover_host_port_aims_at_dock(None, port, 9333) is True
+        assert _leftover_host_port_aims_at_dock("127.0.0.1", port, 9333) is True
+        assert _leftover_host_port_aims_at_dock(None, 9222, 9333) is False
+        assert _leftover_host_port_aims_at_dock("127.0.0.1", port + 1, 9333) is False
+        assert _leftover_host_port_aims_at_dock("10.0.0.5", port, 9333) is False
+        assert _unregistered_cli_aims_at_dock(
+            ["npx", "lighthouse", "https://example.com", "--port", str(port)],
+            {}, profile, 9333,
+        ) is True
+        assert _unregistered_cli_aims_at_dock(
+            ["npx", "chrome-remote-interface", "--host", "127.0.0.1", "--port", str(port)],
+            {}, profile, 9333,
+        ) is True
+        assert _unregistered_cli_aims_at_dock(
+            ["npx", "lighthouse", "--port", "9222", "https://example.com"],
+            {}, profile, 9333,
+        ) is False
+        assert _unregistered_cli_aims_at_dock(
+            ["npx", "lighthouse", "--hostname", "10.0.0.5", "--port", str(port)],
+            {}, profile, 9333,
+        ) is False
+        assert bdb.last_known_dock_cdp_port() == 9333
+    finally:
+        listener.close()
+
+
 def test_stale_lock_pid_is_not_this_jar_chromium(monkeypatch, tmp_path):
     """Finding 157: a leftover pid on SingletonLock is not the dock.
 

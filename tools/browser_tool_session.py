@@ -1093,10 +1093,16 @@ def _leftover_host_port_aims_at_dock(
     A leftover that already named ``port`` is not a guess: consult the
     same named-listen identity. A sibling on 9222, the other loopback
     family, and LAN stay unknown.
+
+    Finding 171: a stale persist ``dock_port`` must not hide leftover
+    ``--port`` that already named the live listen. Finding 156 rejected
+    ``port != dock_port`` *before* identity, so lighthouse / CRI aimed
+    at the file-named jar survived Take over after leftover held CDP
+    and persist stayed at an older stamp. Same order as
+    ``_leftover_cdp_aims_at_dock`` — identity first. 9222, the other
+    family, and LAN stay unknown.
     """
     if not (1 <= port <= 65535):
-        return False
-    if dock_port is not None and port != dock_port:
         return False
     text = (host or "").strip()
     if not text:
