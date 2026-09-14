@@ -388,6 +388,36 @@ def test_agent_browser_invocation_is_token_match_not_substring():
         ["yarn", "workspace", "web", "run", "lighthouse"])
     assert not _is_lighthouse_invocation(
         ["yarn", "workspaces", "foreach", "exec", "lighthouse"])
+    # ``npx --package=lighthouse -- --port`` hid invocation and aim (105).
+    assert _is_lighthouse_invocation(
+        ["npx", "--package=lighthouse", "--", "--port", "9333"])
+    assert _is_lighthouse_invocation(
+        ["npx", "--package=lighthouse", "--port", "9333"])
+    assert _is_lighthouse_invocation(
+        ["npx", "--package", "lighthouse", "--", "--port", "9333"])
+    assert _is_lighthouse_invocation(
+        ["npx", "-p", "lighthouse", "--", "--port", "9333"])
+    assert _is_lighthouse_invocation(
+        ["pnpx", "--package=lighthouse", "--port", "9333"])
+    assert _is_chrome_devtools_mcp_invocation(
+        ["npx", "--package=chrome-devtools-mcp", "--",
+         "--browserUrl", "http://127.0.0.1:9333"])
+    assert _is_playwright_mcp_invocation(
+        ["npx", "--package=@playwright/mcp", "--",
+         "--cdp-endpoint", "http://127.0.0.1:9333"])
+    assert _is_playwright_invocation(
+        ["npx", "--package=playwright", "--", "codegen",
+         "--cdp-endpoint", "http://127.0.0.1:9333"])
+    assert _is_agent_browser_invocation(
+        ["npx", "--package=agent-browser", "--",
+         "--cdp", "http://127.0.0.1:9333"])
+    # Last-wins pin. A later ruff pin is not lighthouse.
+    assert _is_lighthouse_invocation(
+        ["npx", "--package=ruff", "--package=lighthouse", "--", "--port", "9333"])
+    assert not _is_lighthouse_invocation(
+        ["npx", "--package=lighthouse", "--package=ruff", "--", "--port", "9333"])
+    assert not _is_lighthouse_invocation(
+        ["npx", "--package=lighthouse-ci", "--", "--port", "9333"])
     assert _is_lighthouse_invocation(
         ["node", "/home/x/node_modules/lighthouse/cli/index.js",
          "--port=9333", "https://example.com"])
@@ -1343,6 +1373,92 @@ def test_unregistered_workspace_selector_dock_cli_killed_on_takeover():
     assert run_script.killed == 0
     assert foreach.killed == 0
     assert other.killed == 0
+    assert bash_parent.killed == 0
+
+
+def test_unregistered_npx_package_pin_dock_cli_killed_on_takeover():
+    """``npx --package=lighthouse -- --port <dock>`` hid leftover unwrap.
+
+    Equals ``--package=`` with no binary repeat missed invocation.
+    Space ``-p lighthouse -- --port`` matched invocation but
+    ``_flag_value`` stopped at npx's ``--`` and missed the aim.
+    ``npm exec --package=`` already peeled. Last-wins pin. Child
+    ``--`` after ``--port`` must still aim. Bash ``-c`` parent is
+    not the writer.
+    """
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    bdb.remember_dock_cdp_port(9333)
+    equals_sep = _FakeProc(
+        9900,
+        ["npx", "--package=lighthouse", "--",
+         "--port", "9333", "https://example.com"],
+    )
+    equals_inline = _FakeProc(
+        9901,
+        ["npx", "--package=lighthouse",
+         "--port", "9333", "https://example.com"],
+    )
+    space_sep = _FakeProc(
+        9902,
+        ["npx", "--package", "lighthouse", "--",
+         "--port", "9333", "https://example.com"],
+    )
+    short_sep = _FakeProc(
+        9903,
+        ["npx", "-p", "lighthouse", "--",
+         "--port", "9333", "https://example.com"],
+    )
+    mcp = _FakeProc(
+        9904,
+        ["npx", "--package=chrome-devtools-mcp", "--",
+         "--browserUrl", "http://127.0.0.1:9333"],
+    )
+    child_term = _FakeProc(
+        9905,
+        ["npx", "lighthouse", "--port", "9333", "--",
+         "https://example.com"],
+    )
+    last_wins = _FakeProc(
+        9906,
+        ["npx", "--package=ruff", "--package=lighthouse", "--",
+         "--port", "9333", "https://example.com"],
+    )
+    later_other = _FakeProc(
+        9907,
+        ["npx", "--package=lighthouse", "--package=ruff", "--",
+         "--port", "9333", "https://example.com"],
+    )
+    other_port = _FakeProc(
+        9908,
+        ["npx", "--package=lighthouse", "--",
+         "--port", "9222", "https://example.com"],
+    )
+    bash_parent = _FakeProc(
+        9909,
+        ["/bin/bash", "-c",
+         "npx --package=lighthouse -- --port 9333"],
+    )
+    lease.acquire("human")
+    n = interrupt_unregistered_dock_cli(
+        processes=[
+            equals_sep, equals_inline, space_sep, short_sep, mcp,
+            child_term, last_wins, later_other, other_port, bash_parent,
+        ],
+        chromium_pid=9999,
+        owner_daemon_pid=9998,
+    )
+    assert n == 7
+    assert equals_sep.killed == 1
+    assert equals_inline.killed == 1
+    assert space_sep.killed == 1
+    assert short_sep.killed == 1
+    assert mcp.killed == 1
+    assert child_term.killed == 1
+    assert last_wins.killed == 1
+    assert later_other.killed == 0
+    assert other_port.killed == 0
     assert bash_parent.killed == 0
 
 

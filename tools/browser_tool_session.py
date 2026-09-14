@@ -1146,6 +1146,88 @@ def _npx_package_tokens(tokens: List[str]) -> List[str]:
     return _first_non_flag_tokens(tokens, value_flags=flags)
 
 
+_NPX_PACKAGE_PIN_FLAGS = frozenset({"--package", "-p"})
+
+
+def _npx_launcher_value_flags(tokens: List[str]) -> frozenset:
+    """Value flags for peeling npx argv. Includes ``--package`` / ``-p``.
+
+    Do not feed these into ``_npx_package_tokens`` — consuming ``-p``
+    there would miss ``npx -p lighthouse --port`` (no binary repeat).
+    """
+    flags = set(_NPX_VALUE_FLAGS) | set(_NPX_PACKAGE_PIN_FLAGS)
+    if tokens and _launcher_basename(tokens[0]) == "npx":
+        flags.add("-w")
+    return frozenset(flags)
+
+
+def _npx_package_pins(tokens: List[str]) -> List[str]:
+    """``--package=foo`` / ``-p foo`` pins before ``--``, in order."""
+    if not tokens or _launcher_basename(tokens[0]) not in _NPX_LAUNCHERS:
+        return []
+    pins: List[str] = []
+    i = 1
+    while i < len(tokens):
+        raw = str(tokens[i]) if tokens[i] is not None else ""
+        if raw == "--":
+            break
+        if raw in _NPX_PACKAGE_PIN_FLAGS and i + 1 < len(tokens):
+            nxt = str(tokens[i + 1])
+            if not nxt.startswith("-"):
+                pins.append(nxt)
+            i += 2
+            continue
+        if raw.startswith("--package="):
+            val = raw.split("=", 1)[1]
+            if val:
+                pins.append(val)
+            i += 1
+            continue
+        i += 1
+    return pins
+
+
+def _npx_invocation_matches(tokens: List[str], match_token) -> bool:
+    """True when the npx operand or last ``--package`` / ``-p`` pin matches.
+
+    ``npx --package=lighthouse -- --port <dock>`` has no leftover binary
+    operand (finding 105). Last-wins: a later ``--package=ruff`` is not
+    lighthouse. Do not consume ``-p`` as a value flag on the operand
+    walk — ``npx -p lighthouse --port`` still matches via ``rest[0]``.
+    """
+    rest = _npx_package_tokens(tokens)
+    if rest and match_token(rest[0]):
+        return True
+    pins = _npx_package_pins(tokens)
+    return bool(pins) and match_token(pins[-1])
+
+
+def _npx_child_argv(tokens: List[str]) -> Optional[List[str]]:
+    """Child argv after npx's ``--``, or None when ``--`` is the child's.
+
+    ``npx --package=lighthouse -- --port <dock>`` puts leftover flags
+    after npx's ``--``. ``npx lighthouse --port <dock> -- url`` keeps
+    ``--port`` *before* the child's terminator — peeling that ``--``
+    would hide the aim. Only peel when no operand remains before
+    ``--`` after skipping prefix/package pins.
+    """
+    if not tokens or _launcher_basename(tokens[0]) not in _NPX_LAUNCHERS:
+        return None
+    sep = None
+    for i, tok in enumerate(tokens):
+        if str(tok) == "--":
+            sep = i
+            break
+    if sep is None:
+        return None
+    rest_before = _first_non_flag_tokens(
+        list(tokens[:sep]), value_flags=_npx_launcher_value_flags(tokens),
+    )
+    if rest_before:
+        return None
+    return [str(t) for t in tokens[sep + 1:]]
+
+
 def _first_non_flag_tokens(
     tokens: List[str],
     skip: int = 1,
@@ -1397,17 +1479,21 @@ def _leftover_flag_tokens(tokens: List[str]) -> List[str]:
     """Argv the leftover CLI itself sees.
 
     ``npm exec --package=foo -- --browserUrl <dock>`` puts the child's
-    flags after npm's ``--``. Stopping ``_flag_value`` at the first
-    ``--`` then missed the dock aim. Peel corepack / exec|dlx / bun x
-    *without* dropping child flags. A later ``--`` on the child
-    (lighthouse yargs) still ends flag parse.
+    flags after npm's ``--``. ``npx --package=lighthouse -- --port``
+    is the same shape (finding 105). Stopping ``_flag_value`` at the
+    first ``--`` then missed the dock aim. Peel corepack / exec|dlx /
+    bun x / npx *without* dropping child flags. A later ``--`` on the
+    child (lighthouse yargs) still ends flag parse.
     """
     if not tokens:
         return []
     peeled = _corepack_command_tokens(tokens)
     work = peeled or [str(t) if t is not None else "" for t in tokens]
     child = _package_manager_child_argv(work)
-    return child if child is not None else work
+    if child is not None:
+        return child
+    npx_child = _npx_child_argv(work)
+    return npx_child if npx_child is not None else work
 
 
 def _is_agent_browser_invocation(tokens: List[str]) -> bool:
@@ -1435,8 +1521,7 @@ def _is_agent_browser_invocation(tokens: List[str]) -> bool:
     if via is not None:
         return via
     if name0 in _NPX_LAUNCHERS:
-        rest = _npx_package_tokens(tokens)
-        return bool(rest) and _token_basename_is_agent_browser(rest[0])
+        return _npx_invocation_matches(tokens, _token_basename_is_agent_browser)
     if name0 in _NODE_LAUNCHERS:
         return any(_token_is_agent_browser_script(t) for t in _first_non_flag_tokens(tokens))
     if _is_python_launcher(name0):
@@ -1529,8 +1614,8 @@ def _is_playwright_invocation(tokens: List[str]) -> bool:
     if via is not None:
         return via
     if name0 in _NPX_LAUNCHERS:
-        rest = _npx_package_tokens(tokens)
-        return bool(rest) and _token_basename_is(rest[0], "playwright")
+        return _npx_invocation_matches(
+            tokens, lambda t: _token_basename_is(t, "playwright"))
     if name0 in _NODE_LAUNCHERS:
         return any(_token_is_playwright_script(t) for t in _first_non_flag_tokens(tokens))
     if _is_python_launcher(name0):
@@ -1646,8 +1731,7 @@ def _is_chrome_remote_interface_invocation(tokens: List[str]) -> bool:
     if via is not None:
         return via
     if name0 in _NPX_LAUNCHERS:
-        rest = _npx_package_tokens(tokens)
-        return bool(rest) and _token_is_chrome_remote_interface(rest[0])
+        return _npx_invocation_matches(tokens, _token_is_chrome_remote_interface)
     if name0 in _NODE_LAUNCHERS:
         return any(_token_is_chrome_remote_interface(t) for t in _first_non_flag_tokens(tokens))
     return False
@@ -1677,8 +1761,7 @@ def _is_playwright_mcp_invocation(tokens: List[str]) -> bool:
     if via is not None:
         return via
     if name0 in _NPX_LAUNCHERS:
-        rest = _npx_package_tokens(tokens)
-        return bool(rest) and _token_is_playwright_mcp(rest[0])
+        return _npx_invocation_matches(tokens, _token_is_playwright_mcp)
     if name0 in _NODE_LAUNCHERS:
         return any(_token_is_playwright_mcp(t) for t in _first_non_flag_tokens(tokens))
     return False
@@ -1732,8 +1815,7 @@ def _is_chrome_devtools_mcp_invocation(tokens: List[str]) -> bool:
     if via is not None:
         return via
     if name0 in _NPX_LAUNCHERS:
-        rest = _npx_package_tokens(tokens)
-        return bool(rest) and _token_is_chrome_devtools_mcp(rest[0])
+        return _npx_invocation_matches(tokens, _token_is_chrome_devtools_mcp)
     if name0 in _NODE_LAUNCHERS:
         return any(_token_is_chrome_devtools_mcp(t) for t in _first_non_flag_tokens(tokens))
     return False
@@ -1783,8 +1865,7 @@ def _is_lighthouse_invocation(tokens: List[str]) -> bool:
     if via is not None:
         return via
     if name0 in _NPX_LAUNCHERS:
-        rest = _npx_package_tokens(tokens)
-        return bool(rest) and _token_is_lighthouse(rest[0])
+        return _npx_invocation_matches(tokens, _token_is_lighthouse)
     if name0 in _NODE_LAUNCHERS:
         return any(_token_is_lighthouse(t) for t in _first_non_flag_tokens(tokens))
     if _is_python_launcher(name0):
