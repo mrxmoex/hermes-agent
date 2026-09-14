@@ -3076,16 +3076,16 @@ def _chrome_devtools_config_aims_at_dock(
     ``chromeArg``. Finding 123 only checked argv ``--userDataDir``,
     so Take over left that writer running. yargs CLI flags override
     the file per key. Relative paths resolve against the leftover
-    writer cwd. Unreadable / oversized / non-JSON stays unknown.
+    writer cwd — gateway cwd must not decide the pin (finding 137).
+    Unreadable / oversized / non-JSON stays unknown.
     """
     path_text = _flag_value(tokens, ("--config",))
     text = (path_text or "").strip()
     if not text:
         return False
-    path = Path(text)
-    if not path.is_absolute():
-        base = cwd if cwd is not None else Path.cwd()
-        path = base / path
+    path = _leftover_resolve_config_path(text, cwd)
+    if path is None:
+        return False
     try:
         if path.stat().st_size > _CHROME_DEVTOOLS_CONFIG_MAX_BYTES:
             return False
@@ -3130,8 +3130,9 @@ def _playwright_mcp_config_pins(
     Official leftover: ``npx @playwright/mcp --config mcp.json`` with
     ``browser.cdpEndpoint`` / ``browser.userDataDir``. Finding 109
     covered argv / ``PLAYWRIGHT_MCP_CDP_ENDPOINT``; finding 111 covered
-    argv ``--user-data-dir``. The config file hid both. Relative paths
-    resolve against the leftover writer cwd. Unreadable / oversized /
+    argv ``--user-data-dir``.     The config file hid both. Relative paths
+    resolve against the leftover writer cwd — gateway cwd must not
+    decide the pin (finding 137). Unreadable / oversized /
     non-JSON stays unknown. ``remoteEndpoint`` is Playwright protocol,
     not CDP.
     """
@@ -3141,10 +3142,9 @@ def _playwright_mcp_config_pins(
     text = (path_text or "").strip()
     if not text:
         return None, None
-    path = Path(text)
-    if not path.is_absolute():
-        base = cwd if cwd is not None else Path.cwd()
-        path = base / path
+    path = _leftover_resolve_config_path(text, cwd)
+    if path is None:
+        return None, None
     try:
         if path.stat().st_size > _PLAYWRIGHT_MCP_CONFIG_MAX_BYTES:
             return None, None
@@ -3169,15 +3169,27 @@ def _playwright_mcp_config_pins(
     return cdp, pinned
 
 
-def _playwright_cli_resolve_config_path(
+def _leftover_resolve_config_path(
     text: str, cwd: Optional[Path],
 ) -> Optional[Path]:
+    """Resolve leftover relative config against writer cwd only.
+
+    Official leftover ``--config`` / ``--cli-flags-path`` paths are
+    the writer's. Gateway ``Path.cwd()`` must not decide the pin when
+    leftover cwd is missing (finding 137).
+    """
     path = Path(text)
     if path.is_absolute():
         return path
     if cwd is None:
         return None
     return cwd / path
+
+
+def _playwright_cli_resolve_config_path(
+    text: str, cwd: Optional[Path],
+) -> Optional[Path]:
+    return _leftover_resolve_config_path(text, cwd)
 
 
 def _playwright_cli_browser_pins_from_path(
@@ -3284,16 +3296,16 @@ def _lighthouse_cli_flags_path_aims_at_dock(
     ``--port`` (including ``0``) / ``--hostname`` / ``--chrome-flags``
     wins that key. ``--config-path`` is audit config, not this file.
     Unreadable / oversized / non-JSON stays unknown. Relative paths
-    resolve against the leftover writer cwd.
+    resolve against the leftover writer cwd — gateway cwd must not
+    decide the pin (finding 137).
     """
     path_text = _flag_value(tokens, ("--cli-flags-path", "--cliFlagsPath"))
     text = (path_text or "").strip()
     if not text:
         return False
-    path = Path(text)
-    if not path.is_absolute():
-        base = cwd if cwd is not None else Path.cwd()
-        path = base / path
+    path = _leftover_resolve_config_path(text, cwd)
+    if path is None:
+        return False
     try:
         if path.stat().st_size > _LIGHTHOUSE_CLI_FLAGS_MAX_BYTES:
             return False
@@ -3370,12 +3382,7 @@ def _agent_browser_read_json_object(path: Path) -> Optional[dict]:
 def _agent_browser_resolve_config_path(
     text: str, cwd: Optional[Path],
 ) -> Optional[Path]:
-    path = Path(text)
-    if path.is_absolute():
-        return path
-    if cwd is None:
-        return None
-    return cwd / path
+    return _leftover_resolve_config_path(text, cwd)
 
 
 def _agent_browser_merged_config(

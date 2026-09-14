@@ -4630,6 +4630,156 @@ def test_unregistered_playwright_cli_agent_env_and_config_killed_on_takeover():
     assert bash_parent.killed == 0
 
 
+def test_leftover_relative_config_without_cwd_does_not_use_gateway_cwd(
+    tmp_path, monkeypatch,
+):
+    """Gateway cwd must not decide leftover relative --config / flags.
+
+    Official leftover resolves ``--config`` / ``--cli-flags-path``
+    against the writer cwd. Finding 127 / 128 / 131 fell through to
+    ``Path.cwd()`` when leftover cwd was missing, so a gateway-local
+    file forged the dock pin (finding 137). Writer cwd still aims.
+    """
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import _unregistered_cli_aims_at_dock
+
+    jar = bdb.profile_dir()
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "pw-mcp-dock.json").write_text(json.dumps({
+        "browser": {"userDataDir": str(jar)},
+    }))
+    (tmp_path / "cd-mcp-dock.json").write_text(json.dumps({
+        "userDataDir": str(jar),
+    }))
+    (tmp_path / "lh-rel.json").write_text(json.dumps({
+        "chromeFlags": f"--user-data-dir={jar}",
+    }))
+    assert not _unregistered_cli_aims_at_dock(
+        ["npx", "@playwright/mcp", "--config", "pw-mcp-dock.json"],
+        {}, jar, None,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["npx", "@playwright/mcp"],
+        {"PLAYWRIGHT_MCP_CONFIG": "pw-mcp-dock.json"}, jar, None,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["npx", "playwright", "mcp", "--config", "pw-mcp-dock.json"],
+        {}, jar, None,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["npx", "chrome-devtools-mcp", "--config", "cd-mcp-dock.json"],
+        {}, jar, None,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["npx", "lighthouse", "https://example.com",
+         "--cli-flags-path", "lh-rel.json"],
+        {}, jar, None,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "@playwright/mcp", "--config", "pw-mcp-dock.json"],
+        {}, jar, None, cwd=tmp_path,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "chrome-devtools-mcp", "--config", "cd-mcp-dock.json"],
+        {}, jar, None, cwd=tmp_path,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "lighthouse", "https://example.com",
+         "--cli-flags-path", "lh-rel.json"],
+        {}, jar, None, cwd=tmp_path,
+    )
+
+
+def test_unregistered_relative_config_without_cwd_spared_on_takeover(
+    tmp_path, monkeypatch,
+):
+    """terminal() relative leftover --config without cwd hid a gateway-cwd forge.
+
+    Finding 127 / 128 / 131 resolved missing leftover cwd against
+    ``Path.cwd()``, so Take over killed writers whose pin was only a
+    file in the gateway process directory. Writer cwd still dies.
+    The bash ``-c`` parent stays up.
+    """
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    profile = bdb.profile_dir()
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "pw-mcp-dock.json").write_text(json.dumps({
+        "browser": {"userDataDir": str(profile)},
+    }))
+    (tmp_path / "cd-mcp-dock.json").write_text(json.dumps({
+        "userDataDir": str(profile),
+    }))
+    (tmp_path / "lh-rel.json").write_text(json.dumps({
+        "chromeFlags": f"--user-data-dir={profile}",
+    }))
+    bdb.remember_dock_cdp_port(9333)
+    mcp_missing = _FakeProc(
+        10400,
+        ["npx", "@playwright/mcp", "--config", "pw-mcp-dock.json"],
+    )
+    mcp_env = _FakeProc(
+        10401,
+        ["npx", "@playwright/mcp"],
+        {"PLAYWRIGHT_MCP_CONFIG": "pw-mcp-dock.json"},
+    )
+    bundled = _FakeProc(
+        10402,
+        ["npx", "playwright", "mcp", "--config", "pw-mcp-dock.json"],
+    )
+    chrome = _FakeProc(
+        10403,
+        ["npx", "chrome-devtools-mcp", "--config", "cd-mcp-dock.json"],
+    )
+    lh = _FakeProc(
+        10404,
+        ["npx", "lighthouse", "https://example.com",
+         "--cli-flags-path", "lh-rel.json"],
+    )
+    mcp_cwd = _FakeProc(
+        10405,
+        ["npx", "@playwright/mcp", "--config", "pw-mcp-dock.json"],
+        cwd=tmp_path,
+    )
+    chrome_cwd = _FakeProc(
+        10406,
+        ["npx", "chrome-devtools-mcp", "--config", "cd-mcp-dock.json"],
+        cwd=tmp_path,
+    )
+    lh_cwd = _FakeProc(
+        10407,
+        ["npx", "lighthouse", "https://example.com",
+         "--cli-flags-path", "lh-rel.json"],
+        cwd=tmp_path,
+    )
+    bash_parent = _FakeProc(
+        10408,
+        ["/bin/bash", "-c",
+         "npx @playwright/mcp --config pw-mcp-dock.json"],
+        cwd=tmp_path,
+    )
+    lease.acquire("human")
+    n = interrupt_unregistered_dock_cli(
+        processes=[
+            mcp_missing, mcp_env, bundled, chrome, lh,
+            mcp_cwd, chrome_cwd, lh_cwd, bash_parent,
+        ],
+        chromium_pid=9999,
+        owner_daemon_pid=9998,
+    )
+    assert n == 3
+    assert mcp_missing.killed == 0
+    assert mcp_env.killed == 0
+    assert bundled.killed == 0
+    assert chrome.killed == 0
+    assert lh.killed == 0
+    assert mcp_cwd.killed == 1
+    assert chrome_cwd.killed == 1
+    assert lh_cwd.killed == 1
+    assert bash_parent.killed == 0
+
+
 def test_unregistered_chrome_devtools_config_and_chrome_arg_killed_on_takeover():
     """terminal() chrome-devtools leftover --config / --chromeArg hid the jar.
 
