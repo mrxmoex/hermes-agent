@@ -1271,6 +1271,9 @@ _AGENT_BROWSER_VALUE_FLAGS = frozenset({
     "-p", "--headers", "--executable-path", "--args",
     "--user-agent", "--proxy", "--proxy-bypass", "--name", "-n",
     "--color-scheme",
+    # Official leftover ``--config <path> connect <dock>`` hid the
+    # attach (finding 133) — ``./cfg.json`` was the first operand.
+    "--config",
 })
 # Global options that take a path / selector *before* exec|dlx|x.
 # Space-separated values used to become the "command" (``pnpm --dir /tmp
@@ -2380,8 +2383,9 @@ def _agent_browser_connect_target(tokens: List[str]) -> Optional[str]:
     Official leftover: connect once, then later commands have no ``--cdp``.
     The in-flight writer is ``connect 9333`` / ``connect http://…``.
     ``--session foo connect 9333`` must not treat ``foo`` as the target.
-    ``--auto-connect`` is not a port. ``connect`` with no operand stays
-    unknown.
+    Official leftover ``--config <path> connect <dock>`` is the same
+    shape (finding 133) — the config path is not the attach. ``--auto-connect``
+    is not a port. ``connect`` with no operand stays unknown.
     """
     if not tokens or not _is_agent_browser_invocation(tokens):
         return None
@@ -2436,7 +2440,17 @@ def _unregistered_cli_aims_at_dock(
     ``--user-data-dir`` via ``--args`` / ``AGENT_BROWSER_ARGS``
     (finding 130) — comma or newline separated. Finding 111 only
     checked ``--profile``, so Take over left that writer running.
-    Explicit ``--cdp`` still wins.     chrome-devtools-mcp ``--userDataDir`` /
+    Explicit ``--cdp`` still wins. Official leftover also pins off
+    argv (finding 133): ``--config`` / ``AGENT_BROWSER_CONFIG`` and
+    the auto files ``./agent-browser.json`` (writer cwd) /
+    ``~/.agent-browser/config.json`` (writer HOME) with ``profile`` /
+    ``args`` / ``cdp``. Finding 111 / 130 only checked argv / env, so
+    Take over left ``agent-browser fill`` whose project config
+    launched Chrome on this cookie jar. CLI / env still override the
+    file per key. Explicit ``--config`` replaces the auto files.
+    ``autoConnect`` / no pin stays unknown. Gateway cwd must not
+    decide a relative config path.
+    chrome-devtools-mcp ``--userDataDir`` /
     ``--user-data-dir`` is the same launch pin (finding 123) — it
     conflicts with attach flags, so URL-only hid that writer. Official
     leftover also hides the pin in ``--chromeArg`` / ``--chrome-arg``
@@ -2654,6 +2668,11 @@ def _unregistered_cli_aims_at_dock(
         cdp = _agent_browser_connect_target(tokens)
     if not cdp and _is_agent_browser_invocation(tokens):
         cdp = (env.get("AGENT_BROWSER_CDP") or "").strip() or None
+    cfg = None
+    if not cdp and _is_agent_browser_invocation(tokens):
+        cfg = _agent_browser_merged_config(tokens, env, cwd)
+        if cfg:
+            cdp = _agent_browser_config_str(cfg, "cdp")
     if cdp:
         if _cdp_url_is_bot_desktop_browser(cdp):
             return True
@@ -2662,10 +2681,16 @@ def _unregistered_cli_aims_at_dock(
     pinned = _flag_value(tokens, ("--profile",))
     if not pinned:
         pinned = (env.get("AGENT_BROWSER_PROFILE") or "").strip()
+    if not pinned and _is_agent_browser_invocation(tokens):
+        if cfg is None:
+            cfg = _agent_browser_merged_config(tokens, env, cwd)
+        if cfg:
+            pinned = _agent_browser_config_str(cfg, "profile")
     # Official leftover expands ``~/`` on --profile / AGENT_BROWSER_PROFILE
     # (finding 129). Finding 111 compared the literal ``~/…`` path, so
     # Take over left that writer running. Chromium does not expand
-    # ``--user-data-dir``; only this agent-browser pin does.
+    # ``--user-data-dir``; only this agent-browser pin does. Config
+    # ``profile`` is the same key (finding 133).
     pinned = _expand_agent_browser_home_prefix(pinned, env)
     if _leftover_profile_pin_aims_at_dock(pinned, profile, cwd):
         return True
@@ -2673,12 +2698,18 @@ def _unregistered_cli_aims_at_dock(
     # ``AGENT_BROWSER_ARGS`` (finding 130). Finding 111 only checked
     # ``--profile``. Playwright launch appends user args after its temp
     # dir; Chromium last-wins the dock jar. CLI ``--args`` overrides
-    # the env key. ``--cdp`` already returned above.
+    # the env key. ``--cdp`` already returned above. Config ``args``
+    # is the same key when CLI / env did not set it (finding 133).
     raw_args = _flag_value_allow_leading_dash(tokens, ("--args",))
     if raw_args is None:
         raw_args = (env.get("AGENT_BROWSER_ARGS") or "").strip() or None
         if raw_args is None:
             raw_args = (env.get("AGENT_BROWSER_CHROME_FLAGS") or "").strip() or None
+        if raw_args is None and _is_agent_browser_invocation(tokens):
+            if cfg is None:
+                cfg = _agent_browser_merged_config(tokens, env, cwd)
+            if cfg:
+                raw_args = _agent_browser_config_str(cfg, "args")
     pinned = _user_data_dir_from_agent_browser_args(raw_args)
     return _leftover_profile_pin_aims_at_dock(pinned, profile, cwd)
 
@@ -2904,6 +2935,79 @@ def _lighthouse_chrome_flags_text(raw) -> Optional[str]:
         return None
     parts = [item.strip() for item in raw if isinstance(item, str) and item.strip()]
     return " ".join(parts) if parts else None
+
+
+_AGENT_BROWSER_CONFIG_MAX_BYTES = 256 * 1024
+
+
+def _agent_browser_config_str(data: dict, *keys: str) -> Optional[str]:
+    for key in keys:
+        raw = data.get(key)
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip()
+    return None
+
+
+def _agent_browser_read_json_object(path: Path) -> Optional[dict]:
+    try:
+        if path.stat().st_size > _AGENT_BROWSER_CONFIG_MAX_BYTES:
+            return None
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _agent_browser_resolve_config_path(
+    text: str, cwd: Optional[Path],
+) -> Optional[Path]:
+    path = Path(text)
+    if path.is_absolute():
+        return path
+    if cwd is None:
+        return None
+    return cwd / path
+
+
+def _agent_browser_merged_config(
+    tokens: List[str],
+    environ: Dict[str, str],
+    cwd: Optional[Path],
+) -> Optional[dict]:
+    """Leftover agent-browser ``profile`` / ``args`` / ``cdp`` config.
+
+    Official leftover: ``--config`` / ``AGENT_BROWSER_CONFIG`` replace
+    the auto files. Otherwise ``~/.agent-browser/config.json`` then
+    ``./agent-browser.json`` (project wins per key). Finding 111 / 130
+    only checked argv / env. Relative ``--config`` and the project
+    file resolve against the leftover writer cwd — gateway cwd must
+    not decide the pin. Unreadable / oversized / non-JSON stays
+    unknown. Missing auto files are ignored.
+    """
+    path_text = _flag_value(tokens, ("--config",))
+    if not path_text:
+        path_text = (environ.get("AGENT_BROWSER_CONFIG") or "").strip()
+    text = (path_text or "").strip()
+    if text:
+        path = _agent_browser_resolve_config_path(text, cwd)
+        if path is None:
+            return None
+        return _agent_browser_read_json_object(path)
+    merged: dict = {}
+    home = (environ.get("HOME") or "").strip()
+    if not home:
+        home = (environ.get("USERPROFILE") or "").strip()
+    if home:
+        user = _agent_browser_read_json_object(
+            Path(home) / ".agent-browser" / "config.json",
+        )
+        if user:
+            merged.update(user)
+    if cwd is not None:
+        project = _agent_browser_read_json_object(cwd / "agent-browser.json")
+        if project:
+            merged.update(project)
+    return merged or None
 
 
 def _user_data_dir_from_agent_browser_args(raw: Optional[str]) -> Optional[str]:

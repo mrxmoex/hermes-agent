@@ -4289,6 +4289,158 @@ def test_unregistered_chrome_devtools_config_and_chrome_arg_killed_on_takeover()
     assert bash_parent.killed == 0
 
 
+def test_unregistered_agent_browser_config_killed_on_takeover():
+    """terminal() agent-browser leftover --config / auto files hid the jar.
+
+    Official leftover reads ``--config`` / ``AGENT_BROWSER_CONFIG`` and
+    ``./agent-browser.json`` / ``~/.agent-browser/config.json`` for
+    ``profile`` / ``args`` / ``cdp``. Finding 111 / 130 only checked
+    argv / env, so Take over left leftover fill whose project config
+    launched Chrome on this cookie jar. CLI / env still override the
+    file per key. Explicit ``--config`` replaces the auto files.
+    ``autoConnect`` / another jar / the bash ``-c`` parent stay up.
+    """
+    from hermes_constants import get_hermes_home
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    profile = bdb.profile_dir()
+    cwd = profile.parent
+    cwd.mkdir(parents=True, exist_ok=True)
+    bdb.remember_dock_cdp_port(9333)
+    home = get_hermes_home()
+
+    project = cwd / "agent-browser.json"
+    project.write_text(json.dumps({"profile": str(profile)}))
+    explicit = cwd / "ab-ci.json"
+    explicit.write_text(json.dumps({"profile": str(profile)}))
+    args_cfg = cwd / "ab-args.json"
+    args_cfg.write_text(json.dumps({"args": f"--user-data-dir={profile}"}))
+    cdp_cfg = cwd / "ab-cdp.json"
+    cdp_cfg.write_text(json.dumps({"cdp": "http://127.0.0.1:9333"}))
+    rel_cfg = cwd / "ab-rel.json"
+    rel_cfg.write_text(json.dumps({"profile": "browser-profile"}))
+    tilde_cfg = cwd / "ab-tilde.json"
+    tilde_cfg.write_text(json.dumps({"profile": "~/bot-desktop/browser-profile"}))
+    other_cfg = cwd / "ab-other.json"
+    other_cfg.write_text(json.dumps({"profile": "/tmp/other-chrome"}))
+    auto_cfg = cwd / "ab-auto.json"
+    auto_cfg.write_text(json.dumps({"autoConnect": True}))
+    user_dir = home / ".agent-browser"
+    user_dir.mkdir(parents=True, exist_ok=True)
+    user_cfg = user_dir / "config.json"
+    user_cfg.write_text(json.dumps({"profile": str(profile)}))
+    other_cwd = home / "ab-other-cwd"
+    other_cwd.mkdir(parents=True, exist_ok=True)
+
+    via_project = _FakeProc(
+        9900, ["agent-browser", "fill", "@e1", "secret"], cwd=cwd,
+    )
+    via_cfg = _FakeProc(
+        9901, ["agent-browser", "--config", str(explicit), "fill"], cwd=cwd,
+    )
+    via_env = _FakeProc(
+        9902, ["agent-browser", "fill"],
+        environ={"AGENT_BROWSER_CONFIG": str(explicit)}, cwd=cwd,
+    )
+    via_home = _FakeProc(
+        9903, ["agent-browser", "fill"],
+        environ={"HOME": str(home)}, cwd=other_cwd,
+    )
+    via_args = _FakeProc(
+        9904, ["agent-browser", "--config", str(args_cfg), "fill"], cwd=cwd,
+    )
+    via_cdp = _FakeProc(
+        9905, ["agent-browser", "--config", str(cdp_cfg), "fill"], cwd=cwd,
+    )
+    via_connect = _FakeProc(
+        9906,
+        ["agent-browser", "--config", str(explicit),
+         "connect", "http://127.0.0.1:9333"],
+        cwd=cwd,
+    )
+    via_rel = _FakeProc(
+        9907, ["agent-browser", "--config", "ab-rel.json", "fill"], cwd=cwd,
+    )
+    via_tilde = _FakeProc(
+        9908, ["agent-browser", "--config", str(tilde_cfg), "fill"],
+        environ={"HOME": str(home)}, cwd=cwd,
+    )
+    shebang = _FakeProc(
+        9909,
+        ["node", "/home/x/node_modules/agent-browser/dist/cli.js",
+         "--config", str(explicit), "fill"],
+        cwd=cwd,
+    )
+    args_then_profile = _FakeProc(
+        9910,
+        ["agent-browser", "--args", "--headless",
+         "--config", str(explicit), "fill"],
+        cwd=cwd,
+    )
+    cli_profile_wins = _FakeProc(
+        9911,
+        ["agent-browser", "--profile", "/tmp/other",
+         "--config", str(explicit), "fill"],
+        cwd=cwd,
+    )
+    cli_args_wins = _FakeProc(
+        9912,
+        ["agent-browser", "--args", "--headless",
+         "--config", str(args_cfg), "fill"],
+        cwd=cwd,
+    )
+    other_jar = _FakeProc(
+        9913, ["agent-browser", "--config", str(other_cfg), "fill"], cwd=cwd,
+    )
+    auto = _FakeProc(
+        9914, ["agent-browser", "--config", str(auto_cfg), "fill"], cwd=cwd,
+    )
+    explicit_replaces = _FakeProc(
+        9915, ["agent-browser", "--config", str(other_cfg), "fill"], cwd=cwd,
+    )
+    no_pin = _FakeProc(
+        9916, ["agent-browser", "fill"],
+        environ={"HOME": str(other_cwd)}, cwd=other_cwd,
+    )
+    bash_parent = _FakeProc(
+        9917,
+        ["/bin/bash", "-c",
+         f"agent-browser --config {explicit} fill"],
+        cwd=cwd,
+    )
+    lease.acquire("human")
+    n = interrupt_unregistered_dock_cli(
+        processes=[
+            via_project, via_cfg, via_env, via_home, via_args, via_cdp,
+            via_connect, via_rel, via_tilde, shebang, args_then_profile,
+            cli_profile_wins, cli_args_wins, other_jar, auto,
+            explicit_replaces, no_pin, bash_parent,
+        ],
+        chromium_pid=9999,
+        owner_daemon_pid=9998,
+    )
+    assert n == 11
+    assert via_project.killed == 1
+    assert via_cfg.killed == 1
+    assert via_env.killed == 1
+    assert via_home.killed == 1
+    assert via_args.killed == 1
+    assert via_cdp.killed == 1
+    assert via_connect.killed == 1
+    assert via_rel.killed == 1
+    assert via_tilde.killed == 1
+    assert shebang.killed == 1
+    assert args_then_profile.killed == 1
+    assert cli_profile_wins.killed == 0
+    assert cli_args_wins.killed == 0
+    assert other_jar.killed == 0
+    assert auto.killed == 0
+    assert explicit_replaces.killed == 0
+    assert no_pin.killed == 0
+    assert bash_parent.killed == 0
+
+
 def test_stop_reserved_calls_unregistered_interrupt(monkeypatch):
     from tools.browser_tool_session import interrupt_unregistered_dock_cli as real
     from tools.browser_tool_supervisor_lease import stop_reserved_supervisors
