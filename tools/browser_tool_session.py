@@ -5361,13 +5361,20 @@ def _remembered_dock_attach_port(*, exclude_session: Optional[str] = None) -> Op
                     # would prefer leftover file-named helpers over
                     # lock-listed memory. Prefer memory when named
                     # is the persist file (or persist was never
-                    # stamped). A different file-named live listen
-                    # is still finding 172.
+                    # stamped). Finding 180: persist_live synced
+                    # chrome into the file and memory; named is
+                    # then leftover DevTools. Prefer that persist.
+                    # A different file-named live listen with
+                    # empty / leftover memory is still finding 172.
                     try:
                         persist_file = _bd_browser.last_known_dock_cdp_port()
                     except Exception:
                         persist_file = None
-                    if persist_file == named or persist_file is None:
+                    if (
+                        persist_file == named
+                        or persist_file is None
+                        or persist_file == listed
+                    ):
                         prefer_named = False
             except Exception:
                 pass

@@ -1080,7 +1080,11 @@ def persist_live_dock_cdp_port() -> Optional[int]:
     on the lock.     Finding 177: that persist may live only in
     ``_last_dock_cdp_port`` after a remember miss. Finding 179:
     that persist may still be this-jar inode-listed after the
-    lock is gone.
+    lock is gone. Finding 180: ``remember_dock_cdp_port`` still
+    writes the file only, so a live stamp left leftover memory
+    in place. Take over can then unlink the lock and 179 / 172
+    follow that leftover. Sync in-process memory when this
+    stamp succeeds. A miss must not clobber chrome memory.
     """
     try:
         port = running_instance_cdp_port(str(profile_dir()))
@@ -1093,6 +1097,12 @@ def persist_live_dock_cdp_port() -> Optional[int]:
             port = None
     if port is not None:
         remember_dock_cdp_port(port)
+        try:
+            from hermes_constants import hermes_home_key
+            from tools.browser_tool_session import _last_dock_cdp_port
+            _last_dock_cdp_port[hermes_home_key()] = port
+        except Exception:
+            pass
     return port
 
 
