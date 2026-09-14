@@ -778,7 +778,59 @@ def test_materialized_lock_file_stamps_this_jar(tmp_path, monkeypatch):
             lambda pid: ["chrome", f"--user-data-dir={tmp_path}"],
         )
         assert browser._lock_pid(str(tmp_path)) is None
+        # Directory is not a lock; finding 161 still sees the named listen.
+        assert browser.running_instance_cdp_port(str(tmp_path)) == port
+    finally:
+        listener.close()
+
+
+def test_missing_lock_still_stamps_named_listen(tmp_path, monkeypatch):
+    """Finding 161: a missing SingletonLock is not another Chrome.
+
+    Supervisor comments say the lock can be gone while Chromium still
+    holds DevTools. Persist / leftover identity required the lock pid,
+    so leftover ``--cdp`` to the live port survived Take over.
+    Recycled cmdline that names another profile stays unknown. 9222
+    stays unknown. No lock and no DevTools file does not guess a port.
+    """
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(8)
+    port = listener.getsockname()[1]
+    (tmp_path / "DevToolsActivePort").write_text(
+        f"{port}\n/devtools/browser/abc\n", encoding="utf-8",
+    )
+    monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path)
+    monkeypatch.setattr(browser, "profile_dir", lambda: tmp_path)
+    monkeypatch.setattr(
+        browser,
+        "_chromium_cmdline_tokens",
+        lambda pid: ["chrome", f"--user-data-dir={tmp_path}"],
+    )
+    try:
+        assert not (tmp_path / "SingletonLock").exists()
+        assert browser._lock_pid(str(tmp_path)) is None
+        assert browser.running_instance_cdp_port(str(tmp_path)) == port
+        assert browser._this_jar_listens_on_port(port) is True
+        assert browser._this_jar_listens_on_port(9222) is False
+
+        monkeypatch.setattr(
+            browser,
+            "_chromium_cmdline_tokens",
+            lambda pid: ["chrome", "--user-data-dir=/other/profile"],
+        )
         assert browser.running_instance_cdp_port(str(tmp_path)) is None
+        assert browser._this_jar_listens_on_port(port) is False
+
+        (tmp_path / "DevToolsActivePort").unlink()
+        monkeypatch.setattr(
+            browser,
+            "_chromium_cmdline_tokens",
+            lambda pid: ["chrome", f"--user-data-dir={tmp_path}"],
+        )
+        assert browser.running_instance_cdp_port(str(tmp_path)) is None
+        # Leftover already named the listen — not a persist guess.
+        assert browser._this_jar_listens_on_port(port) is True
     finally:
         listener.close()
 

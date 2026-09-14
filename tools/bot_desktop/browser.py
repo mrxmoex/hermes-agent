@@ -18,7 +18,7 @@ import shlex
 import shutil
 import socket
 from pathlib import Path
-from typing import Optional, Set, Tuple
+from typing import Dict, Optional, Set, Tuple
 
 from tools.bot_desktop import runtime
 
@@ -323,6 +323,104 @@ def _loopback_listen_ports_for_pid(pid: int) -> Set[int]:
     return {port for _ip, port in _loopback_listen_targets_for_pid(pid)}
 
 
+def _loopback_listen_inodes_for_port(port: int) -> Dict[int, Set[str]]:
+    """inode → listen IPs for loopback / unspecified LISTEN on *port*.
+
+    Reads this netns ``/proc/net/tcp{,6}``. Used when SingletonLock is
+    gone and leftover already named *port* (finding 161). Does not
+    consult ``_loopback_listen_ports_for_pid`` — a ``lambda pid: {port}``
+    mock must not make every leftover writer look like this jar.
+    """
+    if not isinstance(port, int) or not (1 <= port <= 65535):
+        return {}
+    found: Dict[int, Set[str]] = {}
+    for name, ipv6 in (("tcp", False), ("tcp6", True)):
+        try:
+            text = Path(f"/proc/net/{name}").read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for line in text.splitlines()[1:]:
+            parts = line.split()
+            if len(parts) < 10 or parts[3] != "0A":
+                continue
+            local = parts[1]
+            if ":" not in local:
+                continue
+            ip_hex, port_hex = local.rsplit(":", 1)
+            try:
+                listen_port = int(port_hex, 16)
+                addr = _proc_hex_ip(ip_hex, ipv6=ipv6)
+                inode = int(parts[9])
+            except (ValueError, ipaddress.AddressValueError):
+                continue
+            if listen_port != port or inode <= 0:
+                continue
+            ip = None
+            if addr.is_loopback or addr.is_unspecified:
+                ip = str(addr)
+            else:
+                mapped = getattr(addr, "ipv4_mapped", None)
+                if mapped is not None and (mapped.is_loopback or mapped.is_unspecified):
+                    ip = str(addr)
+            if ip is None:
+                continue
+            found.setdefault(inode, set()).add(ip)
+    return found
+
+
+def _pids_holding_socket_inodes(want: Set[int]) -> Dict[int, Set[int]]:
+    """pid → subset of *want* inodes that pid currently holds."""
+    if not want:
+        return {}
+    held: Dict[int, Set[int]] = {}
+    try:
+        names = os.listdir("/proc")
+    except OSError:
+        return held
+    for name in names:
+        if not name.isdigit():
+            continue
+        pid = int(name)
+        if pid <= 1:
+            continue
+        have = _proc_socket_inodes(pid) & want
+        if have:
+            held[pid] = have
+    return held
+
+
+def _scan_this_jar_listen_holder(
+    want: int, user_data_dir: str,
+) -> Optional[Tuple[int, Tuple[str, ...]]]:
+    """Unique this-jar pid that inode-listens on *want*, or ``None``.
+
+    Finding 161: Take over / overlay copies can unlink SingletonLock
+    while Chromium still holds DevTools. Leftover already named *want*
+    — that is not a guess among ports. Several this-jar holders stay
+    unknown. A sibling on the same number is not this jar. No HTTP.
+    """
+    inode_ips = _loopback_listen_inodes_for_port(want)
+    if not inode_ips:
+        return None
+    holders: list[Tuple[int, Tuple[str, ...]]] = []
+    for pid, inodes in _pids_holding_socket_inodes(set(inode_ips)).items():
+        if not _pid_names_this_jar(pid, user_data_dir):
+            continue
+        ips: Set[str] = set()
+        for inode in inodes:
+            ips |= inode_ips.get(inode, set())
+        hosts: list[str] = []
+        for ip in ips:
+            for host in _connect_hosts_for_listen_ip(ip):
+                if host not in hosts:
+                    hosts.append(host)
+        if hosts:
+            holders.append((pid, tuple(hosts)))
+    if len(holders) != 1:
+        return None
+    return holders[0]
+
+
 def _connect_hosts_for_listen_ip(ip: str) -> Tuple[str, ...]:
     """Hosts to TCP-probe for a ``/proc`` listen address. No other family.
 
@@ -535,7 +633,8 @@ def running_instance_cdp_port(user_data_dir: str, *, exclude_session: Optional[s
     text — finding 160) and ``DevToolsActivePort`` keeps the last port, so
     the pid must be alive AND still name this ``user-data-dir`` AND this
     pid must still listen on that port AND the listen must accept a
-    connection. A sibling Chrome that reused the stale file port, or a
+    connection. When the lock is gone the file port is still this jar
+    if a unique this-jar pid inode-listens there (finding 161). A sibling Chrome that reused the stale file port, or a
     recycled lock pid that does not name this jar, is not the dock. When
     the port file is gone or stale but the lock pid is still this
     profile's Chromium, recover the port from that pid (explicit
@@ -546,42 +645,58 @@ def running_instance_cdp_port(user_data_dir: str, *, exclude_session: Optional[s
     close the browser as a config change and then attach to the port that just died with it.
     """
     pid = _lock_pid(user_data_dir)
-    if pid is None:
-        return None
-    # Recover already refuses a recycled lock pid whose cmdline /
-    # ``CHROME_USER_DATA_DIR`` is not this jar. The DevToolsActivePort
-    # branch used to skip that check: a sibling Chrome that inherited
-    # the lock and listened on the stale file port was stamped as the
-    # dock (finding 158). Leftover aimed at that sibling then looked
-    # like the jar a human holds.
-    if not _pid_names_this_jar(pid, user_data_dir):
-        return None
-    if exclude_session and _launched_by_session(pid) == exclude_session:
-        return None
+    if pid is not None and not _pid_names_this_jar(pid, user_data_dir):
+        pid = None
     port_line = ""
     try:
         with open(os.path.join(user_data_dir, "DevToolsActivePort"), encoding="utf-8") as fh:
             port_line = fh.readline().strip()
     except OSError:
         port_line = ""
-    port = None
-    if port_line.isdigit():
+    if pid is None:
+        # Finding 161: SingletonLock can be gone while Chromium still
+        # holds DevTools. The file still names a port — leftover that
+        # already aimed there used to look like another Chrome. Do not
+        # guess among ports when the file is gone too.
+        if not port_line.isdigit():
+            return None
         candidate = int(port_line)
-        # File has no address and outlives a port switch. Trust it only
-        # when this pid still holds that listen — otherwise a sibling
-        # on the stale number is stamped as the dock (finding 144).
-        if candidate in _loopback_listen_ports_for_pid(pid):
-            hosts = _listen_connect_hosts(pid, candidate)
-            if hosts and _cdp_port_reachable(candidate, hosts):
-                port = candidate
-    if port is None:
-        recovered = _recover_cdp_port_from_singleton(user_data_dir, pid)
-        if recovered is None or recovered not in _loopback_listen_ports_for_pid(pid):
+        holder = _scan_this_jar_listen_holder(candidate, user_data_dir)
+        if holder is None:
             return None
-        hosts = _listen_connect_hosts(pid, recovered)
-        if not hosts or not _cdp_port_reachable(recovered, hosts):
+        pid, hosts = holder
+        if exclude_session and _launched_by_session(pid) == exclude_session:
             return None
-        port = recovered
+        if not hosts or not _cdp_port_reachable(candidate, hosts):
+            return None
+        port = candidate
+    else:
+        # Recover already refuses a recycled lock pid whose cmdline /
+        # ``CHROME_USER_DATA_DIR`` is not this jar. The DevToolsActivePort
+        # branch used to skip that check: a sibling Chrome that inherited
+        # the lock and listened on the stale file port was stamped as the
+        # dock (finding 158). Leftover aimed at that sibling then looked
+        # like the jar a human holds.
+        if exclude_session and _launched_by_session(pid) == exclude_session:
+            return None
+        port = None
+        if port_line.isdigit():
+            candidate = int(port_line)
+            # File has no address and outlives a port switch. Trust it only
+            # when this pid still holds that listen — otherwise a sibling
+            # on the stale number is stamped as the dock (finding 144).
+            if candidate in _loopback_listen_ports_for_pid(pid):
+                hosts = _listen_connect_hosts(pid, candidate)
+                if hosts and _cdp_port_reachable(candidate, hosts):
+                    port = candidate
+        if port is None:
+            recovered = _recover_cdp_port_from_singleton(user_data_dir, pid)
+            if recovered is None or recovered not in _loopback_listen_ports_for_pid(pid):
+                return None
+            hosts = _listen_connect_hosts(pid, recovered)
+            if not hosts or not _cdp_port_reachable(recovered, hosts):
+                return None
+            port = recovered
     try:
         if Path(user_data_dir).resolve() == profile_dir().resolve():
             remember_dock_cdp_port(port)
@@ -605,14 +720,24 @@ def _this_jar_chromium_pid(user_data_dir: Optional[str] = None) -> Optional[int]
     used to skip whatever pid the lock pointed at (finding 157), so a
     leftover writer that inherited a crashed chrome's lock survived.
     A dead lock pid is not Chromium. A materialized regular-file lock
-    is still this jar when the pid names it (finding 160). No HTTP.
+    is still this jar when the pid names it (finding 160). A missing
+    lock still names this jar when DevToolsActivePort and a unique
+    this-jar listen agree (finding 161). No HTTP.
     """
     if user_data_dir is None:
         user_data_dir = str(profile_dir())
     pid = _lock_pid(user_data_dir)
-    if pid is None or not _pid_names_this_jar(pid, user_data_dir):
+    if pid is not None and _pid_names_this_jar(pid, user_data_dir):
+        return pid
+    try:
+        with open(os.path.join(user_data_dir, "DevToolsActivePort"), encoding="utf-8") as fh:
+            port_line = fh.readline().strip()
+    except OSError:
         return None
-    return pid
+    if not port_line.isdigit():
+        return None
+    holder = _scan_this_jar_listen_holder(int(port_line), user_data_dir)
+    return holder[0] if holder is not None else None
 
 
 def _configured_cdp_override_url() -> str:
@@ -630,20 +755,24 @@ def _this_jar_listens_on_port(want: Optional[int]) -> bool:
     Unique-listen recover stays unknown when Chromium has several
     *specific* loopbacks — do not guess among them. A caller that
     already named ``want`` (leftover ``--cdp-url`` / vault attach /
-    ``/browser connect``) is not a guess. Stamp only if SingletonLock's
-    pid (symlink or materialized file) holds that listen and cmdline
-    names this ``user-data-dir``. A sibling on 9222, empty inodes, a
-    recycled pid, and a missing lock are not. No HTTP.
+    ``/browser connect``) is not a guess. Stamp if SingletonLock's
+    pid holds that listen and cmdline names this ``user-data-dir``,
+    or — when the lock is gone — if a unique this-jar pid still
+    inode-listens there (finding 161). A sibling on 9222, empty
+    inodes, and a recycled pid are not. No HTTP.
     """
     if not isinstance(want, int) or not (1 <= want <= 65535):
         return False
     user_data_dir = str(profile_dir())
     pid = _lock_pid(user_data_dir)
-    if pid is None or not _pid_names_this_jar(pid, user_data_dir):
+    if pid is not None and _pid_names_this_jar(pid, user_data_dir):
+        if want in _loopback_listen_ports_for_pid(pid):
+            hosts = _listen_connect_hosts(pid, want)
+            return bool(hosts) and _cdp_port_reachable(want, hosts)
+    holder = _scan_this_jar_listen_holder(want, user_data_dir)
+    if holder is None:
         return False
-    if want not in _loopback_listen_ports_for_pid(pid):
-        return False
-    hosts = _listen_connect_hosts(pid, want)
+    _pid, hosts = holder
     return bool(hosts) and _cdp_port_reachable(want, hosts)
 
 
