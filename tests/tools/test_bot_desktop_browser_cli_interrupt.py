@@ -7360,6 +7360,133 @@ def test_unregistered_named_listen_killed_when_persist_and_override_miss(monkeyp
         listener.close()
 
 
+def test_unregistered_host_port_killed_when_persist_and_override_miss(monkeypatch, tmp_path):
+    """Finding 156: leftover ``--port`` already named a listen this jar holds.
+
+    Unique-listen recover stays unknown with two specific loopbacks.
+    Persist never ran and ``/browser connect`` is unset, so
+    ``dock_port`` stayed None. Finding 155 identified leftover URLs;
+    official leftover lighthouse ``--port`` / CRI ``--port`` (and
+    ``--cli-flags-path`` ``port``) required that stamp, so Take over
+    left those writers typing. 9222, the other family, LAN, unpinned
+    lighthouse, and the bash ``-c`` parent stay up. Persist still
+    does not stamp an arbitrary listen.
+    """
+    import os
+    import socket
+
+    from tools.bot_desktop import browser as bdb
+    from tools.bot_desktop import runtime
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(8)
+
+    def _drain():
+        while True:
+            try:
+                conn, _ = listener.accept()
+            except OSError:
+                return
+            try:
+                conn.close()
+            except OSError:
+                pass
+
+    threading.Thread(target=_drain, daemon=True).start()
+    port = listener.getsockname()[1]
+    profile = bdb.profile_dir()
+    profile.mkdir(parents=True, exist_ok=True)
+    lock = profile / "SingletonLock"
+    if lock.exists() or lock.is_symlink():
+        lock.unlink()
+    os.symlink(f"host-{os.getpid()}", lock)
+    flags_dir = tmp_path / "lh-flags"
+    flags_dir.mkdir()
+    (flags_dir / "flags.json").write_text(json.dumps({"port": port}), encoding="utf-8")
+    monkeypatch.setattr(runtime, "state_dir", lambda: profile.parent)
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: None)
+    monkeypatch.setattr(
+        bdb,
+        "_chromium_cmdline_tokens",
+        lambda pid: ["chrome", f"--user-data-dir={profile}"],
+    )
+    monkeypatch.setattr(bdb, "_loopback_listen_ports_for_pid", lambda pid: {port, port + 1})
+    monkeypatch.setattr(
+        bdb,
+        "_loopback_listen_targets_for_pid",
+        lambda pid: {("127.0.0.1", port), ("::1", port + 1)},
+    )
+    monkeypatch.setattr(bdb, "_configured_cdp_override_url", lambda: "")
+    try:
+        assert bdb.last_known_dock_cdp_port() is None
+        leftover_lh = _FakeProc(
+            11211,
+            ["npx", "lighthouse", "https://example.com", "--port", str(port)],
+        )
+        leftover_lh_host = _FakeProc(
+            11212,
+            ["npx", "lighthouse", "--hostname", "127.0.0.1", "--port", str(port)],
+        )
+        leftover_cri = _FakeProc(
+            11213,
+            ["npx", "chrome-remote-interface", "--port", str(port), "inspect"],
+        )
+        leftover_cri_host = _FakeProc(
+            11214,
+            ["npx", "chrome-remote-interface", "--host", "127.0.0.1", "--port", str(port)],
+        )
+        leftover_flags = _FakeProc(
+            11215,
+            ["npx", "lighthouse", "https://example.com", "--cli-flags-path", "flags.json"],
+            cwd=str(flags_dir),
+        )
+        sibling = _FakeProc(
+            11216,
+            ["npx", "lighthouse", "--port", "9222", "https://example.com"],
+        )
+        leftover_v4_other = _FakeProc(
+            11217,
+            ["npx", "lighthouse", "--hostname", "127.0.0.1", "--port", str(port + 1)],
+        )
+        unpinned = _FakeProc(
+            11218,
+            ["npx", "lighthouse", "https://example.com"],
+        )
+        lan = _FakeProc(
+            11219,
+            ["npx", "lighthouse", "--hostname", "10.0.0.5", "--port", str(port)],
+        )
+        bash_parent = _FakeProc(
+            11220,
+            ["/bin/bash", "-c", f"npx lighthouse --port {port} https://example.com"],
+        )
+        lease.acquire("human")
+        n = interrupt_unregistered_dock_cli(
+            processes=[
+                leftover_lh, leftover_lh_host, leftover_cri, leftover_cri_host,
+                leftover_flags, sibling, leftover_v4_other, unpinned, lan,
+                bash_parent,
+            ],
+            chromium_pid=9999,
+            owner_daemon_pid=9998,
+        )
+        assert leftover_lh.killed == 1
+        assert leftover_lh_host.killed == 1
+        assert leftover_cri.killed == 1
+        assert leftover_cri_host.killed == 1
+        assert leftover_flags.killed == 1
+        assert sibling.killed == 0
+        assert leftover_v4_other.killed == 0
+        assert unpinned.killed == 0
+        assert lan.killed == 0
+        assert bash_parent.killed == 0
+        assert n == 5
+    finally:
+        listener.close()
+
+
 def test_stop_reserved_calls_unregistered_interrupt(monkeypatch):
     from tools.browser_tool_session import interrupt_unregistered_dock_cli as real
     from tools.browser_tool_supervisor_lease import stop_reserved_supervisors

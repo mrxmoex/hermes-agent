@@ -1891,6 +1891,73 @@ def test_named_listen_identifies_dock_when_recover_persist_and_override_miss(
         listener.close()
 
 
+def test_named_listen_host_port_aims_when_persist_and_override_miss(
+    monkeypatch, tmp_path,
+):
+    """Finding 156: leftover ``--port`` / ``--host`` named this jar.
+
+    Unique-listen recover stays unknown with two specific loopbacks.
+    Persist never ran and the operator override is empty, so
+    ``dock_port`` stayed None. Finding 155 only consulted leftover
+    URLs; lighthouse / CRI ``--port`` required a stamp first.
+    Persist still does not stamp an arbitrary listen.
+    """
+    import os
+    import socket
+
+    import tools.bot_desktop.browser as bdb
+    from tools.browser_tool_session import (
+        _leftover_host_port_aims_at_dock,
+        _unregistered_cli_aims_at_dock,
+    )
+
+    profile = tmp_path / "browser-profile"
+    profile.mkdir()
+    os.symlink(f"host-{os.getpid()}", profile / "SingletonLock")
+    monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path)
+    monkeypatch.setattr(bdb, "profile_dir", lambda: profile)
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: None)
+    monkeypatch.setattr(
+        bdb,
+        "_chromium_cmdline_tokens",
+        lambda pid: ["chrome", f"--user-data-dir={profile}"],
+    )
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(8)
+    _drain_listen(listener)
+    port = listener.getsockname()[1]
+    monkeypatch.setattr(bdb, "_loopback_listen_ports_for_pid", lambda pid: {port, port + 1})
+    monkeypatch.setattr(
+        bdb,
+        "_loopback_listen_targets_for_pid",
+        lambda pid: {("127.0.0.1", port), ("::1", port + 1)},
+    )
+    monkeypatch.setattr(bdb, "_configured_cdp_override_url", lambda: "")
+    try:
+        assert bdb.last_known_dock_cdp_port() is None
+        assert bdb.persist_live_dock_cdp_port() is None
+        assert bdb.last_known_dock_cdp_port() is None
+        assert _leftover_host_port_aims_at_dock(None, port, None) is True
+        assert _leftover_host_port_aims_at_dock("127.0.0.1", port, None) is True
+        assert _leftover_host_port_aims_at_dock(None, 9222, None) is False
+        assert _leftover_host_port_aims_at_dock("127.0.0.1", port + 1, None) is False
+        assert _unregistered_cli_aims_at_dock(
+            ["npx", "lighthouse", "https://example.com", "--port", str(port)],
+            {}, profile, None,
+        ) is True
+        assert _unregistered_cli_aims_at_dock(
+            ["npx", "chrome-remote-interface", "--host", "127.0.0.1", "--port", str(port)],
+            {}, profile, None,
+        ) is True
+        assert _unregistered_cli_aims_at_dock(
+            ["npx", "lighthouse", "--hostname", "10.0.0.5", "--port", str(port)],
+            {}, profile, None,
+        ) is False
+    finally:
+        listener.close()
+
+
 def test_vault_ensure_does_not_probe_raw_dock_url_while_human_holds(monkeypatch):
     """Session admit can be a no-op while ``get cdp-url`` names the dock."""
     import tools.bot_desktop.browser as bdb

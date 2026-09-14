@@ -1065,12 +1065,23 @@ def _leftover_host_port_aims_at_dock(
     port: int,
     dock_port: Optional[int],
 ) -> bool:
-    """True when leftover ``--host`` / ``--hostname`` + port is this jar."""
-    if dock_port is None or not (1 <= port <= 65535) or port != dock_port:
+    """True when leftover ``--host`` / ``--hostname`` + port is this jar.
+
+    Finding 155 identified leftover *URLs* when persist and the override
+    both miss. Official leftover lighthouse ``--port`` / CRI ``--port``
+    never build a URL — they required a stamped ``dock_port`` first, so
+    Take over left those writers typing into the jar a human holds.
+    A leftover that already named ``port`` is not a guess: consult the
+    same named-listen identity. A sibling on 9222, the other loopback
+    family, and LAN stay unknown.
+    """
+    if not (1 <= port <= 65535):
+        return False
+    if dock_port is not None and port != dock_port:
         return False
     text = (host or "").strip()
     if not text:
-        return True
+        return _leftover_cdp_aims_at_dock(str(port), dock_port)
     if ":" in text and not text.startswith("["):
         url = f"http://[{text}]:{port}"
     else:
