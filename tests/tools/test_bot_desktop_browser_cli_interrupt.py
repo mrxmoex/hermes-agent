@@ -426,6 +426,43 @@ def test_agent_browser_invocation_is_token_match_not_substring():
     assert _is_chrome_devtools_mcp_invocation(
         ["npm", "exec", "--package=chrome-devtools-mcp", "--",
          "--browserUrl", "http://127.0.0.1:9333"])
+    # Official leftover launch pin (finding 123). Conflicts with attach
+    # flags. ``--autoConnect`` / other jar / attach-to-other still win.
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "chrome-devtools-mcp", "--userDataDir", str(_jar)],
+        {}, _jar, None,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "chrome-devtools-mcp", f"--user-data-dir={_jar}"],
+        {}, _jar, None,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "chrome-devtools-mcp", "--userDataDir", "browser-profile"],
+        {}, _jar, None, cwd=_jar.parent,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["npm", "exec", "--package=chrome-devtools-mcp", "--",
+         "--userDataDir", str(_jar)],
+        {}, _jar, None,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["npx", "chrome-devtools-mcp", "--userDataDir", "/tmp/other-chrome"],
+        {}, _jar, None,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["npx", "chrome-devtools-mcp", "--autoConnect"],
+        {}, _jar, None,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["npx", "chrome-devtools-mcp", "--isolated"],
+        {}, _jar, None,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["npx", "chrome-devtools-mcp",
+         "--browserUrl", "http://127.0.0.1:9222",
+         "--userDataDir", str(_jar)],
+        {}, _jar, 9333,
+    )
     assert _is_playwright_invocation(
         ["npm", "exec", "--", "playwright", "codegen"])
     assert _is_playwright_mcp_invocation(
@@ -1832,6 +1869,93 @@ def test_unregistered_chrome_devtools_mcp_dock_url_killed_on_takeover():
     assert auto.killed == 0
     assert other.killed == 0
     assert lan.killed == 0
+    assert bash_parent.killed == 0
+
+
+def test_unregistered_chrome_devtools_mcp_user_data_dir_killed_on_takeover():
+    """terminal() chrome-devtools-mcp --userDataDir <dock> is leftover launch.
+
+    Official pin conflicts with --browserUrl / --wsEndpoint / --isolated.
+    Finding 89 only checked URL attach, so Take over left the
+    launch-on-jar writer on the cookie jar a human holds. Relative pin
+    uses the writer cwd. Other jar / --autoConnect / attach-to-other
+    stay unknown. Bash -c parent is still not the writer.
+    """
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    profile = bdb.profile_dir()
+    leftover = _FakeProc(
+        9210,
+        ["npx", "chrome-devtools-mcp", "--userDataDir", str(profile)],
+    )
+    kebab = _FakeProc(
+        9211,
+        ["npx", "chrome-devtools-mcp", f"--user-data-dir={profile}"],
+    )
+    relative = _FakeProc(
+        9212,
+        ["npx", "chrome-devtools-mcp", "--userDataDir", "browser-profile"],
+        cwd=profile.parent,
+    )
+    npm_exec = _FakeProc(
+        9213,
+        ["npm", "exec", "--package=chrome-devtools-mcp", "--",
+         "--userDataDir", str(profile)],
+    )
+    shebang = _FakeProc(
+        9214,
+        ["node", "/home/x/node_modules/chrome-devtools-mcp/build/src/index.js",
+         "--userDataDir", str(profile)],
+    )
+    other = _FakeProc(
+        9215,
+        ["npx", "chrome-devtools-mcp", "--userDataDir", "/tmp/other-chrome"],
+    )
+    auto = _FakeProc(
+        9216,
+        ["npx", "chrome-devtools-mcp", "--autoConnect"],
+    )
+    isolated = _FakeProc(
+        9217,
+        ["npx", "chrome-devtools-mcp", "--isolated"],
+    )
+    url_wins = _FakeProc(
+        9218,
+        ["npx", "chrome-devtools-mcp",
+         "--browserUrl", "http://127.0.0.1:9222",
+         "--userDataDir", str(profile)],
+    )
+    wrong_cwd = _FakeProc(
+        9219,
+        ["npx", "chrome-devtools-mcp", "--userDataDir", "browser-profile"],
+        cwd=profile.parent.parent,
+    )
+    bash_parent = _FakeProc(
+        9220,
+        ["/bin/bash", "-c",
+         f"npx chrome-devtools-mcp --userDataDir {profile}"],
+    )
+    lease.acquire("human")
+    n = interrupt_unregistered_dock_cli(
+        processes=[
+            leftover, kebab, relative, npm_exec, shebang, other, auto,
+            isolated, url_wins, wrong_cwd, bash_parent,
+        ],
+        chromium_pid=9999,
+        owner_daemon_pid=9998,
+    )
+    assert n == 5
+    assert leftover.killed == 1
+    assert kebab.killed == 1
+    assert relative.killed == 1
+    assert npm_exec.killed == 1
+    assert shebang.killed == 1
+    assert other.killed == 0
+    assert auto.killed == 0
+    assert isolated.killed == 0
+    assert url_wins.killed == 0
+    assert wrong_cwd.killed == 0
     assert bash_parent.killed == 0
 
 

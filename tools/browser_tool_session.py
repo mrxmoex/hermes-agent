@@ -2331,9 +2331,13 @@ def _unregistered_cli_aims_at_dock(
     resolved against *that* process cwd (finding 95 for Chromium argv).
     Official leftover also pins the jar on argv: agent-browser
     ``--profile`` and Playwright ``--user-data-dir`` / ``open --profile``
-    (finding 111). Env-only hid those writers. Explicit ``--cdp`` still
+    (finding 111). chrome-devtools-mcp ``--userDataDir`` /
+    ``--user-data-dir`` is the same launch pin (finding 123) — it
+    conflicts with attach flags, so URL-only hid that writer. Env-only
+    hid those writers. Explicit ``--cdp`` / ``--browserUrl`` still
     wins. Gateway cwd must not decide the pin. browser-use ``--profile``
     is a Chrome profile *name* and stays unknown.
+    ``--autoConnect`` / no pin stays unknown.
     """
     env = environ or {}
     if _is_browser_use_invocation(tokens) and not _is_agent_browser_invocation(tokens):
@@ -2423,7 +2427,14 @@ def _unregistered_cli_aims_at_dock(
                 return True
             port = _loopback_cdp_port(val)
             return dock_port is not None and port == dock_port
-        return False
+        # Official leftover launch pin: ``--userDataDir`` / ``--user-data-dir``
+        # conflicts with ``--browserUrl`` / ``--wsEndpoint`` / ``--isolated``.
+        # Finding 89 only checked URL attach, so Take over left the
+        # launch-on-jar writer running on the cookie jar a human holds.
+        # ``--autoConnect`` / no pin stays unknown (a Chrome we cannot
+        # prove is this jar).
+        pinned = _flag_value(tokens, ("--userDataDir", "--user-data-dir"))
+        return _leftover_profile_pin_aims_at_dock(pinned, profile, cwd)
     if (
         _is_lighthouse_invocation(tokens)
         and not _is_agent_browser_invocation(tokens)
