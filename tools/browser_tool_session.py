@@ -1266,14 +1266,33 @@ def _launcher_basename(token: str) -> str:
 _LAUNCHER_VALUE_FLAGS = frozenset({"--from"})
 # agent-browser globals that take a value before ``connect <port|url>``.
 # ``--session foo connect 9333`` must see ``connect``, not ``foo``.
+# Official leftover globals that always take an operand before
+# ``connect <port|url>``. Finding 133 added ``--config``; finding 134
+# is the rest of the documented string / array / number flags —
+# ``--state ./auth.json connect <dock>`` treated ``./auth.json`` as
+# the attach. Booleans are ``_AGENT_BROWSER_OPTIONAL_BOOL_FLAGS``.
 _AGENT_BROWSER_VALUE_FLAGS = frozenset({
     "--session", "--profile", "--cdp", "--cdp-endpoint",
-    "-p", "--headers", "--executable-path", "--args",
+    "-p", "--provider", "--headers", "--executable-path", "--args",
     "--user-agent", "--proxy", "--proxy-bypass", "--name", "-n",
-    "--color-scheme",
-    # Official leftover ``--config <path> connect <dock>`` hid the
-    # attach (finding 133) — ``./cfg.json`` was the first operand.
-    "--config",
+    "--color-scheme", "--config", "--state", "--restore",
+    "--restore-save", "--restore-check-url", "--restore-check-text",
+    "--restore-check-fn", "--namespace", "--session-name",
+    "--extension", "--init-script", "--enable", "--device",
+    "--ca-cert", "--download-path", "--max-output",
+    "--allowed-domains", "--action-policy", "--confirm-actions",
+    "--engine", "--screenshot-dir", "--screenshot-quality",
+    "--screenshot-format", "--idle-timeout", "--model",
+})
+# Official leftover booleans accept an optional ``true`` / ``false``
+# (``--headed false connect <dock>``). A bare ``--headed connect``
+# must still see ``connect`` — do not swallow the command.
+_AGENT_BROWSER_OPTIONAL_BOOL_FLAGS = frozenset({
+    "--headed", "--json", "--debug", "--hide-scrollbars", "--webgpu",
+    "--no-webmcp", "--ignore-https-errors", "--no-ca-cert",
+    "--allow-file-access", "--auto-connect", "--pin-tab",
+    "--annotate", "--content-boundaries", "--confirm-interactive",
+    "--no-auto-dialog",
 })
 # Global options that take a path / selector *before* exec|dlx|x.
 # Space-separated values used to become the "command" (``pnpm --dir /tmp
@@ -1389,6 +1408,7 @@ def _first_non_flag_tokens(
     skip: int = 1,
     value_flags: Optional[frozenset] = None,
     reserved: Optional[frozenset] = None,
+    optional_bool_flags: Optional[frozenset] = None,
 ) -> List[str]:
     """Non-flag argv after the launcher, skipping values of known launcher flags.
 
@@ -1397,11 +1417,18 @@ def _first_non_flag_tokens(
     the same shape. ``pnpm --dir /tmp exec lighthouse`` must see ``exec``,
     not the directory. A reserved next token (``exec`` / ``x``) is the
     subcommand, not a directory named ``exec``.
+
+    ``optional_bool_flags`` consume a following ``true`` / ``false`` only
+    (finding 134). Official leftover ``--headed false connect <dock>``
+    hid the attach; a bare ``--headed connect`` must still see
+    ``connect``.
     """
     known = _LAUNCHER_VALUE_FLAGS if not value_flags else (_LAUNCHER_VALUE_FLAGS | value_flags)
     reserved_next = reserved or frozenset()
+    optional_bool = optional_bool_flags or frozenset()
     out: List[str] = []
     expect_value = False
+    expect_optional_bool = False
     for tok in tokens[skip:]:
         raw = str(tok) if tok is not None else ""
         if expect_value:
@@ -1409,10 +1436,19 @@ def _first_non_flag_tokens(
             if raw in reserved_next:
                 out.append(raw)
             continue
+        if expect_optional_bool:
+            expect_optional_bool = False
+            if raw.lower() in {"true", "false"}:
+                continue
+            if not raw.startswith("-"):
+                out.append(raw)
+                continue
         if not raw or raw.startswith("-"):
             key = raw.split("=", 1)[0]
             if key in known and "=" not in raw:
                 expect_value = True
+            elif key in optional_bool and "=" not in raw:
+                expect_optional_bool = True
             continue
         out.append(raw)
     return out
@@ -2384,13 +2420,22 @@ def _agent_browser_connect_target(tokens: List[str]) -> Optional[str]:
     The in-flight writer is ``connect 9333`` / ``connect http://…``.
     ``--session foo connect 9333`` must not treat ``foo`` as the target.
     Official leftover ``--config <path> connect <dock>`` is the same
-    shape (finding 133) — the config path is not the attach. ``--auto-connect``
-    is not a port. ``connect`` with no operand stays unknown.
+    shape (finding 133) — the config path is not the attach. Finding
+    134 is the rest of the official leftover globals: ``--state`` /
+    ``--provider`` / ``--namespace`` / ``--restore`` / ``--engine`` /
+    ``--ca-cert`` / ``--headed false`` hid ``connect <dock>`` the same
+    way. A bare ``--headed connect`` must still see ``connect``.
+    ``--auto-connect`` is not a port. ``connect`` with no operand stays
+    unknown.
     """
     if not tokens or not _is_agent_browser_invocation(tokens):
         return None
     work = _leftover_flag_tokens(tokens)
-    rest = _first_non_flag_tokens(work, value_flags=_AGENT_BROWSER_VALUE_FLAGS)
+    rest = _first_non_flag_tokens(
+        work,
+        value_flags=_AGENT_BROWSER_VALUE_FLAGS,
+        optional_bool_flags=_AGENT_BROWSER_OPTIONAL_BOOL_FLAGS,
+    )
     if rest and (
         _token_basename_is_agent_browser(rest[0])
         or _token_is_agent_browser_script(rest[0])
@@ -2418,7 +2463,10 @@ def _unregistered_cli_aims_at_dock(
     cloud URL is not the dock even if ``AGENT_BROWSER_PROFILE`` is pinned.
     Official leftover that *stays* after ``connect <dock>`` is the
     daemon with ``AGENT_BROWSER_CDP`` frozen (finding 112). Positional
-    ``connect <port|url>`` is the in-flight attach. ``--auto-connect`` /
+    ``connect <port|url>`` is the in-flight attach. Official leftover
+    globals before ``connect`` (finding 134) — ``--state`` /
+    ``--provider`` / ``--headed false`` — hid that attach; finding 133
+    only peeled ``--config``. ``--auto-connect`` /
     ``AGENT_BROWSER_AUTO_CONNECT`` stay unknown (a Chrome we cannot
     prove is this jar). ``--session`` without a CDP pin stays unknown.
 

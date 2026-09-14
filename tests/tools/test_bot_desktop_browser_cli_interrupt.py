@@ -4441,6 +4441,92 @@ def test_unregistered_agent_browser_config_killed_on_takeover():
     assert bash_parent.killed == 0
 
 
+def test_unregistered_agent_browser_connect_after_globals_killed_on_takeover():
+    """terminal() agent-browser leftover --state / --headed false hid connect.
+
+    Official leftover globals take an operand before ``connect <dock>``.
+    Finding 133 only peeled ``--config``, so Take over left
+    ``--state ./auth.json connect <dock>`` and ``--headed false connect
+    <dock>`` typing into the jar. A bare ``--headed connect`` must
+    still see ``connect``. Another Chrome and the bash ``-c`` parent
+    stay up.
+    """
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    bdb.remember_dock_cdp_port(9333)
+    url = "http://127.0.0.1:9333"
+    via_state = _FakeProc(
+        10000, ["agent-browser", "--state", "./auth.json", "connect", url],
+    )
+    via_provider = _FakeProc(
+        10001, ["agent-browser", "--provider", "kernel", "connect", url],
+    )
+    via_namespace = _FakeProc(
+        10002, ["agent-browser", "--namespace", "bots", "connect", url],
+    )
+    via_restore = _FakeProc(
+        10003, ["agent-browser", "--restore", "sess1", "connect", url],
+    )
+    via_engine = _FakeProc(
+        10004, ["agent-browser", "--engine", "chrome", "connect", url],
+    )
+    via_ca = _FakeProc(
+        10005, ["agent-browser", "--ca-cert", "/etc/ssl/cert.pem", "connect", url],
+    )
+    via_headed_false = _FakeProc(
+        10006, ["agent-browser", "--headed", "false", "connect", url],
+    )
+    via_json_false = _FakeProc(
+        10007, ["agent-browser", "--json", "false", "connect", url],
+    )
+    via_headed_bare = _FakeProc(
+        10008, ["agent-browser", "--headed", "connect", url],
+    )
+    shebang = _FakeProc(
+        10009,
+        ["node", "/home/x/node_modules/agent-browser/dist/cli.js",
+         "--state", "./auth.json", "connect", url],
+    )
+    other = _FakeProc(
+        10010,
+        ["agent-browser", "--state", "./auth.json",
+         "connect", "http://127.0.0.1:9222"],
+    )
+    no_connect = _FakeProc(
+        10011, ["agent-browser", "--state", "./auth.json", "fill"],
+    )
+    bash_parent = _FakeProc(
+        10012,
+        ["/bin/bash", "-c",
+         "agent-browser --state ./auth.json connect http://127.0.0.1:9333"],
+    )
+    lease.acquire("human")
+    n = interrupt_unregistered_dock_cli(
+        processes=[
+            via_state, via_provider, via_namespace, via_restore,
+            via_engine, via_ca, via_headed_false, via_json_false,
+            via_headed_bare, shebang, other, no_connect, bash_parent,
+        ],
+        chromium_pid=9999,
+        owner_daemon_pid=9998,
+    )
+    assert n == 10
+    assert via_state.killed == 1
+    assert via_provider.killed == 1
+    assert via_namespace.killed == 1
+    assert via_restore.killed == 1
+    assert via_engine.killed == 1
+    assert via_ca.killed == 1
+    assert via_headed_false.killed == 1
+    assert via_json_false.killed == 1
+    assert via_headed_bare.killed == 1
+    assert shebang.killed == 1
+    assert other.killed == 0
+    assert no_connect.killed == 0
+    assert bash_parent.killed == 0
+
+
 def test_stop_reserved_calls_unregistered_interrupt(monkeypatch):
     from tools.browser_tool_session import interrupt_unregistered_dock_cli as real
     from tools.browser_tool_supervisor_lease import stop_reserved_supervisors
