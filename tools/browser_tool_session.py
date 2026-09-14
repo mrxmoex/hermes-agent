@@ -5217,13 +5217,61 @@ def _daemon_owns_shared_chromium(session_info: Dict[str, Any]) -> bool:
     return _bd_browser.shared_chromium_owner_session() == name
 
 
+def _remembered_dock_attach_port(*, exclude_session: Optional[str] = None) -> Optional[int]:
+    """Remembered dock port for agent attach after a live TCP miss, or ``None``.
+
+    Leftover identity already trusts persist / last-known when
+    ``running_instance_cdp_port`` misses (leftover holds the CDP socket —
+    finding 166). Agent attach did not: it launched ``--session`` and
+    Chromium singleton-forwarded into the jar a human holds (finding 168).
+    Use persist only when this jar still inode-listens so
+    ``dock_cdp_attach_target`` is family-correct. Empty hosts stay a
+    launch — a bare persist port races to the other loopback squat
+    (finding 167). ``exclude_session`` stays None when that session owns
+    the lock pid or a listen holder (``--cdp`` would close its own
+    browser). Do not stamp persist. 9222 stays unknown unless this jar
+    inode-listens there.
+    """
+    from hermes_constants import hermes_home_key
+    from tools.bot_desktop import browser as _bd_browser
+
+    remembered = _last_dock_cdp_port.get(hermes_home_key())
+    if remembered is None:
+        remembered = _bd_browser.last_known_dock_cdp_port()
+    if not isinstance(remembered, int) or not (1 <= remembered <= 65535):
+        return None
+    user_data_dir = str(_bd_browser.profile_dir())
+    if exclude_session:
+        pid = _bd_browser._this_jar_chromium_pid(user_data_dir)
+        if pid is not None and _bd_browser._launched_by_session(pid) == exclude_session:
+            return None
+        holders = _bd_browser._this_jar_listen_holders(remembered, user_data_dir)
+        if any(
+            _bd_browser._launched_by_session(holder_pid) == exclude_session
+            for holder_pid, _ in holders
+        ):
+            return None
+    try:
+        hosts = _bd_browser._this_jar_listen_connect_hosts(remembered)
+    except Exception:
+        hosts = ()
+    if not hosts:
+        return None
+    return remembered
+
+
 def _bot_desktop_attach_port(session_info: Dict[str, Any]) -> Optional[int]:
     """DevTools port of a human-started Chromium on the Bot Desktop's shared profile, else ``None``."""
     if not _shares_bot_desktop_browser(session_info):
         return None
     from tools.bot_desktop import browser as _bd_browser
-    return _bd_browser.running_instance_cdp_port(str(_bd_browser.profile_dir()),
-                                                 exclude_session=session_info["session_name"])
+    exclude = session_info["session_name"]
+    live = _bd_browser.running_instance_cdp_port(
+        str(_bd_browser.profile_dir()), exclude_session=exclude,
+    )
+    if live is not None:
+        return live
+    return _remembered_dock_attach_port(exclude_session=exclude)
 
 
 def _run_browser_command_unfenced(task_id: str, command: str, args: List[str], timeout: int,
@@ -5248,6 +5296,8 @@ def _run_browser_command_unfenced(task_id: str, command: str, args: List[str], t
             # Same daemon (keyed by --session) either way, so snapshot refs stay valid across commands.
             # Persist is a port. ``--cdp <port>`` is unknown-family and races
             # to a sibling squat on the other loopback (finding 167).
+            # Live TCP miss still attaches via remembered persist when this
+            # jar inode-listens (finding 168).
             from tools.bot_desktop import browser as _bd_browser
             backend_args += ["--cdp", _bd_browser.dock_cdp_attach_target(bd_port)]
         if _cloud._is_headed_mode():

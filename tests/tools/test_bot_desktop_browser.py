@@ -1303,6 +1303,89 @@ def test_agent_attach_uses_this_jar_listen_family(tmp_path, monkeypatch):
         v4.close()
 
 
+def _spawn_agent_open(monkeypatch, session, session_name="h_abc"):
+    """Capture agent-browser argv for one unfenced ``open``."""
+    monkeypatch.setattr(runtime, "published_env", lambda: {"DISPLAY": ":37"})
+    monkeypatch.setattr(session._cloud, "_get_browser_engine", lambda: "auto")
+    monkeypatch.setattr(session._cloud, "_is_headed_mode", lambda: False)
+    monkeypatch.setattr(session, "_agent_browser_argv", lambda cmd: [cmd])
+    argvs: list = []
+
+    def spawn(task_id, session_info, cmd_parts, *rest):
+        argvs.append(cmd_parts)
+        return {"success": True}
+
+    monkeypatch.setattr(session, "_spawn_and_collect", spawn)
+    monkeypatch.setattr(session._lp, "_lightpanda_fallback_reason", lambda *a: None)
+    info = {"session_name": session_name, "cdp_url": None, "features": {"local": True}}
+    session._run_browser_command_unfenced(
+        "t", "open", ["https://x"], 10, None, "agent-browser", info,
+    )
+    return argvs
+
+
+def test_agent_attach_uses_persist_when_live_tcp_misses(tmp_path, monkeypatch):
+    """Finding 168: leftover holding CDP hid live persist, so agent launched.
+
+    ``running_instance_cdp_port`` requires a fresh TCP accept. Leftover
+    identity already trusts remembered persist when that probe misses
+    (finding 166). Agent attach did not — it launched ``--session`` and
+    Chromium singleton-forwarded into the jar a human holds. Attach
+    with this jar's connect host. Empty hosts stay a launch. A session
+    that owns the chrome stays a launch. 9222 stays unknown.
+    """
+    from hermes_constants import hermes_home_key
+    from tools import browser_tool_session as session
+    from tools.browser_tool_session import (
+        _cdp_url_is_bot_desktop_browser,
+        _last_dock_cdp_port,
+        _reset_dock_port_memory_for_tests,
+    )
+
+    v6, v4, port, profile = _ipv6_only_dock(tmp_path, monkeypatch)
+    leftover = socket.create_connection(("::1", port), timeout=1.0)
+    try:
+        _reset_dock_port_memory_for_tests()
+        browser.remember_dock_cdp_port(port)
+        _last_dock_cdp_port.clear()
+        assert browser.running_instance_cdp_port(str(profile)) is None
+        assert browser.last_known_dock_cdp_port() == port
+        assert browser._this_jar_listen_connect_hosts(port) == ("::1",)
+        assert _cdp_url_is_bot_desktop_browser(f"http://[::1]:{port}") is True
+        assert _cdp_url_is_bot_desktop_browser(f"http://127.0.0.1:{port}") is False
+
+        argvs = _spawn_agent_open(monkeypatch, session)
+        assert argvs[-1][:5] == [
+            "agent-browser", "--session", "h_abc", "--cdp", f"http://[::1]:{port}",
+        ]
+        assert "127.0.0.1" not in argvs[-1][4]
+        assert argvs[-1][4] != str(port)
+
+        _reset_dock_port_memory_for_tests()
+        browser._dock_port_path().unlink(missing_ok=True)
+        _last_dock_cdp_port[hermes_home_key()] = port
+        assert browser.last_known_dock_cdp_port() is None
+        argvs = _spawn_agent_open(monkeypatch, session)
+        assert argvs[-1][4] == f"http://[::1]:{port}"
+
+        monkeypatch.setattr(browser, "_launched_by_session", lambda pid: "h_abc")
+        argvs = _spawn_agent_open(monkeypatch, session)
+        assert "--cdp" not in argvs[-1]
+        assert argvs[-1][:3] == ["agent-browser", "--session", "h_abc"]
+
+        monkeypatch.setattr(browser, "_launched_by_session", lambda pid: None)
+        _reset_dock_port_memory_for_tests()
+        browser.remember_dock_cdp_port(9333)
+        _last_dock_cdp_port.clear()
+        argvs = _spawn_agent_open(monkeypatch, session)
+        assert "--cdp" not in argvs[-1]
+        assert browser.dock_cdp_attach_target(9222) == "9222"
+    finally:
+        leftover.close()
+        v6.close()
+        v4.close()
+
+
 def _ipv6_only_dock(tmp_path, monkeypatch):
     """Live ::1 dock plus a sibling squat on 127.0.0.1:same. Yields (port, profile)."""
     v6 = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
