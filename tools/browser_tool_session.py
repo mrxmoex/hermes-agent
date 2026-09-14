@@ -2496,8 +2496,11 @@ def _unregistered_cli_aims_at_dock(
     Take over left ``agent-browser fill`` whose project config
     launched Chrome on this cookie jar. CLI / env still override the
     file per key. Explicit ``--config`` replaces the auto files.
-    ``autoConnect`` / no pin stays unknown. Gateway cwd must not
-    decide a relative config path.
+    Official leftover globals before ``connect`` (finding 134) —
+    ``--state`` / ``--provider`` / ``--headed false`` — hid the
+    attach; finding 133 only peeled ``--config``. ``autoConnect`` /
+    no pin stays unknown. Gateway cwd must not decide a relative
+    config path.
     chrome-devtools-mcp ``--userDataDir`` /
     ``--user-data-dir`` is the same launch pin (finding 123) — it
     conflicts with attach flags, so URL-only hid that writer. Official
