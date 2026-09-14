@@ -149,6 +149,24 @@ def _install_backend(sid: str, backend: ComputerUseBackend, permission_mode: str
     _backend = backend if sid == "" else _backend
     return backend
 
+
+def _backend_owner_home(session_id: str) -> Optional[str]:
+    """HERMES_HOME that spawned this session's cua-driver, or None if unrecorded.
+
+    After a multiplex turn the process home is the launch profile. Ambient
+    ``assert_agent_may_act`` / persist / ``desktop_identity`` then read
+    launch ``lease.json`` (agent, missing file) and leftover
+    ``computer_use`` typed on the bot screen a human was using — or
+    replaced that session's cached driver because launch DISPLAY looked
+    stale. Copy the home out; do not persist while holding the cache
+    lock. Unrecorded owner stays ambient. A human on the launch bot
+    does not void a sibling session.
+    """
+    sid = str(session_id or "")
+    with _backend_lock:
+        home = _backend_homes.get(sid)
+    return home if isinstance(home, str) and home else None
+
 def _detach_locked(sid: str) -> Tuple[Optional[ComputerUseBackend], Optional[threading.RLock]]:
     """Remove one session's cache entries, plus the ``_backend`` injection hook when it aliases the empty session
     (older callers/tests may populate only the hook). Caller holds ``_backend_lock``."""
@@ -384,11 +402,30 @@ class _NoopBackend(ComputerUseBackend):  # pragma: no cover
 def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
     """Main entry point (tools.registry): a JSON string (text-only) or a dict marked `_multimodal`. Order: hard
     blocks (_reject_unsafe) -> approval scopes (destructive action, then 'bring_to_front' — persistent focus is a
-    separate visible side effect with its own scope) -> backend -> dispatch under the session call lock."""
+    separate visible side effect with its own scope) -> backend -> dispatch under the session call lock.
+
+    Re-enter the session's cua-backend home first. After a multiplex turn
+    the process home is the launch profile; leftover ``computer_use`` must
+    admit / persist / resolve DISPLAY against *this* session's
+    ``lease.json``, not the launch bot's (finding 117).
+    """
     action = (args.get("action") or "").strip().lower()
     if not action:
         return json.dumps({"error": "missing `action`"})
     session_id = str(kwargs.get("session_id") or "")  # approval-state / daemon-mode isolation key
+    owner = _backend_owner_home(session_id)
+    token = None
+    if owner:
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        token = set_hermes_home_override(owner)
+    try:
+        return _handle_computer_use_unscoped(args, session_id, action)
+    finally:
+        if token is not None:
+            reset_hermes_home_override(token)
+
+
+def _handle_computer_use_unscoped(args: Dict[str, Any], session_id: str, action: str) -> Any:
     from tools.computer_use.handoff import HANDOFF_ACTIONS, handle_handoff
     # Finding 68 stamped dock-cdp-port on list_apps/click/… and started the
     # leftover watch. request_handoff / wait_for_human returned first, so a

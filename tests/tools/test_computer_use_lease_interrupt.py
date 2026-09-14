@@ -353,6 +353,154 @@ def test_computer_use_watch_persists_sibling_dock_under_backend_home(monkeypatch
         _reset_dock_port_memory_for_tests()
 
 
+def _sibling_homes(tmp_path: Path) -> tuple[Path, Path]:
+    launch = tmp_path / "launch"
+    bot = tmp_path / "bot"
+    launch.mkdir()
+    bot.mkdir()
+    return launch, bot
+
+
+class _AppsBackend(_RecordingBackend):
+    def list_apps(self, **_kw):
+        return []
+
+
+def test_handle_computer_use_uses_session_backend_home_after_multiplex_turn(tmp_path: Path):
+    """Finding 101 scoped browser leftover I/O. ``computer_use`` still
+    admitted / persisted / resolved DISPLAY against ambient launch
+    ``lease.json`` (agent, missing file) and typed on the bot screen a
+    human was using — or replaced that session's cached cua-driver
+    because launch DISPLAY looked stale.
+    """
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.bot_desktop.lease import _path
+    from tools.computer_use import tool
+
+    launch, bot = _sibling_homes(tmp_path)
+    token_bot = set_hermes_home_override(str(bot))
+    try:
+        with tool._backend_lock:
+            tool._install_backend("review", _AppsBackend(), "standard")
+        lease.acquire("human-viewer")
+    finally:
+        reset_hermes_home_override(token_bot)
+
+    token_launch = set_hermes_home_override(str(launch))
+    try:
+        refused = json.loads(tool.handle_computer_use(
+            {"action": "list_apps"}, session_id="review",
+        ))
+        assert refused.get("code") == "human_has_control"
+        assert "review" in tool._backends
+    finally:
+        reset_hermes_home_override(token_launch)
+        for home in (launch, bot):
+            for f in (_path(str(home)), _path(str(home)).with_suffix(".lock")):
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+
+
+def test_handle_computer_use_does_not_fence_on_the_launch_profile_lease(monkeypatch, tmp_path: Path):
+    """A human on the launch bot must not void a sibling computer_use."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.bot_desktop.lease import _path
+    from tools.computer_use import tool
+
+    launch, bot = _sibling_homes(tmp_path)
+    token_launch = set_hermes_home_override(str(launch))
+    try:
+        lease.acquire("human-viewer")
+    finally:
+        reset_hermes_home_override(token_launch)
+
+    token_bot = set_hermes_home_override(str(bot))
+    try:
+        with tool._backend_lock:
+            tool._install_backend("review", _AppsBackend(), "standard")
+    finally:
+        reset_hermes_home_override(token_bot)
+
+    monkeypatch.setattr("tools.bot_desktop.runtime.ensure_started_for_tool", lambda: None)
+
+    token_launch = set_hermes_home_override(str(launch))
+    try:
+        result = json.loads(tool.handle_computer_use(
+            {"action": "list_apps"}, session_id="review",
+        ))
+        assert result.get("code") != "human_has_control"
+        assert "apps" in result
+    finally:
+        reset_hermes_home_override(token_launch)
+        for home in (launch, bot):
+            for f in (_path(str(home)), _path(str(home)).with_suffix(".lock")):
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+
+
+def test_handle_computer_use_persists_dock_under_backend_home_after_multiplex(
+    monkeypatch, tmp_path: Path,
+):
+    """After a multiplex turn, persist must stamp the session backend's
+    ``dock-cdp-port``, not invent a port on the launch profile.
+    """
+    import tools.bot_desktop.browser as bdb
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.bot_desktop.lease import _path
+    from tools.browser_tool_session import _reset_dock_port_memory_for_tests
+    from tools.computer_use import tool
+
+    launch, bot = _sibling_homes(tmp_path)
+    token_bot = set_hermes_home_override(str(bot))
+    try:
+        with tool._backend_lock:
+            tool._install_backend("review", _AppsBackend(), "standard")
+        assert bdb.last_known_dock_cdp_port() is None
+    finally:
+        reset_hermes_home_override(token_bot)
+
+    bot_profile = (bot / "bot-desktop" / "browser-profile").resolve()
+
+    def live_port(user_data_dir, **_k):
+        try:
+            return 9333 if Path(user_data_dir).resolve() == bot_profile else None
+        except OSError:
+            return None
+
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", live_port)
+    monkeypatch.setattr("tools.bot_desktop.runtime.ensure_started_for_tool", lambda: None)
+    monkeypatch.setattr(
+        tool, "_get_backend",
+        lambda **k: (_ for _ in ()).throw(RuntimeError("no backend")),
+    )
+    _reset_dock_port_memory_for_tests()
+
+    token_launch = set_hermes_home_override(str(launch))
+    try:
+        assert bdb.last_known_dock_cdp_port() is None
+        tool.handle_computer_use({"action": "list_apps"}, session_id="review")
+        assert bdb.last_known_dock_cdp_port() is None
+    finally:
+        reset_hermes_home_override(token_launch)
+
+    token_bot = set_hermes_home_override(str(bot))
+    try:
+        assert bdb.last_known_dock_cdp_port() == 9333
+    finally:
+        reset_hermes_home_override(token_bot)
+        _reset_dock_port_memory_for_tests()
+        for home in (launch, bot):
+            for f in (_path(str(home)), _path(str(home)).with_suffix(".lock")):
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+
+
 def test_interrupt_is_noop_while_agent_holds():
     from tools.computer_use import tool
 
