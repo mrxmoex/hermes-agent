@@ -1343,12 +1343,14 @@ def test_agent_attach_uses_persist_when_live_tcp_misses(tmp_path, monkeypatch):
     )
 
     v6, v4, port, profile = _ipv6_only_dock(tmp_path, monkeypatch)
-    leftover = socket.create_connection(("::1", port), timeout=1.0)
     try:
         _reset_dock_port_memory_for_tests()
         browser.remember_dock_cdp_port(port)
         _last_dock_cdp_port.clear()
-        assert browser.running_instance_cdp_port(str(profile)) is None
+        # Live recover requires a fresh TCP accept. Leftover holding the
+        # CDP socket is that miss (finding 166). Linux listen(1) still
+        # accepts a second probe — mock the miss, keep inode hosts.
+        monkeypatch.setattr(browser, "running_instance_cdp_port", lambda *a, **k: None)
         assert browser.last_known_dock_cdp_port() == port
         assert browser._this_jar_listen_connect_hosts(port) == ("::1",)
         assert _cdp_url_is_bot_desktop_browser(f"http://[::1]:{port}") is True
@@ -1381,7 +1383,6 @@ def test_agent_attach_uses_persist_when_live_tcp_misses(tmp_path, monkeypatch):
         assert "--cdp" not in argvs[-1]
         assert browser.dock_cdp_attach_target(9222) == "9222"
     finally:
-        leftover.close()
         v6.close()
         v4.close()
 
