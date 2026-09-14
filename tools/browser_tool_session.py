@@ -2862,16 +2862,41 @@ def _admit_resolved_cdp_for_attach(endpoint: str) -> bool:
         return False
 
 
+def _session_owner_home(*names: Optional[str]) -> Optional[str]:
+    """HERMES_HOME that minted this task's session row, or None if unrecorded."""
+    try:
+        homes = _bt._session_owner_homes
+    except Exception:
+        return None
+    seen: set[str] = set()
+    for name in names:
+        if not isinstance(name, str) or not name or name in seen:
+            continue
+        seen.add(name)
+        owner = homes.get(name)
+        if isinstance(owner, str) and owner:
+            return owner
+    return None
+
+
 def _admit_task_shared_browser(task_id: Optional[str] = None, *, cdp_url: str = ""):
     """Admit the task's session, or a CDP override aimed at this profile's dock Chromium.
 
     Supervisor-only tools (vault fill, dialog accept) never go through
     ``_run_browser_command``; they still have to hit the same lease as click/eval.
+
+    Re-enter the session owner's home. After a multiplex turn the process
+    home is the launch profile; ambient ``assert_agent_may_act`` then
+    reads launch's ``lease.json`` (agent, missing file) and leftover
+    vault / dialog / ``browser_cdp`` / vision talked to the bot jar a
+    human was typing into. Finding 101 scoped ``_run_browser_command``;
+    this is the leftover-admit twin. An unrecorded owner stays ambient.
     """
     key = _bt._last_session_key(task_id or "default")
     info = _bt._active_sessions.get(key)
     if info is None and task_id:
         info = _bt._active_sessions.get(task_id)
+    owner = _session_owner_home(task_id, key)
     raw = (cdp_url or "").strip()
     leftover_home: Optional[str] = None
     leftover_dock = False
@@ -2887,11 +2912,11 @@ def _admit_task_shared_browser(task_id: Optional[str] = None, *, cdp_url: str = 
         # task_id, so a sibling multiplex bot can leave one behind.
         raw, leftover_home, leftover_dock = _leftover_supervisor_identity(task_id, key)
     if info:
-        admitted = _admit_shared_browser(info)
+        admitted = _admit_shared_browser(info, home=owner)
         if admitted is not None:
             return admitted
     return _admit_shared_browser(
-        cdp_url=raw, home=leftover_home, treat_as_dock=leftover_dock,
+        cdp_url=raw, home=leftover_home or owner, treat_as_dock=leftover_dock,
     )
 
 

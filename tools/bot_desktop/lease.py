@@ -185,6 +185,31 @@ def _transition(profile_key: Optional[str], mutate: Callable[[Lease], bool]) -> 
     return lease
 
 
+def _persist_live_dock_under_home(profile_key: Optional[str] = None) -> None:
+    """Stamp ``dock-cdp-port`` on the home that owns this lease write.
+
+    Finding 65 persisted on ``acquire`` / ``request_handoff``, but used the
+    ambient ``get_hermes_home()``. A caller that writes another bot's
+    ``lease.json`` via ``profile_key`` (Desktop / serve / a test of that
+    shape) then stamped the *launch* profile and left the owner's file
+    empty. After a DevTools miss leftover attach treated that jar as
+    another Chrome. Persist failure must not fail the lease write.
+    """
+    token = None
+    try:
+        if profile_key:
+            from hermes_constants import set_hermes_home_override
+            token = set_hermes_home_override(profile_key)
+        from tools.bot_desktop.browser import persist_live_dock_cdp_port
+        persist_live_dock_cdp_port()
+    except Exception:
+        pass
+    finally:
+        if token is not None:
+            from hermes_constants import reset_hermes_home_override
+            reset_hermes_home_override(token)
+
+
 def acquire(viewer_id: str, *, profile_key: Optional[str] = None, reason: str = "") -> Lease:
     """Human ``viewer_id`` takes control. Last writer wins: a second viewer evicts the first, and the
     RFB bridge closes the evicted socket so its UI drops to view-only."""
@@ -199,11 +224,7 @@ def acquire(viewer_id: str, *, profile_key: Optional[str] = None, reason: str = 
     # Persist the live dock port before DevToolsActivePort can disappear.
     # A never-probed jar would otherwise fail-open leftover CDP after Take
     # over (admit returns None when the port was never stamped).
-    try:
-        from tools.bot_desktop.browser import persist_live_dock_cdp_port
-        persist_live_dock_cdp_port()
-    except Exception:
-        pass
+    _persist_live_dock_under_home(profile_key)
     return lease
 
 
@@ -233,12 +254,8 @@ def request_handoff(reason: str, *, profile_key: Optional[str] = None) -> Lease:
     # computer_use used to return from request_handoff before finding 68's
     # persist; Take over can then unlink DevToolsActivePort and leftover
     # attach treats the jar as another Chrome. Persist failure must not
-    # fail the ask.
-    try:
-        from tools.bot_desktop.browser import persist_live_dock_cdp_port
-        persist_live_dock_cdp_port()
-    except Exception:
-        pass
+    # fail the ask. Same ``profile_key`` home as the lease write.
+    _persist_live_dock_under_home(profile_key)
     return lease
 
 

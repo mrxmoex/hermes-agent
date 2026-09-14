@@ -222,6 +222,73 @@ def test_unreadable_lease_file_fails_closed_and_takeover_keeps_the_agents_reason
     assert hermes_home_key(home)  # sanity: the key derivation used by the bridge is available
 
 
+def test_acquire_persists_dock_port_under_the_profile_key(monkeypatch, tmp_path):
+    """Finding 65 stamped ``dock-cdp-port`` on acquire, but used the ambient
+    home. A caller that writes another bot's ``lease.json`` via
+    ``profile_key`` (Desktop / serve while this process is still the
+    launch profile) then left the owner's file empty. After a DevTools
+    miss leftover attach treated that jar as another Chrome.
+    """
+    from pathlib import Path
+
+    from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
+    import tools.bot_desktop.browser as bdb
+    from tools.bot_desktop.lease import HumanHasControl, _path
+    from tools.browser_tool_session import (
+        _admit_resolved_cdp_for_attach,
+        _admit_shared_browser,
+        _cdp_url_is_bot_desktop_browser,
+        _last_dock_cdp_port,
+        _reset_dock_port_memory_for_tests,
+    )
+
+    launch = tmp_path / "launch"
+    bot = tmp_path / "bot"
+    launch.mkdir()
+    bot.mkdir()
+    dock = "ws://127.0.0.1:9333/devtools/browser/x"
+    other = "ws://127.0.0.1:9222/devtools/browser/x"
+
+    def live_port(*_a, **_k):
+        return 9333 if Path(get_hermes_home()).resolve() == bot.resolve() else None
+
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", live_port)
+    token = set_hermes_home_override(str(launch))
+    try:
+        _reset_dock_port_memory_for_tests()
+        assert bdb.last_known_dock_cdp_port() is None
+        held = lease.acquire("human-viewer", profile_key=str(bot))
+        assert held.holder == lease.HUMAN
+        asked = lease.request_handoff("Finish 2FA", profile_key=str(bot))
+        assert asked.pending_handoff == "Finish 2FA"
+        assert bdb.last_known_dock_cdp_port() is None
+        assert not (launch / "bot-desktop" / "dock-cdp-port").exists()
+    finally:
+        reset_hermes_home_override(token)
+
+    token = set_hermes_home_override(str(bot))
+    try:
+        _last_dock_cdp_port.clear()
+        monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *_a, **_k: None)
+        assert bdb.last_known_dock_cdp_port() == 9333
+        assert _cdp_url_is_bot_desktop_browser(dock) is True
+        assert _cdp_url_is_bot_desktop_browser(other) is False
+        with pytest.raises(HumanHasControl):
+            _admit_shared_browser(cdp_url=dock)
+        assert _admit_resolved_cdp_for_attach(dock) is False
+        assert _admit_shared_browser(cdp_url=other) is None
+        assert _admit_resolved_cdp_for_attach(other) is True
+    finally:
+        reset_hermes_home_override(token)
+        _reset_dock_port_memory_for_tests()
+        for home in (launch, bot):
+            for f in (_path(str(home)), _path(str(home)).with_suffix(".lock")):
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+
+
 def test_request_handoff_persists_dock_port_before_devtools_miss(monkeypatch):
     """lease.request_handoff is the ask — stamp while DevTools is still
     readable. computer_use used to return from the action before persist,

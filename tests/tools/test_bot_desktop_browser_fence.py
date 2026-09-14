@@ -2244,6 +2244,87 @@ def _sibling_homes(tmp_path):
     return launch, bot
 
 
+def test_admit_task_shared_browser_uses_session_owner_lease_after_multiplex_turn(
+    monkeypatch, tmp_path,
+):
+    """Finding 101 scoped ``_run_browser_command``. Vault / dialog /
+    ``browser_cdp`` / vision leftover admit still read ambient launch
+    ``lease.json`` (agent, missing file) and talked to the bot jar a
+    human was typing into.
+    """
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.bot_desktop.lease import HumanHasControl, _path
+    from tools import browser_tool as bt
+    from tools.browser_tool_session import _admit_task_shared_browser
+
+    launch, bot = _sibling_homes(tmp_path)
+    saved = _session_state()[1]
+    token_bot = set_hermes_home_override(str(bot))
+    try:
+        for name in saved:
+            getattr(bt, name).clear()
+        bt._active_sessions["review"] = {
+            "session_name": "h_review", "features": {"local": True},
+        }
+        bt._session_owner_homes["review"] = str(bot)
+        lease.acquire("human-viewer")
+    finally:
+        reset_hermes_home_override(token_bot)
+
+    token_launch = set_hermes_home_override(str(launch))
+    try:
+        with pytest.raises(HumanHasControl):
+            _admit_task_shared_browser("review")
+    finally:
+        reset_hermes_home_override(token_launch)
+        for home in (launch, bot):
+            for f in (_path(str(home)), _path(str(home)).with_suffix(".lock")):
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+        _restore_session_state(bt, saved)
+
+
+def test_admit_task_shared_browser_does_not_fence_on_the_launch_profile_lease(
+    monkeypatch, tmp_path,
+):
+    """A human on the launch bot must not void a sibling leftover admit."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.bot_desktop.lease import _path
+    from tools import browser_tool as bt
+    from tools.browser_tool_session import _admit_task_shared_browser
+
+    launch, bot = _sibling_homes(tmp_path)
+    saved = _session_state()[1]
+    token_launch = set_hermes_home_override(str(launch))
+    try:
+        lease.acquire("human-viewer")
+    finally:
+        reset_hermes_home_override(token_launch)
+
+    token_launch = set_hermes_home_override(str(launch))
+    try:
+        for name in saved:
+            getattr(bt, name).clear()
+        bt._active_sessions["review"] = {
+            "session_name": "h_review", "features": {"local": True},
+        }
+        bt._session_owner_homes["review"] = str(bot)
+        admitted = _admit_task_shared_browser("review")
+        assert admitted is not None
+        assert admitted.holder == lease.AGENT
+    finally:
+        reset_hermes_home_override(token_launch)
+        for home in (launch, bot):
+            for f in (_path(str(home)), _path(str(home)).with_suffix(".lock")):
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+        _restore_session_state(bt, saved)
+
+
 def test_run_browser_command_uses_session_owner_lease_after_multiplex_turn(monkeypatch, tmp_path):
     """After a multiplex turn the process home is the launch profile.
 
