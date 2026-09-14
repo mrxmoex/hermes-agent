@@ -409,6 +409,31 @@ def _paths_same_user_data_dir(
         return os.path.normpath(left) == os.path.normpath(right)
 
 
+def _pid_names_this_jar(
+    pid: int, user_data_dir: str, tokens: Optional[list[str]] = None,
+) -> bool:
+    """True when ``pid``'s cmdline / ``CHROME_USER_DATA_DIR`` is this jar."""
+    listed = _listed_user_data_dir(pid, tokens)
+    if not listed:
+        return False
+    return _paths_same_user_data_dir(
+        listed, user_data_dir, cwd=_proc_cwd(pid),
+    )
+
+
+def _lock_pid(user_data_dir: str) -> Optional[int]:
+    """Alive SingletonLock pid for ``user_data_dir``, or ``None``."""
+    try:
+        target = os.readlink(os.path.join(user_data_dir, "SingletonLock"))
+    except OSError:
+        return None
+    _host, _, pid_text = target.rpartition("-")
+    if not pid_text.isdigit():
+        return None
+    pid = int(pid_text)
+    return pid if pid > 1 and _pid_alive(pid) else None
+
+
 def _ip_is_unspecified_listen(ip: str) -> bool:
     try:
         addr = ipaddress.ip_address(ip)
@@ -455,10 +480,7 @@ def _recover_cdp_port_from_singleton(user_data_dir: str, pid: int) -> Optional[i
     is leftover observation).
     """
     tokens = _chromium_cmdline_tokens(pid)
-    listed = _listed_user_data_dir(pid, tokens)
-    if not listed or not _paths_same_user_data_dir(
-        listed, user_data_dir, cwd=_proc_cwd(pid),
-    ):
+    if not _pid_names_this_jar(pid, user_data_dir, tokens):
         return None
     explicit = _remote_debugging_port_from_cmdline(tokens)
     listens = _loopback_listen_ports_for_pid(pid)
@@ -486,24 +508,29 @@ def running_instance_cdp_port(user_data_dir: str, *, exclude_session: Optional[s
     """DevTools port of a Chromium currently running on ``user_data_dir``, or ``None``.
 
     Both files outlive a crashed or closed Chromium: ``SingletonLock`` is a symlink to ``host-pid`` and
-    ``DevToolsActivePort`` keeps the last port, so the pid must be alive AND this pid must
-    still listen on that port AND the listen must accept a connection. A sibling
-    Chrome that reused the stale file port is not the dock. When the port file
-    is gone or stale but the lock pid is still this profile's Chromium, recover
-    the port from that pid (explicit ``--remote-debugging-port=N`` this pid
-    still listens on, or a unique loopback listen). An instance
+    ``DevToolsActivePort`` keeps the last port, so the pid must be alive AND still
+    name this ``user-data-dir`` AND this pid must still listen on that port AND
+    the listen must accept a connection. A sibling Chrome that reused the stale
+    file port, or a recycled lock pid that does not name this jar, is not the
+    dock. When the port file is gone or stale but the lock pid is still this
+    profile's Chromium, recover the port from that pid (explicit
+    ``--remote-debugging-port=N`` this pid still listens on, or a unique
+    loopback listen). An instance
     agent-browser launched for ``exclude_session`` itself is reported as ``None``:
     its daemon already owns that browser, and handing it ``--cdp`` would make it
     close the browser as a config change and then attach to the port that just died with it.
     """
-    try:
-        target = os.readlink(os.path.join(user_data_dir, "SingletonLock"))
-    except OSError:
+    pid = _lock_pid(user_data_dir)
+    if pid is None:
         return None
-    _host, _, pid_text = target.rpartition("-")
-    if not pid_text.isdigit() or not _pid_alive(int(pid_text)):
+    # Recover already refuses a recycled lock pid whose cmdline /
+    # ``CHROME_USER_DATA_DIR`` is not this jar. The DevToolsActivePort
+    # branch used to skip that check: a sibling Chrome that inherited
+    # the lock and listened on the stale file port was stamped as the
+    # dock (finding 158). Leftover aimed at that sibling then looked
+    # like the jar a human holds.
+    if not _pid_names_this_jar(pid, user_data_dir):
         return None
-    pid = int(pid_text)
     if exclude_session and _launched_by_session(pid) == exclude_session:
         return None
     port_line = ""
@@ -545,19 +572,6 @@ def _dock_port_path() -> Path:
     return runtime.state_dir() / _DOCK_PORT_FILE
 
 
-def _lock_pid(user_data_dir: str) -> Optional[int]:
-    """Alive SingletonLock pid for ``user_data_dir``, or ``None``."""
-    try:
-        target = os.readlink(os.path.join(user_data_dir, "SingletonLock"))
-    except OSError:
-        return None
-    _host, _, pid_text = target.rpartition("-")
-    if not pid_text.isdigit():
-        return None
-    pid = int(pid_text)
-    return pid if pid > 1 and _pid_alive(pid) else None
-
-
 def _this_jar_chromium_pid(user_data_dir: Optional[str] = None) -> Optional[int]:
     """Alive lock pid that still names this jar, or ``None``.
 
@@ -570,12 +584,7 @@ def _this_jar_chromium_pid(user_data_dir: Optional[str] = None) -> Optional[int]
     if user_data_dir is None:
         user_data_dir = str(profile_dir())
     pid = _lock_pid(user_data_dir)
-    if pid is None:
-        return None
-    listed = _listed_user_data_dir(pid)
-    if not listed or not _paths_same_user_data_dir(
-        listed, user_data_dir, cwd=_proc_cwd(pid),
-    ):
+    if pid is None or not _pid_names_this_jar(pid, user_data_dir):
         return None
     return pid
 
@@ -604,12 +613,7 @@ def _this_jar_listens_on_port(want: Optional[int]) -> bool:
         return False
     user_data_dir = str(profile_dir())
     pid = _lock_pid(user_data_dir)
-    if pid is None:
-        return False
-    listed = _listed_user_data_dir(pid)
-    if not listed or not _paths_same_user_data_dir(
-        listed, user_data_dir, cwd=_proc_cwd(pid),
-    ):
+    if pid is None or not _pid_names_this_jar(pid, user_data_dir):
         return False
     if want not in _loopback_listen_ports_for_pid(pid):
         return False
@@ -736,14 +740,10 @@ def shared_chromium_owner_session(user_data_dir: Optional[str] = None) -> Option
     """
     if user_data_dir is None:
         user_data_dir = str(profile_dir())
-    try:
-        target = os.readlink(os.path.join(user_data_dir, "SingletonLock"))
-    except OSError:
+    pid = _this_jar_chromium_pid(user_data_dir)
+    if pid is None:
         return None
-    _host, _, pid_text = target.rpartition("-")
-    if not pid_text.isdigit() or not _pid_alive(int(pid_text)):
-        return None
-    return _launched_by_session(int(pid_text))
+    return _launched_by_session(pid)
 
 
 def _pid_alive(pid: int) -> bool:

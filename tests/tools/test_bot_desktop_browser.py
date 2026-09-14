@@ -113,11 +113,16 @@ def _other_pid_loopback_listen():
     )
 
 
-def test_running_instance_port_requires_live_pid_and_open_port(tmp_path):
+def test_running_instance_port_requires_live_pid_and_open_port(tmp_path, monkeypatch):
     listener = socket.socket()
     listener.bind(("127.0.0.1", 0))
     listener.listen(1)
     port = listener.getsockname()[1]
+    monkeypatch.setattr(
+        browser,
+        "_chromium_cmdline_tokens",
+        lambda pid: ["chrome", f"--user-data-dir={tmp_path}"],
+    )
     try:
         _fake_running_instance(tmp_path, os.getpid(), port)
         assert browser.running_instance_cdp_port(str(tmp_path)) == port
@@ -374,6 +379,11 @@ def test_devtools_file_does_not_stamp_ipv4_squat_for_ipv6_listen(tmp_path, monke
     (tmp_path / "DevToolsActivePort").write_text(
         f"{port}\n/devtools/browser/abc\n", encoding="utf-8")
     os.symlink(f"host-{os.getpid()}", tmp_path / "SingletonLock")
+    monkeypatch.setattr(
+        browser,
+        "_chromium_cmdline_tokens",
+        lambda pid: ["chrome", f"--user-data-dir={tmp_path}"],
+    )
     monkeypatch.setattr(browser, "_loopback_listen_targets_for_pid", lambda pid: {("::1", port)})
     try:
         assert browser.running_instance_cdp_port(str(tmp_path)) == port
@@ -722,6 +732,36 @@ def test_running_instance_recovers_spaced_user_data_dir(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(browser, "_loopback_listen_ports_for_pid", lambda pid: {port, 22})
     try:
+        assert browser.running_instance_cdp_port(str(tmp_path)) == port
+    finally:
+        listener.close()
+
+
+def test_devtools_file_does_not_stamp_recycled_lock_pid(tmp_path, monkeypatch):
+    """Finding 158: DevToolsActivePort trusted a recycled lock pid.
+
+    Recover already refuses a lock pid whose cmdline is not this jar.
+    The file-port branch only checked alive + listen, so a sibling
+    Chrome that inherited the lock and occupied the stale number was
+    stamped as the dock. Same-jar cmdline still identifies.
+    """
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(8)
+    port = listener.getsockname()[1]
+    _fake_running_instance(tmp_path, os.getpid(), port)
+    monkeypatch.setattr(
+        browser,
+        "_chromium_cmdline_tokens",
+        lambda pid: ["chrome", "--user-data-dir=/other/profile"],
+    )
+    try:
+        assert browser.running_instance_cdp_port(str(tmp_path)) is None
+        monkeypatch.setattr(
+            browser,
+            "_chromium_cmdline_tokens",
+            lambda pid: ["chrome", f"--user-data-dir={tmp_path}"],
+        )
         assert browser.running_instance_cdp_port(str(tmp_path)) == port
     finally:
         listener.close()
