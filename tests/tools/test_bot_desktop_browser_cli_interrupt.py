@@ -6203,6 +6203,71 @@ def test_unregistered_playwright_mcp_env_prefers_official_cdp_over_pw_test():
     assert n == 4
 
 
+def test_unregistered_playwright_mcp_config_not_shadowed_by_pw_test(tmp_path):
+    """Official leftover MCP --config cdpEndpoint is not a PW_TEST_* pin.
+
+    Finding 147: after 146, inherited Playwright connect env was still
+    scanned before ``--config``, so leftover MCP / Agent CLI with
+    ``browser.cdpEndpoint=<dock>`` and ``PW_TEST_CONNECT_WS_ENDPOINT``
+    on a sibling stayed typing into the jar a human holds. Official
+    ``PLAYWRIGHT_MCP_CDP_ENDPOINT`` still overrides the file. Regular
+    ``codegen`` does not read MCP config.
+    """
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    bdb.remember_dock_cdp_port(9333)
+    cfg = tmp_path / "pw-mcp-dock.json"
+    cfg.write_text(json.dumps({
+        "browser": {"cdpEndpoint": "http://127.0.0.1:9333"},
+    }))
+    sibling = {
+        "PW_TEST_CONNECT_WS_ENDPOINT": "ws://127.0.0.1:9444/devtools/browser/x",
+    }
+    mcp_cfg = _FakeProc(
+        11110,
+        ["npx", "@playwright/mcp", "--config", str(cfg)],
+        sibling,
+        cwd=tmp_path,
+    )
+    bundled_cfg = _FakeProc(
+        11111,
+        ["npx", "playwright", "mcp", "--config", str(cfg)],
+        {"PLAYWRIGHT_WS_ENDPOINT": "ws://127.0.0.1:9444/devtools/browser/x"},
+        cwd=tmp_path,
+    )
+    agent_cfg = _FakeProc(
+        11112,
+        ["npx", "@playwright/cli", "open", "--config", str(cfg)],
+        sibling,
+        cwd=tmp_path,
+    )
+    mcp_env_wins = _FakeProc(
+        11113,
+        ["npx", "@playwright/mcp", "--config", str(cfg)],
+        {"PLAYWRIGHT_MCP_CDP_ENDPOINT": "http://127.0.0.1:9444"},
+        cwd=tmp_path,
+    )
+    codegen_cfg = _FakeProc(
+        11114,
+        ["npx", "playwright", "codegen", "--config", str(cfg)],
+        sibling,
+        cwd=tmp_path,
+    )
+    lease.acquire("human")
+    n = interrupt_unregistered_dock_cli(
+        processes=[mcp_cfg, bundled_cfg, agent_cfg, mcp_env_wins, codegen_cfg],
+        chromium_pid=9999,
+        owner_daemon_pid=9998,
+    )
+    assert mcp_cfg.killed == 1
+    assert bundled_cfg.killed == 1
+    assert agent_cfg.killed == 1
+    assert mcp_env_wins.killed == 0
+    assert codegen_cfg.killed == 0
+    assert n == 3
+
+
 def test_stop_reserved_calls_unregistered_interrupt(monkeypatch):
     from tools.browser_tool_session import interrupt_unregistered_dock_cli as real
     from tools.browser_tool_supervisor_lease import stop_reserved_supervisors

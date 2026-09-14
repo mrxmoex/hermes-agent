@@ -1271,14 +1271,13 @@ _PLAYWRIGHT_CDP_ENV = (
 # ``resolveCLIConfigForCLI``) only read ``PLAYWRIGHT_MCP_CDP_ENDPOINT``.
 # Finding 146: leftover MCP with that key on the dock and
 # ``PW_TEST_CONNECT_WS_ENDPOINT`` on a sibling stayed running because
-# the shared scan took Playwright's key first. Keep Playwright's own
-# connect env as a fallback so leftover MCP that inherited a
-# ``PW_TEST`` / ``PLAYWRIGHT_WS_ENDPOINT`` pin still interrupts.
-_PLAYWRIGHT_MCP_CDP_ENV = (
+# the shared scan took Playwright's key first. Finding 147: that
+# inherited Playwright connect env must not shadow official
+# ``--config`` / ``PLAYWRIGHT_MCP_CONFIG`` ``browser.cdpEndpoint``.
+# Keep it as a fallback after the official MCP env + config miss so
+# leftover MCP that inherited a ``PW_TEST`` pin still interrupts.
+_PLAYWRIGHT_MCP_OFFICIAL_CDP_ENV = (
     "PLAYWRIGHT_MCP_CDP_ENDPOINT",
-    "BROWSER_CDP_URL",
-    "PW_TEST_CONNECT_WS_ENDPOINT",
-    "PLAYWRIGHT_WS_ENDPOINT",
 )
 
 
@@ -1286,15 +1285,23 @@ def _leftover_playwright_env_pin(
     environ: Optional[Dict[str, str]],
     *,
     mcp: bool,
+    official_only: bool = False,
 ) -> str:
-    """First leftover Playwright attach env aimed at a CDP URL.
+    """Leftover Playwright attach env aimed at a CDP URL.
 
     MCP / Agent CLI leftover: official ``PLAYWRIGHT_MCP_CDP_ENDPOINT``
-    first (finding 146). Regular Playwright leftover: Playwright's own
-    connect env only.
+    first (finding 146). ``official_only`` skips inherited
+    ``PW_TEST_*`` / ``PLAYWRIGHT_WS_ENDPOINT`` / ``BROWSER_CDP_URL``
+    so those cannot hide official ``--config`` attach (finding 147).
+    Regular Playwright leftover: Playwright's own connect env only.
     """
     env = environ or {}
-    keys = _PLAYWRIGHT_MCP_CDP_ENV if mcp else _PLAYWRIGHT_CDP_ENV
+    if mcp:
+        keys = _PLAYWRIGHT_MCP_OFFICIAL_CDP_ENV
+        if not official_only:
+            keys = keys + _PLAYWRIGHT_CDP_ENV
+    else:
+        keys = _PLAYWRIGHT_CDP_ENV
     for key in keys:
         val = (env.get(key) or "").strip()
         if val:
@@ -3128,12 +3135,18 @@ def _unregistered_cli_aims_at_dock(
         and not _is_agent_browser_invocation(tokens)
     ):
         cdp = _cdp_arg_from_argv(tokens)
+        mcp_flavor = (
+            _is_playwright_mcp_invocation(tokens)
+            or _is_playwright_cli_agent_invocation(tokens)
+        )
         if not cdp:
-            mcp_flavor = (
-                _is_playwright_mcp_invocation(tokens)
-                or _is_playwright_cli_agent_invocation(tokens)
+            # Official leftover MCP / Agent CLI env is
+            # ``PLAYWRIGHT_MCP_CDP_ENDPOINT`` only (finding 146).
+            # Inherited ``PW_TEST_*`` is a fallback after config
+            # (finding 147), not a pin that hides ``--config``.
+            cdp = _leftover_playwright_env_pin(
+                env, mcp=mcp_flavor, official_only=True,
             )
-            cdp = _leftover_playwright_env_pin(env, mcp=mcp_flavor)
         if not cdp:
             # Official leftover: ``codegen --user-data-dir=<dock>`` /
             # ``playwright-cli open --profile=<dock>``. Finding 99 only
@@ -3163,9 +3176,14 @@ def _unregistered_cli_aims_at_dock(
                     return _leftover_cdp_aims_at_dock(cfg_cdp, dock_port)
                 if argv_dir_set or env_dir:
                     return False
-                return _leftover_profile_pin_aims_at_dock(
-                    cfg_dir, profile, cwd,
+                if _leftover_profile_pin_aims_at_dock(cfg_dir, profile, cwd):
+                    return True
+                fallback = _leftover_playwright_env_pin(
+                    env, mcp=True, official_only=False,
                 )
+                if fallback:
+                    return _leftover_cdp_aims_at_dock(fallback, dock_port)
+                return False
             # Official MCP leftover launch / attach also lives in env
             # and ``--config`` JSON (finding 127 / 135). Finding 111
             # only checked argv ``--user-data-dir``. Finding 127 only
@@ -3173,8 +3191,10 @@ def _unregistered_cli_aims_at_dock(
             # env / ``--config`` stayed unknown. Finding 146: leftover
             # MCP / Agent CLI env prefers official
             # ``PLAYWRIGHT_MCP_CDP_ENDPOINT`` over ``PW_TEST_*``.
-            # Regular Playwright CLI (``codegen`` / ``test``) does not
-            # read those keys.
+            # Finding 147: inherited ``PW_TEST_*`` must not hide
+            # official ``--config`` ``browser.cdpEndpoint``. Regular
+            # Playwright CLI (``codegen`` / ``test``) does not read
+            # those keys.
             if not _is_playwright_mcp_invocation(tokens):
                 return False
             pinned = (env.get("PLAYWRIGHT_MCP_USER_DATA_DIR") or "").strip()
@@ -3183,7 +3203,14 @@ def _unregistered_cli_aims_at_dock(
             cfg_cdp, cfg_dir = _playwright_mcp_config_pins(tokens, env, cwd)
             if cfg_cdp:
                 return _leftover_cdp_aims_at_dock(cfg_cdp, dock_port)
-            return _leftover_profile_pin_aims_at_dock(cfg_dir, profile, cwd)
+            if _leftover_profile_pin_aims_at_dock(cfg_dir, profile, cwd):
+                return True
+            fallback = _leftover_playwright_env_pin(
+                env, mcp=True, official_only=False,
+            )
+            if fallback:
+                return _leftover_cdp_aims_at_dock(fallback, dock_port)
+            return False
         return _leftover_cdp_aims_at_dock(cdp, dock_port)
     if (
         _is_chrome_remote_interface_invocation(tokens)
