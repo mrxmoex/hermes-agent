@@ -979,6 +979,18 @@ def _unique_this_jar_parent(
 
     Finding 186 / 188: leftover helpers that name this jar still have
     chrome as parent. Several distinct this-jar parents stay unknown.
+    Finding 204: leftover fill and leftover fill's leftover CRI
+    both hold leftover ``DevToolsActivePort``. leftover CRI's
+    leftover parent leftover fill is leftover file holder.
+    leftover fill's leftover parent leftover daemon is not.
+    Unique leftover parent among leftover holders' leftover
+    parents that are not leftover file holders is leftover
+    daemon. Several leftover parents that are not leftover
+    file holders stay unknown. Leftover CRI that does not
+    name this jar stays 86. Leftover CRI inherited chrome
+    CDP plus leftover python leftover persist stays 85.
+    Leftover fill great-grandchild leftover persist leftover-
+    shared stays 85.
     """
     parents: list[int] = []
     for holder_pid in holder_pids:
@@ -993,7 +1005,10 @@ def _unique_this_jar_parent(
             and _pid_names_this_jar(ppid, user_data_dir)
         ):
             parents.append(ppid)
-    return parents[0] if len(parents) == 1 else None
+    if len(parents) == 1:
+        return parents[0]
+    outside = [parent for parent in parents if parent not in holder_pids]
+    return outside[0] if len(outside) == 1 else None
 
 
 def _this_jar_descendant_of_chrome(
@@ -1419,6 +1434,15 @@ def unique_lock_chrome_hidden_by_leftover_file(
     One hop of leftover siblings' grandchildren is leftover
     fill's leftover grandchild. Leftover fill
     great-grandchild stays 86.
+    Finding 204: leftover fill and leftover fill's leftover
+    CRI both hold leftover DevTools. leftover CRI's leftover
+    parent leftover fill is leftover file holder, so unique
+    leftover-file parent was several and leftover-inherited
+    never ran. Unique leftover parent among leftover holders'
+    leftover parents that are not leftover file holders is
+    leftover daemon. Leftover CRI that does not name this
+    jar stays 86. Leftover CRI inherited chrome CDP plus
+    leftover python leftover persist stays 85.
     Finding 185: when the lock is gone,
     leftover holders that inherited chrome's DevTools fd still
     advertise that unique listen. Finding 186: leftover this-jar
