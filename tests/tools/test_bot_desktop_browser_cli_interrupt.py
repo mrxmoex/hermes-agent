@@ -10858,6 +10858,195 @@ def test_unregistered_leftover_daemon_unique_cri_spares_owner(
     assert _last_dock_cdp_port.get(hermes_home_key()) == 9333
 
 
+def test_unregistered_leftover_shared_cri_spares_owner(
+    monkeypatch, tmp_path,
+):
+    """Finding 196: leftover-shared CRI hid sibling chrome.
+
+    Production Take over does not pass ``chromium_pid``. Leftover
+    daemon and chrome both inherited leftover CRI, so hidden missed
+    and skip-kill missed the Browser a human is typing into.
+    9222, the other family, LAN, unpinned lighthouse, and the bash
+    ``-c`` parent stay up.
+    """
+    from tools.bot_desktop import browser as bdb
+    from tools import browser_tool_session as session
+    from tools.browser_tool_session import (
+        _last_dock_cdp_port,
+        interrupt_unregistered_dock_cli,
+    )
+    from hermes_constants import hermes_home_key
+
+    leftover_helpers = {4242, 4243}
+    chrome_family = {4240, 4241, 4245}
+    leftover_cri = 4244
+
+    monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path)
+    monkeypatch.setattr(bdb, "profile_dir", lambda: tmp_path)
+    monkeypatch.setattr(bdb, "_lock_pid", lambda d: None)
+    monkeypatch.setattr(
+        bdb,
+        "_chromium_cmdline_tokens",
+        lambda pid: (
+            ["chrome", "--type=zygote", f"--user-data-dir={tmp_path}"]
+            if pid == 4241 else
+            ["chrome", "--type=utility", f"--user-data-dir={tmp_path}"]
+            if pid == 4245 else
+            ["agent-browser", "daemon", f"--user-data-dir={tmp_path}"]
+            if pid == 4300 else
+            ["agent-browser", "cri", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_cri else
+            ["chrome", f"--user-data-dir={tmp_path}"]
+        ),
+    )
+    monkeypatch.setattr(
+        bdb,
+        "_proc_ppid",
+        lambda pid: {
+            4240: 4300, 4241: 4240, 4245: 4241, 4242: 4300, 4243: 4300,
+            4244: 4300,
+        }.get(pid),
+    )
+    monkeypatch.setattr(
+        bdb,
+        "_launched_by_session",
+        lambda pid: "h_review" if pid == 4240 else None,
+    )
+    monkeypatch.setattr(bdb, "_recover_cdp_port_from_singleton", lambda *a, **k: None)
+    monkeypatch.setattr(
+        bdb, "_this_jar_children",
+        lambda parent, user_data_dir: (
+            {4240, 4242, 4243, 4244} if parent == 4300 else set()
+        ),
+    )
+    monkeypatch.setattr(
+        session,
+        "_proc_ppid",
+        lambda pid: 11491 if pid == 4240 else None,
+    )
+
+    def _inodes(port):
+        if port == 40141:
+            return {7: {"::1"}}
+        if port == 9333:
+            return {8: {"::1"}}
+        if port == 18888:
+            return {9: {"::1"}}
+        return {}
+
+    def _holders(want):
+        out = {}
+        if 7 in want:
+            out[4242] = {7}
+            out[4243] = {7}
+        if 8 in want:
+            out[4240] = {8}
+            out[4241] = {8}
+            out[4245] = {8}
+        if 9 in want:
+            out[4300] = {9}
+            out[4240] = {9}
+        return out
+
+    monkeypatch.setattr(bdb, "_loopback_listen_inodes_for_port", _inodes)
+    monkeypatch.setattr(bdb, "_pids_holding_socket_inodes", _holders)
+    monkeypatch.setattr(
+        bdb, "_loopback_listen_ports_for_pid",
+        lambda pid: {40141, 18888} if pid == 4300 else (
+            {40141} if pid in leftover_helpers else (
+                {9333, 18888} if pid == 4240 else (
+                    {9333} if pid in chrome_family else set()
+                )
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        bdb, "_loopback_listen_targets_for_pid",
+        lambda pid: {("::1", 40141), ("::1", 18888)} if pid == 4300 else (
+            {("::1", 40141)} if pid in leftover_helpers else (
+                {("::1", 9333), ("::1", 18888)} if pid == 4240 else (
+                    {("::1", 9333)} if pid in chrome_family else set()
+                )
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        bdb,
+        "_cdp_port_reachable",
+        lambda port, hosts: port in (9333, 40141, 18888) and "::1" in hosts,
+    )
+    monkeypatch.setattr(bdb, "_configured_cdp_override_url", lambda: "")
+    (tmp_path / "DevToolsActivePort").write_text(
+        "40141\n/devtools/browser/abc\n", encoding="utf-8",
+    )
+    (tmp_path / "dock-cdp-port").write_text("18888\n", encoding="utf-8")
+    assert bdb.lock_listed_persist_port() == 9333
+    assert bdb._this_jar_chromium_pid(str(tmp_path)) == 4240
+    assert bdb.shared_chromium_owner_session() == "h_review"
+
+    owner = _FakeProc(
+        11491,
+        ["agent-browser", "snapshot"],
+        {"AGENT_BROWSER_CDP": "http://[::1]:9333", "AGENT_BROWSER_DAEMON": "1"},
+    )
+    leftover_lh = _FakeProc(
+        11492,
+        ["npx", "lighthouse", "https://example.com", "--port", "40141"],
+    )
+    leftover_cdp = _FakeProc(
+        11493,
+        ["agent-browser", "--cdp", "http://[::1]:40141", "fill"],
+    )
+    leftover_persist = _FakeProc(
+        11494,
+        ["agent-browser", "--cdp", "http://[::1]:18888", "fill"],
+    )
+    leftover_cri_cli = _FakeProc(
+        11495,
+        ["npx", "chrome-remote-interface", "--port", "18888", "inspect"],
+    )
+    sibling = _FakeProc(
+        11496,
+        ["npx", "lighthouse", "--port", "9222", "https://example.com"],
+    )
+    leftover_v4 = _FakeProc(
+        11497,
+        ["npx", "lighthouse", "--hostname", "127.0.0.1", "--port", "40141"],
+    )
+    unpinned = _FakeProc(
+        11498,
+        ["npx", "lighthouse", "https://example.com"],
+    )
+    lan = _FakeProc(
+        11499,
+        ["npx", "lighthouse", "--hostname", "10.0.0.5", "--port", "40141"],
+    )
+    bash_parent = _FakeProc(
+        11500,
+        ["/bin/bash", "-c", "npx lighthouse --port 40141 https://example.com"],
+    )
+    lease.acquire("human")
+    n = interrupt_unregistered_dock_cli(
+        processes=[
+            owner, leftover_lh, leftover_cdp, leftover_persist, leftover_cri_cli,
+            sibling, leftover_v4, unpinned, lan, bash_parent,
+        ],
+    )
+    assert owner.killed == 0
+    assert leftover_lh.killed == 1
+    assert leftover_cdp.killed == 1
+    assert leftover_persist.killed == 1
+    assert leftover_cri_cli.killed == 1
+    assert sibling.killed == 0
+    assert leftover_v4.killed == 0
+    assert unpinned.killed == 0
+    assert lan.killed == 0
+    assert bash_parent.killed == 0
+    assert n == 4
+    assert bdb._this_jar_chromium_pid(str(tmp_path)) == 4240
+    assert _last_dock_cdp_port.get(hermes_home_key()) == 9333
+
+
 def test_unregistered_stale_lock_pid_does_not_spare_leftover(monkeypatch):
     """Finding 157: Take over skipped the raw SingletonLock pid.
 

@@ -775,6 +775,10 @@ def lock_listed_persist_port(user_data_dir: Optional[str] = None) -> Optional[in
     CRI / ``--cdp`` is a unique this-jar listen. That
     leftover persist is not hidden chrome — sibling
     chrome is still a this-jar child of leftover daemon.
+    Finding 196: leftover daemon and chrome both inherited
+    leftover CRI so leftover persist and chrome CDP both
+    look leftover-shared. Chrome's own listen is the one
+    leftover daemon does not inode-hold.
     Finding 185: persist never stamped and
     the lock is already gone. Leftover holders that inherited
     chrome's DevTools fd still name chrome's other unique
@@ -1183,7 +1187,14 @@ def _leftover_inherited_chrome_listen(
     are chrome plus leftover and/or chrome's this-jar family is
     not a guess among ports. Finding 190: zygote grandchildren
     that inherit that listen are still that family. Several such
-    listens stay unknown (85).
+    listens stay unknown (85). Finding 196: leftover daemon
+    inherited leftover CRI / ``--cdp`` and chrome inherited that
+    same listen, so leftover persist and chrome CDP both look
+    leftover-shared. Chrome's own listen is the leftover-shared
+    port leftover helpers' parent does not inode-hold. Several
+    ports that parent also holds stay unknown. Do not guess
+    when leftover helpers' parent is chrome (lock-present /
+    finding 186).
     """
     if not leftover_pids or not isinstance(chrome_pid, int) or chrome_pid <= 1:
         return None
@@ -1202,7 +1213,19 @@ def _leftover_inherited_chrome_listen(
                 port, leftover_pids, chrome_pid, user_data_dir,
             ):
                 inherited.append(port)
-    return inherited[0] if len(inherited) == 1 else None
+    if len(inherited) == 1:
+        return inherited[0]
+    if len(inherited) <= 1 or _pid_is_chromium_browser(chrome_pid):
+        return None
+    own: list[int] = []
+    for port in inherited:
+        try:
+            holders = _this_jar_holder_pids(port, user_data_dir)
+        except Exception:
+            continue
+        if chrome_pid not in holders:
+            own.append(port)
+    return own[0] if len(own) == 1 else None
 
 
 def unique_lock_chrome_hidden_by_leftover_file(
