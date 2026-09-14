@@ -914,6 +914,60 @@ def test_agent_browser_invocation_is_token_match_not_substring():
          "--config-path", str(_lh_audit)],
         {}, _jar, None,
     )
+    # Official leftover joins every --chrome-flags group and accepts
+    # chromeFlags as an array (finding 132). Finding 126 / 128
+    # last-wins / string-only dropped the dock pin when a later
+    # group was --headless or the file used ["--user-data-dir"].
+    _lh_arr = _jar.parent / "lh-arr.json"
+    _lh_arr.write_text(json.dumps({
+        "chromeFlags": [f"--user-data-dir={_jar}"],
+    }))
+    _lh_arr2 = _jar.parent / "lh-arr2.json"
+    _lh_arr2.write_text(json.dumps({
+        "chromeFlags": ["--headless", f"--user-data-dir={_jar}"],
+    }))
+    _lh_arr_other = _jar.parent / "lh-arr-other.json"
+    _lh_arr_other.write_text(json.dumps({
+        "chromeFlags": ["--user-data-dir=/tmp/other-chrome"],
+    }))
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "lighthouse", "https://example.com",
+         "--chrome-flags", f"--user-data-dir={_jar}",
+         "--chrome-flags", "--headless"],
+        {}, _jar, None,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "lighthouse", "https://example.com",
+         f"--chrome-flags=--user-data-dir={_jar}",
+         "--chrome-flags=--headless"],
+        {}, _jar, None,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "lighthouse", "https://example.com",
+         "--chrome-flags", "--headless",
+         "--chrome-flags", f"--user-data-dir={_jar}"],
+        {}, _jar, None,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "lighthouse", "https://example.com",
+         "--cli-flags-path", str(_lh_arr)],
+        {}, _jar, None,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "lighthouse", "https://example.com",
+         "--cli-flags-path", str(_lh_arr2)],
+        {}, _jar, None,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["npx", "lighthouse", "https://example.com",
+         "--cli-flags-path", str(_lh_arr_other)],
+        {}, _jar, None,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["npx", "lighthouse", "--chrome-flags", "--headless",
+         "--cli-flags-path", str(_lh_arr), "https://example.com"],
+        {}, _jar, None,
+    )
     assert _is_playwright_invocation(
         ["npm", "exec", "--", "playwright", "codegen"])
     assert _is_playwright_mcp_invocation(
@@ -3547,6 +3601,99 @@ def test_unregistered_lighthouse_chrome_flags_user_data_dir_killed_on_takeover()
     assert lan.killed == 0
     assert debug_port.killed == 0
     assert no_pin.killed == 0
+    assert bash_parent.killed == 0
+
+
+def test_unregistered_lighthouse_chrome_flags_groups_and_array_killed_on_takeover():
+    """terminal() lighthouse joins every --chrome-flags / array chromeFlags.
+
+    Official leftover ``parseChromeFlags`` accepts a string *or* an
+    array (repeated ``--chrome-flags`` / file ``chromeFlags: [...]``).
+    Finding 126 / 128 last-wins / string-only left
+    ``--chrome-flags=--user-data-dir=<dock> --chrome-flags=--headless``
+    and ``{"chromeFlags": ["--user-data-dir=<dock>"]}`` typing into
+    the jar. CLI ``--chrome-flags`` still overrides the file. Another
+    jar and the bash ``-c`` parent stay up.
+    """
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    profile = bdb.profile_dir()
+    arr = profile.parent / "lh-arr.json"
+    arr.parent.mkdir(parents=True, exist_ok=True)
+    arr.write_text(json.dumps({
+        "chromeFlags": [f"--user-data-dir={profile}"],
+    }))
+    arr2 = profile.parent / "lh-arr2.json"
+    arr2.write_text(json.dumps({
+        "chromeFlags": ["--headless", f"--user-data-dir={profile}"],
+    }))
+    other = profile.parent / "lh-arr-other.json"
+    other.write_text(json.dumps({
+        "chromeFlags": ["--user-data-dir=/tmp/other-chrome"],
+    }))
+    leftover = _FakeProc(
+        9700,
+        ["npx", "lighthouse", "https://example.com",
+         "--chrome-flags", f"--user-data-dir={profile}",
+         "--chrome-flags", "--headless"],
+    )
+    equals = _FakeProc(
+        9701,
+        ["lighthouse", "https://example.com",
+         f"--chrome-flags=--user-data-dir={profile}",
+         "--chrome-flags=--headless"],
+    )
+    via_arr = _FakeProc(
+        9702,
+        ["npx", "lighthouse", "https://example.com",
+         "--cli-flags-path", str(arr)],
+    )
+    via_arr2 = _FakeProc(
+        9703,
+        ["npx", "lighthouse", "https://example.com",
+         "--cli-flags-path", str(arr2)],
+    )
+    shebang = _FakeProc(
+        9704,
+        ["node", "/home/x/node_modules/lighthouse/cli/index.js",
+         "https://example.com",
+         "--chrome-flags", f"--user-data-dir={profile}",
+         "--chrome-flags", "--headless"],
+    )
+    other_jar = _FakeProc(
+        9705,
+        ["npx", "lighthouse", "https://example.com",
+         "--cli-flags-path", str(other)],
+    )
+    cli_wins = _FakeProc(
+        9706,
+        ["npx", "lighthouse", "--chrome-flags", "--headless",
+         "--cli-flags-path", str(arr), "https://example.com"],
+    )
+    bash_parent = _FakeProc(
+        9707,
+        ["/bin/bash", "-c",
+         f"npx lighthouse --chrome-flags=--user-data-dir={profile} "
+         "--chrome-flags=--headless https://example.com"],
+    )
+    lease.acquire("human")
+    n = interrupt_unregistered_dock_cli(
+        processes=[
+            leftover, equals, via_arr, via_arr2, shebang, other_jar,
+            cli_wins, bash_parent,
+        ],
+        chromium_pid=9999,
+        owner_daemon_pid=9998,
+    )
+    assert n == 5
+    assert leftover.killed == 1
+    assert equals.killed == 1
+    assert via_arr.killed == 1
+    assert via_arr2.killed == 1
+    assert shebang.killed == 1
+    assert other_jar.killed == 0
+    assert cli_wins.killed == 0
     assert bash_parent.killed == 0
 
 

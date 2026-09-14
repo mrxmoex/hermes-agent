@@ -2452,13 +2452,18 @@ def _unregistered_cli_aims_at_dock(
     unknown. ``--autoConnect`` / no pin stays unknown.
 
     lighthouse leftover launch pin is ``--chrome-flags=--user-data-dir=<dock>``
-    (finding 126). Official leftover also hides ``--port`` /
-    ``--chrome-flags`` in ``--cli-flags-path`` / ``--cliFlagsPath`` JSON
-    (finding 128) — yargs ``config: true``. Finding 126 only checked
-    argv, so Take over left that writer running. CLI flags still
-    override the file. Official attach is still ``--port``.
-    chrome-launcher appends chrome-flags *after* its temp
-    ``--user-data-dir``, so Chromium last-wins the dock jar.
+    (finding 126). Official leftover joins *every* ``--chrome-flags``
+    group (``parseChromeFlags`` array) and accepts ``chromeFlags`` as
+    an array in ``--cli-flags-path`` JSON (finding 132). Finding 126 /
+    128 last-wins / string-only dropped the dock pin when a later
+    group was ``--headless`` or the file used ``["--user-data-dir"]``.
+    Official leftover also hides ``--port`` / ``--chrome-flags`` in
+    ``--cli-flags-path`` / ``--cliFlagsPath`` JSON (finding 128) —
+    yargs ``config: true``. Finding 126 only checked argv, so Take
+    over left that writer running. CLI flags still override the file.
+    Official attach is still ``--port``. chrome-launcher appends
+    chrome-flags *after* its temp ``--user-data-dir``, so Chromium
+    last-wins the dock jar.
     ``--port=0`` / missing ``--port`` launch that Chrome. A set
     ``--port`` that is not this dock stays another Chrome (do not
     guess an empty listen). LAN ``--hostname`` does not launch local
@@ -2626,16 +2631,21 @@ def _unregistered_cli_aims_at_dock(
         # launch-on-jar writer running on the cookie jar a human holds.
         # chrome-launcher emits its temp dir *before* chrome-flags;
         # Chromium last-wins the dock. ``--chromeFlags`` is yargs
-        # camelCase. A set non-dock ``--port`` stays another Chrome.
-        chrome_flags = _flag_value_allow_leading_dash(
+        # camelCase. Official leftover joins every ``--chrome-flags``
+        # group (finding 132) — last-wins dropped the dock pin when a
+        # later group was ``--headless``. A set non-dock ``--port``
+        # stays another Chrome.
+        chrome_groups = _flag_values_allow_leading_dash(
             tokens, ("--chrome-flags", "--chromeFlags"),
         )
-        pinned = _user_data_dir_from_chrome_flags(chrome_flags)
-        if _leftover_profile_pin_aims_at_dock(pinned, profile, cwd):
-            return True
+        if chrome_groups:
+            pinned = _user_data_dir_from_chrome_flags(" ".join(chrome_groups))
+            if _leftover_profile_pin_aims_at_dock(pinned, profile, cwd):
+                return True
         # Official leftover also hides ``--port`` / ``--chrome-flags``
-        # in ``--cli-flags-path`` JSON (finding 128). Finding 126 only
-        # checked argv. CLI flags still override the file (yargs).
+        # in ``--cli-flags-path`` JSON (finding 128 / 132). Finding
+        # 126 only checked argv. CLI flags still override the file
+        # (yargs). File ``chromeFlags`` may be a string or an array.
         return _lighthouse_cli_flags_path_aims_at_dock(
             tokens, profile, dock_port, cwd,
         )
@@ -2828,11 +2838,13 @@ def _lighthouse_cli_flags_path_aims_at_dock(
     Official leftover: ``lighthouse URL --cli-flags-path=flags.json``
     with ``port`` / ``chromeFlags`` / ``chrome-flags``. Finding 126
     only checked argv ``--port`` / ``--chrome-flags``, so Take over
-    left that writer running. yargs CLI flags override the file:
-    a set argv ``--port`` (including ``0``) / ``--hostname`` /
-    ``--chrome-flags`` wins that key. ``--config-path`` is audit
-    config, not this file. Unreadable / oversized / non-JSON stays
-    unknown. Relative paths resolve against the leftover writer cwd.
+    left that writer running. Official leftover also joins every
+    ``--chrome-flags`` group and accepts a ``chromeFlags`` array
+    (finding 132). yargs CLI flags override the file: a set argv
+    ``--port`` (including ``0``) / ``--hostname`` / ``--chrome-flags``
+    wins that key. ``--config-path`` is audit config, not this file.
+    Unreadable / oversized / non-JSON stays unknown. Relative paths
+    resolve against the leftover writer cwd.
     """
     path_text = _flag_value(tokens, ("--cli-flags-path", "--cliFlagsPath"))
     text = (path_text or "").strip()
@@ -2865,17 +2877,33 @@ def _lighthouse_cli_flags_path_aims_at_dock(
             port = int(raw_port.strip())
         if port is not None and 1 <= port <= 65535:
             return dock_port is not None and port == dock_port
-    if _flag_value_allow_leading_dash(
+    if _flag_values_allow_leading_dash(
         tokens, ("--chrome-flags", "--chromeFlags"),
-    ) is not None:
+    ):
         return False
-    raw_flags = data.get("chromeFlags")
-    if not isinstance(raw_flags, str) or not raw_flags.strip():
-        raw_flags = data.get("chrome-flags")
-    if not isinstance(raw_flags, str):
+    raw_flags = _lighthouse_chrome_flags_text(data.get("chromeFlags"))
+    if raw_flags is None:
+        raw_flags = _lighthouse_chrome_flags_text(data.get("chrome-flags"))
+    if raw_flags is None:
         return False
     pinned = _user_data_dir_from_chrome_flags(raw_flags)
     return _leftover_profile_pin_aims_at_dock(pinned, profile, cwd)
+
+
+def _lighthouse_chrome_flags_text(raw) -> Optional[str]:
+    """Join leftover lighthouse ``chromeFlags`` string or array.
+
+    Official ``parseChromeFlags`` accepts both: one ``--chrome-flags``
+    group is a string; repeated groups / file arrays are joined.
+    Finding 128 required a string, so Take over left
+    ``{"chromeFlags": ["--user-data-dir=<dock>"]}`` running.
+    """
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    if not isinstance(raw, list):
+        return None
+    parts = [item.strip() for item in raw if isinstance(item, str) and item.strip()]
+    return " ".join(parts) if parts else None
 
 
 def _user_data_dir_from_agent_browser_args(raw: Optional[str]) -> Optional[str]:
