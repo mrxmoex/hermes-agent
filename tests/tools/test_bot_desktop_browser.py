@@ -3363,6 +3363,289 @@ def test_leftover_connect_only_chrome_zygote_grandchild_does_not_stamp_helpers(
     assert _remembered_dock_attach_port() == 40141
 
 
+def test_leftover_daemon_parent_sibling_chrome_does_not_stamp_helpers(
+    tmp_path, monkeypatch,
+):
+    """Finding 191: leftover helpers' parent is leftover daemon.
+
+    Findings 186 / 189 / 190 treat leftover's unique this-jar parent
+    as chrome. Real leftover ``fill`` / CRI clients are children of
+    leftover daemon; chrome is their sibling. Lock-gone then used
+    leftover daemon as chrome_pid, so leftover-shared equality and
+    chrome-in-holders both missed. First persist stamped leftover
+    helpers; skip-kill missed chrome. Unique browser-process root
+    of extra holders is chrome. Connect-only leftover does not
+    advertise chrome's listen — scan leftover daemon's this-jar
+    children (siblings), not every this-jar pid. Leftover-only
+    several stays unknown. A zygote root (chrome dropped the
+    inode) is not chrome.
+    """
+    from hermes_constants import hermes_home_key
+    from tools.browser_tool_session import (
+        _cdp_url_is_bot_desktop_browser,
+        _last_dock_cdp_port,
+        _remembered_dock_attach_port,
+        _reset_dock_port_memory_for_tests,
+    )
+
+    leftover_helpers = {4242, 4243}
+    chrome_family = {4240, 4241, 4245}
+
+    monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path)
+    monkeypatch.setattr(browser, "profile_dir", lambda: tmp_path)
+    monkeypatch.setattr(browser, "_lock_pid", lambda d: None)
+    monkeypatch.setattr(
+        browser,
+        "_chromium_cmdline_tokens",
+        lambda pid: (
+            ["chrome", "--type=zygote", f"--user-data-dir={tmp_path}"]
+            if pid == 4241 else
+            ["chrome", "--type=utility", f"--user-data-dir={tmp_path}"]
+            if pid == 4245 else
+            ["agent-browser", "daemon", f"--user-data-dir={tmp_path}"]
+            if pid == 4300 else
+            ["chrome", f"--user-data-dir={tmp_path}"]
+        ),
+    )
+    monkeypatch.setattr(
+        browser,
+        "_proc_ppid",
+        lambda pid: {
+            4240: 4300, 4241: 4240, 4245: 4241, 4242: 4300, 4243: 4300,
+        }.get(pid),
+    )
+    monkeypatch.setattr(
+        browser,
+        "_launched_by_session",
+        lambda pid: "h_review" if pid == 4240 else None,
+    )
+    monkeypatch.setattr(browser, "_recover_cdp_port_from_singleton", lambda *a, **k: None)
+    monkeypatch.setattr(
+        browser, "_this_jar_children",
+        lambda parent, user_data_dir: (
+            {4240, 4242, 4243} if parent == 4300 else set()
+        ),
+    )
+
+    def _inodes(port):
+        if port == 40141:
+            return {7: {"::1"}}
+        if port == 9333:
+            return {8: {"::1"}}
+        return {}
+
+    def _inherited(want):
+        out = {}
+        if 7 in want:
+            out[4242] = {7}
+            out[4243] = {7}
+        if 8 in want:
+            out[4240] = {8}
+            out[4241] = {8}
+            out[4245] = {8}
+            out[4242] = {8}
+            out[4243] = {8}
+        return out
+
+    monkeypatch.setattr(browser, "_loopback_listen_inodes_for_port", _inodes)
+    monkeypatch.setattr(browser, "_pids_holding_socket_inodes", _inherited)
+    monkeypatch.setattr(
+        browser, "_loopback_listen_ports_for_pid",
+        lambda pid: {9333, 40141} if pid in leftover_helpers else (
+            {9333} if pid in chrome_family else (
+                {40141} if pid == 4300 else set()
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        browser, "_loopback_listen_targets_for_pid",
+        lambda pid: {("::1", 9333), ("::1", 40141)} if pid in leftover_helpers else (
+            {("::1", 9333)} if pid in chrome_family else (
+                {("::1", 40141)} if pid == 4300 else set()
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        browser,
+        "_cdp_port_reachable",
+        lambda port, hosts: port in (9333, 40141) and "::1" in hosts,
+    )
+    monkeypatch.setattr(
+        browser, "_configured_cdp_override_url",
+        lambda: "http://[::1]:40141",
+    )
+    _reset_dock_port_memory_for_tests()
+    (tmp_path / "DevToolsActivePort").write_text(
+        "40141\n/devtools/browser/abc\n", encoding="utf-8",
+    )
+    assert browser.unique_lock_chrome_hidden_by_leftover_file(
+        40141, str(tmp_path),
+    ) == 9333
+    assert browser.lock_listed_persist_port() == 9333
+    assert browser._this_jar_chromium_pid(str(tmp_path)) == 4240
+    assert browser.shared_chromium_owner_session() == "h_review"
+    assert browser.running_instance_cdp_port(str(tmp_path)) == 9333
+    assert browser.last_known_dock_cdp_port() == 9333
+    assert _last_dock_cdp_port.get(hermes_home_key()) == 9333
+    assert _remembered_dock_attach_port() == 9333
+    assert browser.persist_live_dock_cdp_port() == 9333
+    assert (tmp_path / "dock-cdp-port").read_text(encoding="utf-8") == "9333"
+    assert _cdp_url_is_bot_desktop_browser("http://[::1]:40141") is True
+    assert _cdp_url_is_bot_desktop_browser("http://[::1]:9333") is True
+    assert _cdp_url_is_bot_desktop_browser("9222") is False
+
+    def _connect_only(want):
+        out = {}
+        if 7 in want:
+            out[4242] = {7}
+            out[4243] = {7}
+        if 8 in want:
+            out[4240] = {8}
+            out[4241] = {8}
+            out[4245] = {8}
+        return out
+
+    monkeypatch.setattr(browser, "_pids_holding_socket_inodes", _connect_only)
+    monkeypatch.setattr(
+        browser, "_loopback_listen_ports_for_pid",
+        lambda pid: {40141} if pid in leftover_helpers or pid == 4300 else (
+            {9333} if pid in chrome_family else set()
+        ),
+    )
+    monkeypatch.setattr(
+        browser, "_loopback_listen_targets_for_pid",
+        lambda pid: {("::1", 40141)} if pid in leftover_helpers or pid == 4300 else (
+            {("::1", 9333)} if pid in chrome_family else set()
+        ),
+    )
+    _reset_dock_port_memory_for_tests()
+    (tmp_path / "DevToolsActivePort").write_text(
+        "40141\n/devtools/browser/abc\n", encoding="utf-8",
+    )
+    assert browser.unique_lock_chrome_hidden_by_leftover_file(
+        40141, str(tmp_path),
+    ) == 9333
+    assert browser.lock_listed_persist_port() == 9333
+    assert browser._this_jar_chromium_pid(str(tmp_path)) == 4240
+    assert browser.running_instance_cdp_port(str(tmp_path)) == 9333
+    assert _remembered_dock_attach_port() == 9333
+
+    def _daemon_inherited(want):
+        out = {}
+        if 7 in want:
+            out[4242] = {7}
+            out[4243] = {7}
+        if 8 in want:
+            out[4240] = {8}
+            out[4241] = {8}
+            out[4245] = {8}
+            out[4300] = {8}
+        return out
+
+    monkeypatch.setattr(browser, "_pids_holding_socket_inodes", _daemon_inherited)
+    monkeypatch.setattr(
+        browser, "_loopback_listen_ports_for_pid",
+        lambda pid: {40141} if pid in leftover_helpers else (
+            {9333} if pid in chrome_family or pid == 4300 else set()
+        ),
+    )
+    monkeypatch.setattr(
+        browser, "_loopback_listen_targets_for_pid",
+        lambda pid: {("::1", 40141)} if pid in leftover_helpers else (
+            {("::1", 9333)} if pid in chrome_family or pid == 4300 else set()
+        ),
+    )
+    _reset_dock_port_memory_for_tests()
+    (tmp_path / "DevToolsActivePort").write_text(
+        "40141\n/devtools/browser/abc\n", encoding="utf-8",
+    )
+    assert browser.unique_lock_chrome_hidden_by_leftover_file(
+        40141, str(tmp_path),
+    ) == 9333
+    assert browser.lock_listed_persist_port() == 9333
+    assert browser._this_jar_chromium_pid(str(tmp_path)) == 4240
+    assert browser.shared_chromium_owner_session() == "h_review"
+    assert browser.running_instance_cdp_port(str(tmp_path)) == 9333
+    assert _remembered_dock_attach_port() == 9333
+
+    def _leftover_only(want):
+        out = {}
+        if 7 in want:
+            out[4240] = {7}
+            out[4242] = {7}
+            out[4243] = {7}
+        return out
+
+    monkeypatch.setattr(browser, "_pids_holding_socket_inodes", _leftover_only)
+    monkeypatch.setattr(
+        browser, "_loopback_listen_ports_for_pid",
+        lambda pid: {40141} if pid in (4240, 4242, 4243, 4300) else set(),
+    )
+    monkeypatch.setattr(
+        browser,
+        "_cdp_port_reachable",
+        lambda port, hosts: port == 40141 and "::1" in hosts,
+    )
+    _reset_dock_port_memory_for_tests()
+    (tmp_path / "DevToolsActivePort").write_text(
+        "40141\n/devtools/browser/abc\n", encoding="utf-8",
+    )
+    assert browser.unique_lock_chrome_hidden_by_leftover_file(
+        40141, str(tmp_path),
+    ) is None
+    assert browser.lock_listed_persist_port() is None
+    assert browser._this_jar_chromium_pid(str(tmp_path)) is None
+    assert browser.running_instance_cdp_port(str(tmp_path)) == 40141
+    assert _remembered_dock_attach_port() == 40141
+
+    def _dropped(want):
+        out = {}
+        if 7 in want:
+            out[4242] = {7}
+            out[4243] = {7}
+        if 8 in want:
+            out[4241] = {8}
+            out[4245] = {8}
+        return out
+
+    monkeypatch.setattr(browser, "_pids_holding_socket_inodes", _dropped)
+    monkeypatch.setattr(
+        browser,
+        "_proc_ppid",
+        lambda pid: {4241: 4240, 4245: 4241, 4242: 4240, 4243: 4240}.get(pid),
+    )
+    monkeypatch.setattr(
+        browser, "_loopback_listen_ports_for_pid",
+        lambda pid: {9333, 40141} if pid in leftover_helpers else (
+            {9333} if pid in (4241, 4245) else (
+                {40141} if pid == 4240 else set()
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        browser,
+        "_cdp_port_reachable",
+        lambda port, hosts: port in (9333, 40141) and "::1" in hosts,
+    )
+    monkeypatch.setattr(
+        browser, "_this_jar_children",
+        lambda parent, user_data_dir: (
+            {4241, 4242, 4243} if parent == 4240 else set()
+        ),
+    )
+    _reset_dock_port_memory_for_tests()
+    (tmp_path / "DevToolsActivePort").write_text(
+        "40141\n/devtools/browser/abc\n", encoding="utf-8",
+    )
+    assert browser.unique_lock_chrome_hidden_by_leftover_file(
+        40141, str(tmp_path),
+    ) is None
+    assert browser.lock_listed_persist_port() is None
+    assert browser._this_jar_chromium_pid(str(tmp_path)) is None
+    assert browser.running_instance_cdp_port(str(tmp_path)) == 40141
+    assert _remembered_dock_attach_port() == 40141
+
+
 def test_lock_pid_dead_family_does_not_shop_holder_squat(tmp_path, monkeypatch):
     """Finding 165: lock pid still lists the file port; its family is dead.
 

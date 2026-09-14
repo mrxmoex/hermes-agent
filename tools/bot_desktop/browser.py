@@ -979,6 +979,103 @@ def _this_jar_descendant_of_chrome(
     return False
 
 
+_CHROMIUM_BROWSER_EXES = frozenset({
+    "chrome",
+    "chromium",
+    "chromium-browser",
+    "google-chrome",
+    "google-chrome-stable",
+    "google-chrome-beta",
+    "google-chrome-unstable",
+    "ungoogled-chromium",
+})
+
+
+def _pid_is_chromium_browser(pid: int) -> bool:
+    """True when *pid* is the browser process, not zygote / GPU / leftover.
+
+    Chromium children use ``--type=zygote`` / ``gpu-process`` /
+    ``utility`` / ``renderer``. The browser process omits ``--type=``
+    or sets ``--type=browser``. Finding 191 must not pick zygote as
+    chrome after chrome dropped the listen fd, and must not treat a
+    leftover daemon that names this jar (``agent-browser``, python)
+    as chrome just because it has no ``--type=``.
+    """
+    try:
+        tokens = _chromium_cmdline_tokens(pid)
+    except Exception:
+        return False
+    if not tokens:
+        return False
+    kinds = [
+        token.split("=", 1)[1]
+        for token in tokens
+        if token.startswith("--type=") and "=" in token
+    ]
+    if kinds and "browser" not in kinds:
+        return False
+    if "browser" in kinds:
+        return True
+    exe = os.path.basename(tokens[0]).lower()
+    return exe in _CHROMIUM_BROWSER_EXES
+
+
+def _unique_listen_family_root(extra: Set[int]) -> Optional[int]:
+    """Unique browser-process ancestor of *extra* listen holders, or ``None``.
+
+    Finding 191: leftover helpers' this-jar parent is leftover
+    daemon; chrome is their sibling. Extra holders of a leftover-
+    advertised listen (holders minus leftover file holders) have
+    one browser-process root. Several roots stay unknown. A zygote
+    root (chrome dropped the inode) is not chrome.
+    """
+    if not extra:
+        return None
+    roots: list[int] = []
+    for pid in extra:
+        if any(
+            other != pid and _this_jar_descendant_of_chrome(pid, other)
+            for other in extra
+        ):
+            continue
+        roots.append(pid)
+    if len(roots) != 1:
+        return None
+    root = roots[0]
+    return root if _pid_is_chromium_browser(root) else None
+
+
+def _this_jar_children(parent: int, user_data_dir: str) -> Set[int]:
+    """This-jar pids whose PPID is *parent*.
+
+    Finding 191: leftover connect-only helpers do not advertise
+    chrome's listen. Chrome is a sibling of those helpers under
+    leftover daemon. Children of that one parent are not a scan
+    of every this-jar pid.
+    """
+    kids: Set[int] = set()
+    if not isinstance(parent, int) or parent <= 1:
+        return kids
+    try:
+        names = os.listdir("/proc")
+    except OSError:
+        return kids
+    for name in names:
+        if not name.isdigit():
+            continue
+        pid = int(name)
+        if pid <= 1 or pid == parent:
+            continue
+        try:
+            if _proc_ppid(pid) != parent:
+                continue
+        except Exception:
+            continue
+        if _pid_names_this_jar(pid, user_data_dir):
+            kids.add(pid)
+    return kids
+
+
 def _leftover_or_chrome_family_holds(
     port: int,
     leftover_pids: Set[int],
@@ -995,18 +1092,35 @@ def _leftover_or_chrome_family_holds(
     ``DevToolsActivePort``). Holders are then chrome plus this-jar
     children of chrome; leftover file holders need not hold the
     listen. Finding 190: zygote-spawned grandchildren inherit the
-    same listen; their PPID is zygote, not chrome. An unrelated
-    this-jar holder is not chrome's family.
+    same listen; their PPID is zygote, not chrome. Finding 191:
+    leftover helpers' this-jar parent is leftover daemon, not
+    chrome, so chrome is absent from that parent check. A unique
+    browser-process root of the extra holders is still chrome.
+    An unrelated this-jar holder is not chrome's family.
     """
     holders = _this_jar_holder_pids(port, user_data_dir)
-    if chrome_pid not in holders:
-        return False
-    for holder in holders:
-        if holder == chrome_pid or holder in leftover_pids:
-            continue
-        if not _this_jar_descendant_of_chrome(holder, chrome_pid):
-            return False
-    return True
+    extra = holders - leftover_pids
+    if chrome_pid in holders:
+        for holder in holders:
+            if holder == chrome_pid or holder in leftover_pids:
+                continue
+            if not _this_jar_descendant_of_chrome(holder, chrome_pid):
+                return False
+        return True
+    leftover_parents = {
+        parent
+        for helper in leftover_pids
+        if (parent := _proc_ppid(helper)) is not None
+        and _pid_names_this_jar(parent, user_data_dir)
+        and parent in extra
+    }
+    if len(leftover_parents) == 1:
+        parent = next(iter(leftover_parents))
+        if _unique_listen_family_root(
+            extra & _this_jar_children(parent, user_data_dir)
+        ) is not None:
+            return True
+    return _unique_listen_family_root(extra) is not None
 
 
 def _leftover_inherited_chrome_listen(
@@ -1168,6 +1282,16 @@ def unique_lock_chrome_hidden_by_leftover_file(
         return None
     if parent not in scan_pids:
         scan_pids.append(parent)
+    # Finding 191: leftover connect-only helpers do not list
+    # chrome's listen. Chrome is a this-jar child of leftover
+    # daemon (sibling of those helpers). Lock-present stays
+    # lock-ports only (184).
+    try:
+        for child in _this_jar_children(parent, user_data_dir):
+            if child not in scan_pids:
+                scan_pids.append(child)
+    except Exception:
+        pass
     return _leftover_inherited_chrome_listen(
         named, leftover_pids, parent, scan_pids, user_data_dir,
     )
@@ -1482,7 +1606,21 @@ def _this_jar_chromium_pid(user_data_dir: Optional[str] = None) -> Optional[int]
     parent = _unique_this_jar_parent(leftover_pids, user_data_dir)
     if parent is None:
         return None
-    if parent in _this_jar_holder_pids(hidden, user_data_dir):
+    hidden_holders = _this_jar_holder_pids(hidden, user_data_dir)
+    extra = hidden_holders - leftover_pids
+    extra_root = None
+    # Finding 191: leftover parent that inherited chrome's listen
+    # is in extra. Unique ancestor of extra is leftover daemon,
+    # not chrome. Children of that one parent first.
+    if parent in hidden_holders:
+        extra_root = _unique_listen_family_root(
+            extra & _this_jar_children(parent, user_data_dir)
+        )
+    if extra_root is None:
+        extra_root = _unique_listen_family_root(extra)
+    if extra_root is not None:
+        return extra_root
+    if parent in hidden_holders and _pid_is_chromium_browser(parent):
         return parent
     return None
 
