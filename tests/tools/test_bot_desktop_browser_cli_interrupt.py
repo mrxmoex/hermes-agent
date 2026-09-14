@@ -6126,6 +6126,83 @@ def test_unregistered_spares_ipv4_leftover_on_ipv6_only_dock(monkeypatch):
         v4.close()
 
 
+def test_unregistered_playwright_mcp_env_prefers_official_cdp_over_pw_test():
+    """Official leftover MCP / Agent CLI read PLAYWRIGHT_MCP_CDP_ENDPOINT first.
+
+    Finding 146: a shared env scan put PW_TEST_* / PLAYWRIGHT_WS_ENDPOINT
+    first, so leftover ``npx @playwright/mcp`` /
+    ``npx playwright mcp`` / ``playwright-cli`` with
+    ``PLAYWRIGHT_MCP_CDP_ENDPOINT=<dock>`` and a sibling Playwright
+    connect env stayed typing into the jar a human holds. Regular
+    ``codegen`` / ``test`` still use Playwright's own connect env and
+    do not treat the MCP key as a pin.
+    """
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    bdb.remember_dock_cdp_port(9333)
+    sibling = "ws://127.0.0.1:9444/devtools/browser/x"
+    dock = "http://127.0.0.1:9333"
+    mcp_shadowed = _FakeProc(
+        11104,
+        ["npx", "@playwright/mcp"],
+        {
+            "PLAYWRIGHT_MCP_CDP_ENDPOINT": dock,
+            "PW_TEST_CONNECT_WS_ENDPOINT": sibling,
+        },
+    )
+    bundled_mcp_shadowed = _FakeProc(
+        11105,
+        ["npx", "playwright", "mcp"],
+        {
+            "PLAYWRIGHT_MCP_CDP_ENDPOINT": dock,
+            "PLAYWRIGHT_WS_ENDPOINT": sibling,
+        },
+    )
+    agent_shadowed = _FakeProc(
+        11106,
+        ["npx", "@playwright/cli", "open"],
+        {
+            "PLAYWRIGHT_MCP_CDP_ENDPOINT": dock,
+            "PW_TEST_CONNECT_WS_ENDPOINT": sibling,
+        },
+    )
+    codegen_sibling = _FakeProc(
+        11107,
+        ["npx", "playwright", "codegen"],
+        {
+            "PLAYWRIGHT_MCP_CDP_ENDPOINT": dock,
+            "PW_TEST_CONNECT_WS_ENDPOINT": sibling,
+        },
+    )
+    codegen_mcp_only = _FakeProc(
+        11108,
+        ["npx", "playwright", "open"],
+        {"PLAYWRIGHT_MCP_CDP_ENDPOINT": dock},
+    )
+    mcp_pw_test_fallback = _FakeProc(
+        11109,
+        ["npx", "@playwright/mcp"],
+        {"PW_TEST_CONNECT_WS_ENDPOINT": dock},
+    )
+    lease.acquire("human")
+    n = interrupt_unregistered_dock_cli(
+        processes=[
+            mcp_shadowed, bundled_mcp_shadowed, agent_shadowed,
+            codegen_sibling, codegen_mcp_only, mcp_pw_test_fallback,
+        ],
+        chromium_pid=9999,
+        owner_daemon_pid=9998,
+    )
+    assert mcp_shadowed.killed == 1
+    assert bundled_mcp_shadowed.killed == 1
+    assert agent_shadowed.killed == 1
+    assert codegen_sibling.killed == 0
+    assert codegen_mcp_only.killed == 0
+    assert mcp_pw_test_fallback.killed == 1
+    assert n == 4
+
+
 def test_stop_reserved_calls_unregistered_interrupt(monkeypatch):
     from tools.browser_tool_session import interrupt_unregistered_dock_cli as real
     from tools.browser_tool_supervisor_lease import stop_reserved_supervisors

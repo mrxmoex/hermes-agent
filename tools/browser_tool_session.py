@@ -1257,12 +1257,49 @@ _COREPACK_NPM_SHIMS = frozenset({"npm.js", "npm.cjs"})
 _COREPACK_NPX_SHIMS = frozenset({
     "pnpx.js", "pnpx.cjs", "pnpx.mjs",
 })
+# Official leftover ``codegen`` / ``test`` attach via Playwright's own
+# connect env. ``PLAYWRIGHT_MCP_CDP_ENDPOINT`` is MCP / Agent CLI only
+# (``configFromEnv`` in playwright-core). Finding 146: a shared scan
+# put ``PW_TEST_*`` first and also treated the MCP key as a regular
+# Playwright pin.
 _PLAYWRIGHT_CDP_ENV = (
     "PW_TEST_CONNECT_WS_ENDPOINT",
     "PLAYWRIGHT_WS_ENDPOINT",
-    "PLAYWRIGHT_MCP_CDP_ENDPOINT",
     "BROWSER_CDP_URL",
 )
+# Official leftover MCP / Agent CLI (``resolveCLIConfigForMCP`` /
+# ``resolveCLIConfigForCLI``) only read ``PLAYWRIGHT_MCP_CDP_ENDPOINT``.
+# Finding 146: leftover MCP with that key on the dock and
+# ``PW_TEST_CONNECT_WS_ENDPOINT`` on a sibling stayed running because
+# the shared scan took Playwright's key first. Keep Playwright's own
+# connect env as a fallback so leftover MCP that inherited a
+# ``PW_TEST`` / ``PLAYWRIGHT_WS_ENDPOINT`` pin still interrupts.
+_PLAYWRIGHT_MCP_CDP_ENV = (
+    "PLAYWRIGHT_MCP_CDP_ENDPOINT",
+    "BROWSER_CDP_URL",
+    "PW_TEST_CONNECT_WS_ENDPOINT",
+    "PLAYWRIGHT_WS_ENDPOINT",
+)
+
+
+def _leftover_playwright_env_pin(
+    environ: Optional[Dict[str, str]],
+    *,
+    mcp: bool,
+) -> str:
+    """First leftover Playwright attach env aimed at a CDP URL.
+
+    MCP / Agent CLI leftover: official ``PLAYWRIGHT_MCP_CDP_ENDPOINT``
+    first (finding 146). Regular Playwright leftover: Playwright's own
+    connect env only.
+    """
+    env = environ or {}
+    keys = _PLAYWRIGHT_MCP_CDP_ENV if mcp else _PLAYWRIGHT_CDP_ENV
+    for key in keys:
+        val = (env.get(key) or "").strip()
+        if val:
+            return val
+    return ""
 
 
 def _token_basename_is(token: str, name: str) -> bool:
@@ -2260,7 +2297,8 @@ def _is_playwright_invocation(tokens: List[str]) -> bool:
 
     Token-match only. ``npx playwright install`` is an invocation; it is
     not dock-aimed unless ``--cdp-endpoint`` / ``PW_TEST_CONNECT_*`` pin
-    this jar.     ``playwright-cli attach --cdp=<dock>`` / ``npx @playwright/cli``
+    this jar. Regular Playwright does not read
+    ``PLAYWRIGHT_MCP_CDP_ENDPOINT``.     ``playwright-cli attach --cdp=<dock>`` / ``npx @playwright/cli``
     are leftover Agent CLI (finding 109 / 136). Official leftover
     ``attach`` also leaves ``node …/cliDaemon.js --cdp=<dock>``
     (finding 138). Finding 142: official leftover
@@ -3091,10 +3129,11 @@ def _unregistered_cli_aims_at_dock(
     ):
         cdp = _cdp_arg_from_argv(tokens)
         if not cdp:
-            for key in _PLAYWRIGHT_CDP_ENV:
-                cdp = (env.get(key) or "").strip()
-                if cdp:
-                    break
+            mcp_flavor = (
+                _is_playwright_mcp_invocation(tokens)
+                or _is_playwright_cli_agent_invocation(tokens)
+            )
+            cdp = _leftover_playwright_env_pin(env, mcp=mcp_flavor)
         if not cdp:
             # Official leftover: ``codegen --user-data-dir=<dock>`` /
             # ``playwright-cli open --profile=<dock>``. Finding 99 only
@@ -3131,8 +3170,11 @@ def _unregistered_cli_aims_at_dock(
             # and ``--config`` JSON (finding 127 / 135). Finding 111
             # only checked argv ``--user-data-dir``. Finding 127 only
             # matched ``@playwright/mcp``, so ``npx playwright mcp``
-            # env / ``--config`` stayed unknown. Regular Playwright
-            # CLI (``codegen`` / ``test``) does not read those keys.
+            # env / ``--config`` stayed unknown. Finding 146: leftover
+            # MCP / Agent CLI env prefers official
+            # ``PLAYWRIGHT_MCP_CDP_ENDPOINT`` over ``PW_TEST_*``.
+            # Regular Playwright CLI (``codegen`` / ``test``) does not
+            # read those keys.
             if not _is_playwright_mcp_invocation(tokens):
                 return False
             pinned = (env.get("PLAYWRIGHT_MCP_USER_DATA_DIR") or "").strip()
