@@ -748,7 +748,11 @@ def lock_listed_persist_port(user_data_dir: Optional[str] = None) -> Optional[in
     ``DevToolsActivePort`` helpers (several holders) must not
     overwrite that chrome (unique holder). A different
     file-named live listen with leftover persist holders is
-    still finding 172. No HTTP.
+    still finding 172. Finding 185: persist never stamped and
+    the lock is already gone. Leftover holders that inherited
+    chrome's DevTools fd still name chrome's other unique
+    listen — that is the first persist, not those helpers.
+    No HTTP.
     """
     if user_data_dir is None:
         user_data_dir = str(profile_dir())
@@ -789,7 +793,25 @@ def lock_listed_persist_port(user_data_dir: Optional[str] = None) -> Optional[in
             if port in lock_ports:
                 return port
         return None
+
+    def _hidden_leftover_holder_chrome() -> Optional[int]:
+        named = None
+        try:
+            named = file_named_dock_listen_port(user_data_dir)
+        except Exception:
+            named = None
+        return unique_lock_chrome_hidden_by_leftover_file(
+            named, user_data_dir,
+        )
+
+    # Finding 185: persist never stamped (empty candidates). Overlay
+    # / Take over can unlink SingletonLock before the first live
+    # stamp. 184 needs that pid; leftover holders that inherited
+    # chrome's DevTools fd still name chrome's other unique listen.
     if not candidates:
+        hidden = _hidden_leftover_holder_chrome()
+        if hidden is not None:
+            return hidden
         return None
     # Finding 179: no this-jar lock pid. Do not file-first inode-list
     # leftover helpers — that reopens 178. Memory that this jar still
@@ -827,6 +849,11 @@ def lock_listed_persist_port(user_data_dir: Optional[str] = None) -> Optional[in
                 persist, named, user_data_dir,
             ):
                 return persist
+    # Finding 185: poisoned leftover persist file (candidates
+    # non-empty) must not hide leftover-holder unique chrome.
+    hidden = _hidden_leftover_holder_chrome()
+    if hidden is not None:
+        return hidden
     return None
 
 
@@ -869,7 +896,10 @@ def unique_lock_chrome_hidden_by_leftover_file(
     persist, even when the lock pid still has exactly one other
     unique this-jar listen — that is chrome. Several other unique
     lock ports stay unknown (do not guess). File unique is finding
-    170 / 172 advertisement. No HTTP.
+    170 / 172 advertisement. Finding 185: when the lock is gone,
+    leftover holders that inherited chrome's DevTools fd still
+    advertise that unique listen. Helpers that are not leftover
+    holders of *named* stay finding 86. No HTTP.
     """
     if user_data_dir is None:
         user_data_dir = str(profile_dir())
@@ -881,22 +911,48 @@ def unique_lock_chrome_hidden_by_leftover_file(
     except Exception:
         return None
     pid = _lock_pid(user_data_dir)
-    if pid is None or not _pid_names_this_jar(pid, user_data_dir):
-        return None
+    if pid is not None and _pid_names_this_jar(pid, user_data_dir):
+        try:
+            lock_ports = _loopback_listen_ports_for_pid(pid)
+        except Exception:
+            return None
+        chrome: list[int] = []
+        for port in lock_ports:
+            if port == named:
+                continue
+            try:
+                n = len(_this_jar_listen_holders(port, user_data_dir))
+            except Exception:
+                continue
+            if n == 1:
+                chrome.append(port)
+        return chrome[0] if len(chrome) == 1 else None
+    # Finding 185: lock is gone. Leftover holders that inherited
+    # chrome's DevTools fd still advertise chrome's other unique
+    # listen. Several other unique holder ports stay unknown
+    # (do not guess). Helpers that are not leftover holders of
+    # *named* stay finding 86. No HTTP.
+    chrome = []
     try:
-        lock_ports = _loopback_listen_ports_for_pid(pid)
+        holders = _this_jar_listen_holders(named, user_data_dir)
     except Exception:
         return None
-    chrome: list[int] = []
-    for port in lock_ports:
-        if port == named:
-            continue
+    seen: set[int] = set()
+    for holder_pid, _hosts in holders:
         try:
-            n = len(_this_jar_listen_holders(port, user_data_dir))
+            ports = _loopback_listen_ports_for_pid(holder_pid)
         except Exception:
             continue
-        if n == 1:
-            chrome.append(port)
+        for port in ports:
+            if port == named or port in seen:
+                continue
+            try:
+                n = len(_this_jar_listen_holders(port, user_data_dir))
+            except Exception:
+                continue
+            if n == 1:
+                seen.add(port)
+                chrome.append(port)
     return chrome[0] if len(chrome) == 1 else None
 
 
@@ -943,6 +999,10 @@ def running_instance_cdp_port(user_data_dir: str, *, exclude_session: Optional[s
     finding 164 then stamp leftover helpers as the first
     persist even when the lock pid still has exactly one
     other unique this-jar listen. That listen is chrome.
+    Finding 185: overlay can unlink the lock before that
+    first stamp. Leftover holders that inherited chrome's
+    DevTools fd still name the unique listen. Do not let
+    164 make leftover helpers the first persist.
     An instance
     agent-browser launched for ``exclude_session`` itself is reported as ``None``:
     its daemon already owns that browser, and handing it ``--cdp`` would make it
@@ -973,12 +1033,35 @@ def running_instance_cdp_port(user_data_dir: str, *, exclude_session: Optional[s
         persist = lock_listed_persist_port(user_data_dir)
         file_port = int(port_line)
         if persist is not None and persist != file_port:
-            return None
-        port = _file_named_this_jar_listen_port(
-            file_port, user_data_dir, exclude_session=exclude_session,
-        )
-        if port is None:
-            return None
+            # Finding 179 / 185: do not shop leftover file helpers
+            # over lock-listed / leftover-holder chrome. Try that
+            # chrome's TCP so first persist is not those helpers
+            # after overlay unlinks the lock. A TCP miss stays
+            # None (179 leftover already holds the socket).
+            if exclude_session:
+                try:
+                    holders = _this_jar_listen_holders(persist, user_data_dir)
+                except Exception:
+                    holders = []
+                if any(
+                    _launched_by_session(holder_pid) == exclude_session
+                    for holder_pid, _ in holders
+                ):
+                    return None
+            try:
+                hosts = _this_jar_listen_connect_hosts(persist)
+            except Exception:
+                hosts = ()
+            if hosts and _cdp_port_reachable(persist, hosts):
+                port = persist
+            else:
+                return None
+        else:
+            port = _file_named_this_jar_listen_port(
+                file_port, user_data_dir, exclude_session=exclude_session,
+            )
+            if port is None:
+                return None
     else:
         # Recover already refuses a recycled lock pid whose cmdline /
         # ``CHROME_USER_DATA_DIR`` is not this jar. The DevToolsActivePort
@@ -1261,6 +1344,9 @@ def persist_live_dock_cdp_port() -> Optional[int]:
     Finding 184: persist may never have been stamped —
     unique lock chrome hidden by leftover file helpers
     is the first persist, not those helpers.
+    Finding 185: overlay can unlink the lock before that
+    first stamp. Leftover-holder unique chrome is still
+    the first persist.
     """
     try:
         port = running_instance_cdp_port(str(profile_dir()))
