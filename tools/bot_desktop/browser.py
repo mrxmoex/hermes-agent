@@ -772,7 +772,12 @@ def lock_listed_persist_port(user_data_dir: Optional[str] = None) -> Optional[in
     listen — that is the first persist, not those helpers.
     Finding 186: leftover this-jar helpers that dropped that
     fd still have chrome as parent. That parent's other
-    unique listen is the first persist.
+    unique listen is the first persist. Finding 188: leftover
+    helpers that inherited chrome's unique CDP listen are
+    this-jar inode holders of that port (finding 163). 184 /
+    185 / 186 required n==1, so first persist stamped leftover
+    DevTools. Exactly one leftover-shared listen with chrome
+    is still chrome.
     No HTTP.
     """
     if user_data_dir is None:
@@ -906,6 +911,76 @@ def leftover_helpers_hide_persist_chrome(
     return persist_n == 1 and named_n > 1
 
 
+def _this_jar_holder_pids(want: int, user_data_dir: str) -> Set[int]:
+    """This-jar pids that inode-listen on *want*."""
+    try:
+        return {
+            holder_pid
+            for holder_pid, _hosts in _this_jar_listen_holders(want, user_data_dir)
+        }
+    except Exception:
+        return set()
+
+
+def _unique_this_jar_parent(
+    holder_pids: Set[int], user_data_dir: str,
+) -> Optional[int]:
+    """Unique this-jar PPID of leftover holders, or ``None``.
+
+    Finding 186 / 188: leftover helpers that name this jar still have
+    chrome as parent. Several distinct this-jar parents stay unknown.
+    """
+    parents: list[int] = []
+    for holder_pid in holder_pids:
+        try:
+            ppid = _proc_ppid(holder_pid)
+        except Exception:
+            ppid = None
+        if (
+            isinstance(ppid, int)
+            and ppid > 1
+            and ppid not in parents
+            and _pid_names_this_jar(ppid, user_data_dir)
+        ):
+            parents.append(ppid)
+    return parents[0] if len(parents) == 1 else None
+
+
+def _leftover_inherited_chrome_listen(
+    named: int,
+    leftover_pids: Set[int],
+    chrome_pid: int,
+    scan_pids: list[int],
+    user_data_dir: str,
+) -> Optional[int]:
+    """Other listen leftover holders share with chrome, or ``None``.
+
+    Finding 188: leftover helpers that inherited chrome's unique CDP
+    listen are this-jar inode holders of that port (finding 163).
+    184 / 185 / 186 required n==1, so first persist stamped leftover
+    DevTools. Exactly one other listen whose this-jar holders are
+    leftover file holders plus chrome is not a guess among ports.
+    Several such listens stay unknown (85).
+    """
+    if not leftover_pids or not isinstance(chrome_pid, int) or chrome_pid <= 1:
+        return None
+    want = leftover_pids | {chrome_pid}
+    inherited: list[int] = []
+    seen: Set[int] = set()
+    for scan_pid in scan_pids:
+        try:
+            ports = _loopback_listen_ports_for_pid(scan_pid)
+        except Exception:
+            continue
+        for port in ports:
+            if port == named or port in seen:
+                continue
+            seen.add(port)
+            if _this_jar_holder_pids(port, user_data_dir) == want:
+                inherited.append(port)
+    return inherited[0] if len(inherited) == 1 else None
+
+
 def unique_lock_chrome_hidden_by_leftover_file(
     named: Optional[int],
     user_data_dir: Optional[str] = None,
@@ -925,16 +1000,24 @@ def unique_lock_chrome_hidden_by_leftover_file(
     helpers that are no longer leftover holders of chrome still
     have chrome as parent. That parent's other unique listen is
     chrome. Helpers whose parent does not name this jar stay
-    finding 86. No HTTP.
+    finding 86. Finding 188: leftover helpers that inherited
+    chrome's unique CDP listen are this-jar inode holders of
+    that port, so n==1 misses. Exactly one leftover-shared
+    listen with chrome is still chrome. Several such listens
+    stay unknown. No HTTP.
     """
     if user_data_dir is None:
         user_data_dir = str(profile_dir())
     if not isinstance(named, int) or not (1 <= named <= 65535):
         return None
     try:
-        if len(_this_jar_listen_holders(named, user_data_dir)) <= 1:
-            return None
+        leftover_pids = {
+            holder_pid
+            for holder_pid, _hosts in _this_jar_listen_holders(named, user_data_dir)
+        }
     except Exception:
+        return None
+    if len(leftover_pids) <= 1:
         return None
     pid = _lock_pid(user_data_dir)
     if pid is not None and _pid_names_this_jar(pid, user_data_dir):
@@ -952,20 +1035,24 @@ def unique_lock_chrome_hidden_by_leftover_file(
                 continue
             if n == 1:
                 chrome.append(port)
-        return chrome[0] if len(chrome) == 1 else None
+        if len(chrome) == 1:
+            return chrome[0]
+        if chrome:
+            return None
+        return _leftover_inherited_chrome_listen(
+            named, leftover_pids, pid, [pid], user_data_dir,
+        )
     # Finding 185: lock is gone. Leftover holders that inherited
     # chrome's DevTools fd still advertise chrome's other unique
     # listen. Finding 186: leftover this-jar helpers that dropped
     # that fd still have chrome as parent. Several other unique
     # holder ports stay unknown (do not guess). A parent that
-    # does not name this jar stays finding 86. No HTTP.
+    # does not name this jar stays finding 86. Finding 188:
+    # leftover that inherited chrome's unique listen make n==1
+    # miss; leftover-shared with that parent is still chrome.
     chrome = []
-    try:
-        holders = _this_jar_listen_holders(named, user_data_dir)
-    except Exception:
-        return None
     scan_pids: list[int] = []
-    for holder_pid, _hosts in holders:
+    for holder_pid in leftover_pids:
         if holder_pid not in scan_pids:
             scan_pids.append(holder_pid)
         try:
@@ -995,7 +1082,18 @@ def unique_lock_chrome_hidden_by_leftover_file(
             if n == 1:
                 seen.add(port)
                 chrome.append(port)
-    return chrome[0] if len(chrome) == 1 else None
+    if len(chrome) == 1:
+        return chrome[0]
+    if chrome:
+        return None
+    parent = _unique_this_jar_parent(leftover_pids, user_data_dir)
+    if parent is None:
+        return None
+    if parent not in scan_pids:
+        scan_pids.append(parent)
+    return _leftover_inherited_chrome_listen(
+        named, leftover_pids, parent, scan_pids, user_data_dir,
+    )
 
 
 def running_instance_cdp_port(user_data_dir: str, *, exclude_session: Optional[str] = None) -> Optional[int]:
@@ -1045,6 +1143,10 @@ def running_instance_cdp_port(user_data_dir: str, *, exclude_session: Optional[s
     first stamp. Leftover holders that inherited chrome's
     DevTools fd still name the unique listen. Do not let
     164 make leftover helpers the first persist.
+    Finding 188: leftover that inherited chrome's unique
+    CDP listen are this-jar inode holders of that port,
+    so n==1 misses. Leftover-shared with chrome is still
+    the first persist.
     An instance
     agent-browser launched for ``exclude_session`` itself is reported as ``None``:
     its daemon already owns that browser, and handing it ``--cdp`` would make it
@@ -1236,7 +1338,10 @@ def _this_jar_chromium_pid(user_data_dir: Optional[str] = None) -> Optional[int]
     on another listen. Skip-kill / ``shared_chromium_owner_session``
     still need that pid — Take over otherwise tree-kills the
     daemon that spawned chrome. Unique holder of that hidden
-    chrome is not a guess among leftover helpers. No HTTP.
+    chrome is not a guess among leftover helpers. Finding 188:
+    leftover that inherited chrome's unique listen make that
+    holder several. Lock pid or the unique leftover-file parent
+    that still holds hidden is chrome. No HTTP.
     """
     if user_data_dir is None:
         user_data_dir = str(profile_dir())
@@ -1266,7 +1371,27 @@ def _this_jar_chromium_pid(user_data_dir: Optional[str] = None) -> Optional[int]
     if hidden is None:
         return None
     holder = _scan_this_jar_listen_holder(hidden, user_data_dir)
-    return holder[0] if holder is not None else None
+    if holder is not None:
+        return holder[0]
+    # Finding 188: leftover inherited chrome's unique listen, so
+    # hidden chrome has several this-jar holders. Lock pid is
+    # chrome when present. Otherwise the unique this-jar parent
+    # of leftover file holders that still holds hidden is chrome.
+    lock = _lock_pid(user_data_dir)
+    if lock is not None and _pid_names_this_jar(lock, user_data_dir):
+        try:
+            if hidden in _loopback_listen_ports_for_pid(lock):
+                return lock
+        except Exception:
+            return None
+        return None
+    leftover_pids = _this_jar_holder_pids(file_port, user_data_dir)
+    parent = _unique_this_jar_parent(leftover_pids, user_data_dir)
+    if parent is None:
+        return None
+    if parent in _this_jar_holder_pids(hidden, user_data_dir):
+        return parent
+    return None
 
 
 def _configured_cdp_override_url() -> str:
@@ -1409,10 +1534,14 @@ def persist_live_dock_cdp_port() -> Optional[int]:
     is the first persist, not those helpers.
     Finding 185: overlay can unlink the lock before that
     first stamp. Leftover-holder unique chrome is still
-    the first persist. Finding 186: leftover this-jar
+    the first persist.     Finding 186: leftover this-jar
     helpers that dropped chrome's inherited fd still
     have chrome as parent. That parent's other unique
-    listen is the first persist.
+    listen is the first persist. Finding 188: leftover
+    that inherited chrome's unique CDP listen are
+    this-jar inode holders of that port, so n==1
+    misses. Leftover-shared with chrome is still
+    the first persist.
     """
     try:
         port = running_instance_cdp_port(str(profile_dir()))
