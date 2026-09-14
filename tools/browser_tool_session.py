@@ -899,6 +899,20 @@ def _is_loopback_hosts_alias(host: str) -> bool:
     return text.split(".", 1)[0] in ours
 
 
+def _percent_decode_cdp_host(host: str) -> str:
+    """WHATWG percent-decode a CDP host once. No DNS.
+
+    Node leftover (chrome-devtools-mcp, playwright, lighthouse,
+    agent-browser) uses ``new URL()``, which turns
+    ``http://127%2e1:9333`` into 127.0.0.1. ``urllib.parse`` does not,
+    so persist could not match and leftover attach was another Chrome
+    (admit None) on the jar a human is typing into. Decode once only
+    — ``%2531`` stays ``%31``. LAN ``10%2e1`` stays LAN after decode.
+    """
+    from urllib.parse import unquote
+    return unquote(host or "")
+
+
 def _is_loopback_cdp_host(host: str) -> bool:
     """True for this machine's CDP hosts, including 127/8, IPv4-mapped, and hostname.
 
@@ -908,11 +922,13 @@ def _is_loopback_cdp_host(host: str) -> bool:
     (``127.1``, ``127.0.1``, ``0``, ``2130706433``) is the same miss:
     leftover ``--cdp-url http://127.1:9333`` never extracted a port, so
     persist could not match and attach was another Chrome (admit None)
-    on the jar a human is typing into. Remote / LAN / other hostnames
-    stay another browser. Do not resolve DNS here: leftover identity
-    must stay a local parse.
+    on the jar a human is typing into. Percent-encoded dots / digits
+    (``127%2e1``, ``%31%32%37.0.0.1``) are the Node leftover twin —
+    ``new URL()`` decodes them, ``urllib.parse`` does not. Remote /
+    LAN / other hostnames stay another browser. Do not resolve DNS
+    here: leftover identity must stay a local parse.
     """
-    text = (host or "").strip().lower().strip("[]").rstrip(".")
+    text = _percent_decode_cdp_host(host).strip().lower().strip("[]").rstrip(".")
     if not text:
         return False
     if (

@@ -1011,6 +1011,67 @@ def test_whatwg_ipv4_shorthand_still_fences_after_devtools_miss(monkeypatch):
     assert _admit_resolved_cdp_for_attach(lan) is True
 
 
+def test_percent_encoded_loopback_still_fences_after_devtools_miss(monkeypatch):
+    """Node leftover decodes ``127%2e1``; urllib.parse does not.
+
+    ``new URL('http://127%2e1:9333')`` is 127.0.0.1:9333. Persist then
+    could not match and leftover attach was another Chrome (admit None)
+    on the jar a human is typing into. LAN ``10%2e1`` and another
+    loopback port stay unfenced. Decode once — ``%2531`` is not 1.
+    """
+    import tools.bot_desktop.browser as bdb
+    from tools.bot_desktop.lease import HumanHasControl
+    from tools.browser_tool_session import (
+        _admit_resolved_cdp_for_attach,
+        _admit_shared_browser,
+        _cdp_url_is_bot_desktop_browser,
+        _last_dock_cdp_port,
+        _loopback_cdp_port,
+    )
+
+    dotted = "http://127%2e1:9333"
+    full = "http://127%2e0%2e0%2e1:9333"
+    digits = "http://%31%32%37.0.0.1:9333"
+    zero = "http://0%2e0%2e0%2e0:9333"
+    mapped = "ws://[::ffff:127%2e1]:9333/devtools/browser/x"
+    other = "http://127%2e1:9222"
+    lan = "http://10%2e1:9333"
+    double = "http://%2531%2532%2537.0.0.1:9333"
+
+    assert _loopback_cdp_port(dotted) == 9333
+    assert _loopback_cdp_port(full) == 9333
+    assert _loopback_cdp_port(digits) == 9333
+    assert _loopback_cdp_port(zero) == 9333
+    assert _loopback_cdp_port(mapped) == 9333
+    assert _loopback_cdp_port(other) == 9222
+    assert _loopback_cdp_port(lan) is None
+    assert _loopback_cdp_port(double) is None
+
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: 9333)
+    assert _cdp_url_is_bot_desktop_browser(dotted) is True
+    _last_dock_cdp_port.clear()
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: None)
+    lease.acquire("human-viewer")
+    assert _cdp_url_is_bot_desktop_browser(dotted) is True
+    assert _cdp_url_is_bot_desktop_browser(full) is True
+    assert _cdp_url_is_bot_desktop_browser(digits) is True
+    assert _cdp_url_is_bot_desktop_browser(zero) is True
+    assert _cdp_url_is_bot_desktop_browser(mapped) is True
+    assert _cdp_url_is_bot_desktop_browser(other) is False
+    assert _cdp_url_is_bot_desktop_browser(lan) is False
+    assert _cdp_url_is_bot_desktop_browser(double) is False
+    with pytest.raises(HumanHasControl):
+        _admit_shared_browser(cdp_url=dotted)
+    with pytest.raises(HumanHasControl):
+        _admit_shared_browser(cdp_url=full)
+    assert _admit_resolved_cdp_for_attach(dotted) is False
+    assert _admit_resolved_cdp_for_attach(digits) is False
+    assert _admit_shared_browser(cdp_url=other) is None
+    assert _admit_resolved_cdp_for_attach(other) is True
+    assert _admit_shared_browser(cdp_url=lan) is None
+    assert _admit_resolved_cdp_for_attach(lan) is True
+
+
 def test_this_machine_hostname_still_fences_after_devtools_miss(monkeypatch):
     """Identity treated only IP / localhost-style hosts as the dock.
     Chromium, Debian ``127.0.1.1 <hostname>``, and

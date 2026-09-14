@@ -1451,6 +1451,56 @@ def test_unregistered_cli_whatwg_ipv4_shorthand_killed_on_takeover():
     assert lan.killed == 0
 
 
+def test_unregistered_cli_percent_encoded_loopback_killed_on_takeover():
+    """Node leftover ``--browserUrl http://127%2e1:9333`` hid attach.
+
+    ``new URL()`` decodes percent-encoded dots / digits to 127.0.0.1.
+    ``urllib.parse`` does not, so Take over left that writer typing
+    into the jar. LAN ``10%2e1`` and another loopback port stay up.
+    """
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    bdb.remember_dock_cdp_port(9333)
+    leftover = _FakeProc(
+        8650,
+        ["npx", "chrome-devtools-mcp", "--browserUrl",
+         "http://127%2e1:9333"],
+    )
+    full = _FakeProc(
+        8651,
+        ["python3", "-m", "browser_use", "--cdp-url",
+         "http://127%2e0%2e0%2e1:9333", "exec"],
+    )
+    digits = _FakeProc(
+        8652,
+        ["lighthouse", "https://example.com", "--port", "9333",
+         "--hostname", "127%2e1"],
+    )
+    other = _FakeProc(
+        8653,
+        ["npx", "chrome-devtools-mcp", "--browserUrl",
+         "http://127%2e1:9222"],
+    )
+    lan = _FakeProc(
+        8654,
+        ["python3", "-m", "browser_use", "--cdp-url",
+         "http://10%2e1:9333", "exec"],
+    )
+    lease.acquire("human")
+    n = interrupt_unregistered_dock_cli(
+        processes=[leftover, full, digits, other, lan],
+        chromium_pid=9999,
+        owner_daemon_pid=9998,
+    )
+    assert n == 3
+    assert leftover.killed == 1
+    assert full.killed == 1
+    assert digits.killed == 1
+    assert other.killed == 0
+    assert lan.killed == 0
+
+
 def test_unregistered_cli_uses_session_owner_home_after_multiplex(tmp_path):
     """``interrupt_unregistered_dock_cli()`` used ambient ``human_holds()``.
 
