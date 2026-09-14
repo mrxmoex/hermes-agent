@@ -2331,6 +2331,70 @@ def test_missing_lock_and_file_other_family_is_not_this_jar(monkeypatch, tmp_pat
         listener.close()
 
 
+def test_several_this_jar_listen_holders_other_family_is_not_this_jar(monkeypatch, tmp_path):
+    """Finding 163: leftover IPv4 must not skip family when holders are several.
+
+    Unique-holder persist stays unknown. Leftover ``--cdp`` already named
+    the listen — union hosts still fence ``::1`` and reject a sibling
+    squat. 9222 stays unknown. Persist still does not guess.
+    """
+    import tools.bot_desktop.browser as bdb
+    from tools.bot_desktop.lease import HumanHasControl
+    from tools.browser_tool_session import (
+        _admit_resolved_cdp_for_attach,
+        _admit_shared_browser,
+        _cdp_url_is_bot_desktop_browser,
+        _leftover_cdp_host_matches_this_jar,
+        _last_dock_cdp_port,
+    )
+
+    profile = tmp_path / "browser-profile"
+    profile.mkdir()
+    monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path)
+    monkeypatch.setattr(bdb, "profile_dir", lambda: profile)
+    monkeypatch.setattr(bdb, "_configured_cdp_override_url", lambda: "")
+    monkeypatch.setattr(bdb, "_lock_pid", lambda d: None)
+    monkeypatch.setattr(
+        bdb,
+        "_chromium_cmdline_tokens",
+        lambda pid: ["chrome", f"--user-data-dir={profile}"],
+    )
+    monkeypatch.setattr(
+        bdb,
+        "_loopback_listen_inodes_for_port",
+        lambda port: {7: {"::1"}} if port == 40141 else {},
+    )
+    monkeypatch.setattr(
+        bdb,
+        "_pids_holding_socket_inodes",
+        lambda want: {4242: {7}, 4243: {7}} if 7 in want else {},
+    )
+    monkeypatch.setattr(
+        bdb,
+        "_cdp_port_reachable",
+        lambda port, hosts: port == 40141 and "::1" in hosts,
+    )
+    squat = "http://127.0.0.1:40141"
+    dock = "http://[::1]:40141"
+    other = "http://127.0.0.1:9222"
+    _last_dock_cdp_port.clear()
+    assert bdb._scan_this_jar_listen_holder(40141, str(profile)) is None
+    assert bdb.persist_live_dock_cdp_port() is None
+    assert bdb._this_jar_chromium_pid(str(profile)) is None
+    assert bdb._this_jar_listens_on_port(40141) is True
+    assert _leftover_cdp_host_matches_this_jar(squat, 40141) is False
+    assert _leftover_cdp_host_matches_this_jar(dock, 40141) is True
+    assert _cdp_url_is_bot_desktop_browser(squat) is False
+    assert _cdp_url_is_bot_desktop_browser(dock) is True
+    assert _cdp_url_is_bot_desktop_browser(other) is False
+    lease.acquire("human-viewer")
+    with pytest.raises(HumanHasControl):
+        _admit_shared_browser(cdp_url=dock)
+    assert _admit_resolved_cdp_for_attach(dock) is False
+    assert _admit_shared_browser(cdp_url=squat) is None
+    assert _admit_shared_browser(cdp_url=other) is None
+
+
 def test_vault_ensure_does_not_probe_raw_dock_url_while_human_holds(monkeypatch):
     """Session admit can be a no-op while ``get cdp-url`` names the dock."""
     import tools.bot_desktop.browser as bdb

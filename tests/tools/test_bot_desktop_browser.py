@@ -895,6 +895,50 @@ def test_missing_lock_and_file_keeps_listen_family(tmp_path, monkeypatch):
         listener.close()
 
 
+def test_several_this_jar_listen_holders_still_name_the_port(tmp_path, monkeypatch):
+    """Finding 163: leftover identity must survive several this-jar holders.
+
+    Unique-holder persist / skip-kill stay unknown. Leftover already
+    named the listen — a forked helper that inherited the fd and still
+    names ``--user-data-dir`` must not make that port another Chrome.
+    Persist still does not guess. 9222 stays unknown.
+    """
+    monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path)
+    monkeypatch.setattr(browser, "profile_dir", lambda: tmp_path)
+    monkeypatch.setattr(browser, "_lock_pid", lambda d: None)
+    monkeypatch.setattr(
+        browser,
+        "_chromium_cmdline_tokens",
+        lambda pid: ["chrome", f"--user-data-dir={tmp_path}"],
+    )
+    monkeypatch.setattr(
+        browser,
+        "_loopback_listen_inodes_for_port",
+        lambda port: {7: {"::1"}} if port == 40141 else {},
+    )
+    monkeypatch.setattr(
+        browser,
+        "_pids_holding_socket_inodes",
+        lambda want: {4242: {7}, 4243: {7}} if 7 in want else {},
+    )
+    monkeypatch.setattr(
+        browser,
+        "_cdp_port_reachable",
+        lambda port, hosts: port == 40141 and "::1" in hosts,
+    )
+    assert browser._scan_this_jar_listen_holder(40141, str(tmp_path)) is None
+    assert browser._this_jar_listen_connect_hosts(40141) == ("::1",)
+    assert browser._this_jar_listens_on_port(40141) is True
+    assert browser._this_jar_listens_on_port(9222) is False
+    assert browser.running_instance_cdp_port(str(tmp_path)) is None
+    (tmp_path / "DevToolsActivePort").write_text(
+        "40141\n/devtools/browser/abc\n", encoding="utf-8",
+    )
+    assert browser.running_instance_cdp_port(str(tmp_path)) is None
+    assert browser._this_jar_chromium_pid(str(tmp_path)) is None
+    assert browser._this_jar_listens_on_port(40141) is True
+
+
 def test_devtools_file_does_not_stamp_recycled_lock_pid(tmp_path, monkeypatch):
     """Finding 158: DevToolsActivePort trusted a recycled lock pid.
 

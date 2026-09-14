@@ -389,19 +389,22 @@ def _pids_holding_socket_inodes(want: Set[int]) -> Dict[int, Set[int]]:
     return held
 
 
-def _scan_this_jar_listen_holder(
+def _this_jar_listen_holders(
     want: int, user_data_dir: str,
-) -> Optional[Tuple[int, Tuple[str, ...]]]:
-    """Unique this-jar pid that inode-listens on *want*, or ``None``.
+) -> list[Tuple[int, Tuple[str, ...]]]:
+    """This-jar pids that inode-listen on *want*, with their connect hosts.
 
-    Finding 161: Take over / overlay copies can unlink SingletonLock
-    while Chromium still holds DevTools. Leftover already named *want*
-    — that is not a guess among ports. Several this-jar holders stay
-    unknown. A sibling on the same number is not this jar. No HTTP.
+    Finding 161 used a unique holder so persist / skip-kill do not pick
+    a random pid. Finding 163: leftover already named *want*. A forked
+    helper that inherited the listen fd and still names
+    ``--user-data-dir`` made uniqueness fail, so leftover ``--cdp`` to
+    the live dock looked like another Chrome. Union hosts for leftover
+    identity. A sibling that does not name this jar stays out. No HTTP.
+    Does not consult ``_loopback_listen_ports_for_pid``.
     """
     inode_ips = _loopback_listen_inodes_for_port(want)
     if not inode_ips:
-        return None
+        return []
     holders: list[Tuple[int, Tuple[str, ...]]] = []
     for pid, inodes in _pids_holding_socket_inodes(set(inode_ips)).items():
         if not _pid_names_this_jar(pid, user_data_dir):
@@ -416,9 +419,34 @@ def _scan_this_jar_listen_holder(
                     hosts.append(host)
         if hosts:
             holders.append((pid, tuple(hosts)))
-    if len(holders) != 1:
-        return None
-    return holders[0]
+    return holders
+
+
+def _union_listen_hosts(
+    holders: list[Tuple[int, Tuple[str, ...]]],
+) -> Tuple[str, ...]:
+    hosts: list[str] = []
+    for _pid, hs in holders:
+        for host in hs:
+            if host not in hosts:
+                hosts.append(host)
+    return tuple(hosts)
+
+
+def _scan_this_jar_listen_holder(
+    want: int, user_data_dir: str,
+) -> Optional[Tuple[int, Tuple[str, ...]]]:
+    """Unique this-jar pid that inode-listens on *want*, or ``None``.
+
+    Finding 161: Take over / overlay copies can unlink SingletonLock
+    while Chromium still holds DevTools. Leftover already named *want*
+    — that is not a guess among ports. Persist / skip-kill still need
+    one pid. Several this-jar holders stay unknown here; leftover
+    identity unions their hosts (finding 163). A sibling on the same
+    number is not this jar. No HTTP.
+    """
+    holders = _this_jar_listen_holders(want, user_data_dir)
+    return holders[0] if len(holders) == 1 else None
 
 
 def _connect_hosts_for_listen_ip(ip: str) -> Tuple[str, ...]:
@@ -756,9 +784,10 @@ def _this_jar_listen_connect_hosts(want: Optional[int]) -> Tuple[str, ...]:
     ``DevToolsActivePort``. Family check used ``_this_jar_chromium_pid``,
     which does — so a missing lock *and* missing file left leftover
     ``--cdp http://127.0.0.1:<port>`` looking like this jar when the
-    dock was ``::1``-only (finding 162). Same lock-pid / unique-scan
-    path as ``_this_jar_listens_on_port``. Empty hosts stay port-only.
-    Persist still needs the file to stamp. No HTTP.
+    dock was ``::1``-only (finding 162). Several this-jar pids that
+    still inode-hold the named listen are not another Chrome
+    (finding 163) — union their connect hosts. Persist / skip-kill
+    still need a unique pid. Empty hosts stay port-only. No HTTP.
     """
     if not isinstance(want, int) or not (1 <= want <= 65535):
         return ()
@@ -767,10 +796,7 @@ def _this_jar_listen_connect_hosts(want: Optional[int]) -> Tuple[str, ...]:
     if pid is not None and _pid_names_this_jar(pid, user_data_dir):
         if want in _loopback_listen_ports_for_pid(pid):
             return _listen_connect_hosts(pid, want)
-    holder = _scan_this_jar_listen_holder(want, user_data_dir)
-    if holder is None:
-        return ()
-    return holder[1]
+    return _union_listen_hosts(_this_jar_listen_holders(want, user_data_dir))
 
 
 def _this_jar_listens_on_port(want: Optional[int]) -> bool:
