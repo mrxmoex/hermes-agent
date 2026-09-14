@@ -323,6 +323,51 @@ def test_agent_browser_invocation_is_token_match_not_substring():
         ["agent-browser", "--profile", str(_jar), "snapshot"],
         {}, _jar, None,
     )
+    # Official leftover expands ``~/`` on --profile / AGENT_BROWSER_PROFILE
+    # (finding 129). Finding 111 compared the literal ``~/…`` path.
+    # Chromium / Playwright / lighthouse do not expand --user-data-dir.
+    from hermes_constants import get_hermes_home as _get_home
+    _ab_home = {"HOME": str(_get_home())}
+    assert _unregistered_cli_aims_at_dock(
+        ["agent-browser", "--profile", "~/bot-desktop/browser-profile",
+         "snapshot"],
+        _ab_home, _jar, None,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["agent-browser",
+         "--profile=~/bot-desktop/browser-profile", "snapshot"],
+        _ab_home, _jar, None,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["agent-browser", "snapshot"],
+        {**_ab_home, "AGENT_BROWSER_PROFILE": "~/bot-desktop/browser-profile"},
+        _jar, None,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["agent-browser", "--profile", "~/other-chrome", "snapshot"],
+        _ab_home, _jar, None,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["npx", "playwright", "codegen",
+         "--user-data-dir", "~/bot-desktop/browser-profile"],
+        _ab_home, _jar, None,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["chrome-devtools", "start",
+         "--userDataDir", "~/bot-desktop/browser-profile"],
+        _ab_home, _jar, None,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["npx", "lighthouse", "https://example.com",
+         "--chrome-flags",
+         "--user-data-dir=~/bot-desktop/browser-profile"],
+        _ab_home, _jar, None,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["agent-browser", "--cdp", "http://127.0.0.1:9222",
+         "--profile", "~/bot-desktop/browser-profile", "snapshot"],
+        _ab_home, _jar, 9333,
+    )
     assert _unregistered_cli_aims_at_dock(
         ["npx", "playwright", "codegen", "--user-data-dir", str(_jar)],
         {}, _jar, None,
@@ -3490,6 +3535,92 @@ def test_unregistered_lighthouse_cli_flags_path_killed_on_takeover():
     assert argv_overrides.killed == 0
     assert via_audit.killed == 0
     assert no_pin.killed == 0
+    assert bash_parent.killed == 0
+
+
+def test_unregistered_agent_browser_tilde_profile_killed_on_takeover():
+    """terminal() agent-browser --profile ~/jar leftover hid launch-on-jar.
+
+    Official leftover expands ``~/`` on ``--profile`` /
+    ``AGENT_BROWSER_PROFILE`` (leading ``~/`` becomes ``os.homedir()``).
+    Finding 111 compared the literal ``~/…`` path, so Take over left
+    that writer typing into the jar. Chromium / Playwright /
+    lighthouse do not expand ``--user-data-dir``. Another ``~/`` pin,
+    ``--cdp`` to another Chrome, and the bash ``-c`` parent stay up.
+    """
+    from hermes_constants import get_hermes_home
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    home = {"HOME": str(get_hermes_home())}
+    tilde = "~/bot-desktop/browser-profile"
+    leftover = _FakeProc(
+        9700,
+        ["agent-browser", "--profile", tilde, "fill"],
+        home,
+    )
+    equals = _FakeProc(
+        9701,
+        ["agent-browser", f"--profile={tilde}", "snapshot"],
+        home,
+    )
+    via_env = _FakeProc(
+        9702,
+        ["agent-browser", "fill"],
+        {**home, "AGENT_BROWSER_PROFILE": tilde},
+    )
+    shebang = _FakeProc(
+        9703,
+        ["node", "/home/x/node_modules/agent-browser/dist/cli.js",
+         "--profile", tilde, "fill"],
+        home,
+    )
+    other = _FakeProc(
+        9704,
+        ["agent-browser", "--profile", "~/other-chrome", "fill"],
+        home,
+    )
+    playwright = _FakeProc(
+        9705,
+        ["npx", "playwright", "codegen", "--user-data-dir", tilde],
+        home,
+    )
+    lighthouse = _FakeProc(
+        9706,
+        ["npx", "lighthouse", "https://example.com",
+         "--chrome-flags", f"--user-data-dir={tilde}"],
+        home,
+    )
+    other_cdp = _FakeProc(
+        9707,
+        ["agent-browser", "--cdp", "http://127.0.0.1:9222",
+         "--profile", tilde, "fill"],
+        home,
+    )
+    bash_parent = _FakeProc(
+        9708,
+        ["/bin/bash", "-c", f"agent-browser --profile {tilde} fill"],
+        home,
+    )
+    bdb.remember_dock_cdp_port(9333)
+    lease.acquire("human")
+    n = interrupt_unregistered_dock_cli(
+        processes=[
+            leftover, equals, via_env, shebang, other, playwright,
+            lighthouse, other_cdp, bash_parent,
+        ],
+        chromium_pid=9999,
+        owner_daemon_pid=9998,
+    )
+    assert n == 4
+    assert leftover.killed == 1
+    assert equals.killed == 1
+    assert via_env.killed == 1
+    assert shebang.killed == 1
+    assert other.killed == 0
+    assert playwright.killed == 0
+    assert lighthouse.killed == 0
+    assert other_cdp.killed == 0
     assert bash_parent.killed == 0
 
 

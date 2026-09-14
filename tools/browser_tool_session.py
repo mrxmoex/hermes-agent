@@ -2390,7 +2390,11 @@ def _unregistered_cli_aims_at_dock(
 
     A relative ``AGENT_BROWSER_PROFILE`` is the leftover writer's jar,
     resolved against *that* process cwd (finding 95 for Chromium argv).
-    Official leftover also pins the jar on argv: agent-browser
+    Official leftover also expands ``~/`` on ``--profile`` /
+    ``AGENT_BROWSER_PROFILE`` (finding 129) — agent-browser replaces
+    a leading ``~/`` with ``os.homedir()``. Chromium / Playwright /
+    lighthouse do not; do not expand ``--user-data-dir``. Official
+    leftover also pins the jar on argv: agent-browser
     ``--profile`` and Playwright ``--user-data-dir`` / ``open --profile``
     (finding 111). chrome-devtools-mcp ``--userDataDir`` /
     ``--user-data-dir`` is the same launch pin (finding 123) — it
@@ -2583,6 +2587,11 @@ def _unregistered_cli_aims_at_dock(
     pinned = _flag_value(tokens, ("--profile",))
     if not pinned:
         pinned = (env.get("AGENT_BROWSER_PROFILE") or "").strip()
+    # Official leftover expands ``~/`` on --profile / AGENT_BROWSER_PROFILE
+    # (finding 129). Finding 111 compared the literal ``~/…`` path, so
+    # Take over left that writer running. Chromium does not expand
+    # ``--user-data-dir``; only this agent-browser pin does.
+    pinned = _expand_agent_browser_home_prefix(pinned, env)
     return _leftover_profile_pin_aims_at_dock(pinned, profile, cwd)
 
 
@@ -2722,6 +2731,28 @@ def _user_data_dir_from_chrome_flags(chrome_flags: Optional[str]) -> Optional[st
         flag_tokens = text.split()
     from tools.bot_desktop.browser import _chromium_switch_value
     return _chromium_switch_value(flag_tokens, "user-data-dir")
+
+
+def _expand_agent_browser_home_prefix(
+    pinned: Optional[str],
+    environ: Dict[str, str],
+) -> Optional[str]:
+    """Expand leftover agent-browser ``~/`` profile pins.
+
+    Official leftover replaces a leading ``~/`` with ``os.homedir()``.
+    Use that process ``HOME`` / ``USERPROFILE``, then this process home.
+    ``~`` alone / ``~user/`` stay literal. Do not use for Chromium
+    ``--user-data-dir`` (Chromium stores the path as written).
+    """
+    text = (pinned or "").strip()
+    if not text.startswith("~/"):
+        return pinned
+    home = (environ.get("HOME") or "").strip()
+    if not home:
+        home = (environ.get("USERPROFILE") or "").strip()
+    if not home:
+        home = str(Path.home())
+    return str(Path(home) / text[2:])
 
 
 def _leftover_profile_pin_aims_at_dock(
