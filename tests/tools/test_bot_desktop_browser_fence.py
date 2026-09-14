@@ -4877,6 +4877,156 @@ def test_unique_leftover_daemon_devtools_does_not_hide_sibling_chrome(
     assert _remembered_dock_attach_port() == 9333
 
 
+def test_unique_leftover_fill_devtools_does_not_hide_sibling_chrome(
+    monkeypatch, tmp_path,
+):
+    """Finding 198: unique leftover-fill DevTools hid sibling chrome.
+
+    Leftover fill uniquely holds stale ``DevToolsActivePort``.
+    Leftover daemon dropped that listen. Identify leftover on
+    that stamp and on leftover persist; attach chrome. 9222
+    and the other family stay unknown.
+    """
+    import tools.bot_desktop.browser as bdb
+    from hermes_constants import hermes_home_key
+    from tools.browser_tool_session import (
+        _cdp_url_is_bot_desktop_browser,
+        _last_dock_cdp_port,
+        _leftover_cdp_aims_at_dock,
+        _leftover_host_port_aims_at_dock,
+        _remembered_dock_attach_port,
+        _reset_dock_port_memory_for_tests,
+        _singleton_lock_pid,
+        _unregistered_cli_aims_at_dock,
+    )
+
+    chrome_family = {4240, 4241, 4245}
+    leftover_fill = 4242
+    leftover_cri = 4244
+
+    monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path)
+    monkeypatch.setattr(bdb, "profile_dir", lambda: tmp_path)
+    monkeypatch.setattr(bdb, "_lock_pid", lambda d: None)
+    monkeypatch.setattr(
+        bdb,
+        "_chromium_cmdline_tokens",
+        lambda pid: (
+            ["chrome", "--type=zygote", f"--user-data-dir={tmp_path}"]
+            if pid == 4241 else
+            ["chrome", "--type=utility", f"--user-data-dir={tmp_path}"]
+            if pid == 4245 else
+            ["agent-browser", "daemon", f"--user-data-dir={tmp_path}"]
+            if pid == 4300 else
+            ["agent-browser", "fill", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_fill else
+            ["agent-browser", "cri", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_cri else
+            ["chrome", f"--user-data-dir={tmp_path}"]
+        ),
+    )
+    monkeypatch.setattr(
+        bdb,
+        "_proc_ppid",
+        lambda pid: {
+            4240: 4300, 4241: 4240, 4245: 4241,
+            leftover_fill: 4300, leftover_cri: 4300,
+        }.get(pid),
+    )
+    monkeypatch.setattr(
+        bdb,
+        "_launched_by_session",
+        lambda pid: "h_review" if pid == 4240 else None,
+    )
+    monkeypatch.setattr(bdb, "_recover_cdp_port_from_singleton", lambda *a, **k: None)
+    monkeypatch.setattr(
+        bdb, "_this_jar_children",
+        lambda parent, user_data_dir: (
+            {4240, leftover_fill, leftover_cri} if parent == 4300 else set()
+        ),
+    )
+
+    def _inodes(port):
+        if port == 40141:
+            return {7: {"::1"}}
+        if port == 9333:
+            return {8: {"::1"}}
+        if port == 18888:
+            return {9: {"::1"}}
+        return {}
+
+    def _holders(want):
+        out = {}
+        if 7 in want:
+            out[leftover_fill] = {7}
+        if 8 in want:
+            out[4240] = {8}
+            out[4241] = {8}
+            out[4245] = {8}
+        if 9 in want:
+            out[leftover_cri] = {9}
+        return out
+
+    monkeypatch.setattr(bdb, "_loopback_listen_inodes_for_port", _inodes)
+    monkeypatch.setattr(bdb, "_pids_holding_socket_inodes", _holders)
+    monkeypatch.setattr(
+        bdb, "_loopback_listen_ports_for_pid",
+        lambda pid: {40141} if pid == leftover_fill else (
+            {18888} if pid == leftover_cri else (
+                {9333} if pid in chrome_family else set()
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        bdb, "_loopback_listen_targets_for_pid",
+        lambda pid: {("::1", 40141)} if pid == leftover_fill else (
+            {("::1", 18888)} if pid == leftover_cri else (
+                {("::1", 9333)} if pid in chrome_family else set()
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        bdb,
+        "_cdp_port_reachable",
+        lambda port, hosts: port in (40141, 18888) and "::1" in hosts,
+    )
+    monkeypatch.setattr(bdb, "_configured_cdp_override_url", lambda: "")
+    (tmp_path / "DevToolsActivePort").write_text(
+        "40141\n/devtools/browser/abc\n", encoding="utf-8",
+    )
+    _reset_dock_port_memory_for_tests()
+    (tmp_path / "dock-cdp-port").write_text("18888\n", encoding="utf-8")
+    assert bdb.lock_listed_persist_port() == 9333
+    assert bdb._this_jar_chromium_pid(str(tmp_path)) == 4240
+    assert bdb.shared_chromium_owner_session() == "h_review"
+    assert _singleton_lock_pid(str(tmp_path)) == 4240
+    assert bdb.running_instance_cdp_port(str(tmp_path)) is None
+    assert _remembered_dock_attach_port() == 9333
+    assert (tmp_path / "dock-cdp-port").read_text(encoding="utf-8").strip() == "18888"
+    assert _last_dock_cdp_port.get(hermes_home_key()) is None
+    assert _cdp_url_is_bot_desktop_browser("http://[::1]:40141") is True
+    assert _cdp_url_is_bot_desktop_browser("http://[::1]:18888") is True
+    assert _cdp_url_is_bot_desktop_browser("http://[::1]:9333") is True
+    assert _cdp_url_is_bot_desktop_browser("9222") is False
+    assert _leftover_cdp_aims_at_dock("http://[::1]:40141", 9333) is True
+    assert _leftover_cdp_aims_at_dock("http://[::1]:18888", 9333) is True
+    assert _leftover_host_port_aims_at_dock("::1", 40141, 9333) is True
+    assert _leftover_host_port_aims_at_dock("::1", 18888, 9333) is True
+    assert _leftover_host_port_aims_at_dock("127.0.0.1", 40141, 9333) is False
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "lighthouse", "https://example.com", "--port", "40141"],
+        {}, tmp_path, 9333,
+    ) is True
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "chrome-remote-interface", "--port", "18888", "inspect"],
+        {}, tmp_path, 9333,
+    ) is True
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "lighthouse", "--port", "9222", "https://example.com"],
+        {}, tmp_path, 9333,
+    ) is False
+    assert _remembered_dock_attach_port() == 9333
+
+
 def test_stale_lock_pid_is_not_this_jar_chromium(monkeypatch, tmp_path):
     """Finding 157: a leftover pid on SingletonLock is not the dock.
 

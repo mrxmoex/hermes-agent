@@ -785,6 +785,9 @@ def lock_listed_persist_port(user_data_dir: Optional[str] = None) -> Optional[in
     Unique leftover file is not chrome when that holder
     is leftover daemon — sibling chrome is still a
     this-jar child of leftover daemon.
+    Finding 198: one leftover fill / CRI can uniquely
+    hold that stale listen after leftover daemon dropped
+    the fd. Chrome is a sibling under leftover daemon.
     Finding 185: persist never stamped and
     the lock is already gone. Leftover holders that inherited
     chrome's DevTools fd still name chrome's other unique
@@ -1249,7 +1252,10 @@ def unique_lock_chrome_hidden_by_leftover_file(
     lock ports stay unknown (do not guess).     File unique is finding
     170 / 172 advertisement. Finding 197: unique leftover
     daemon on stale DevTools is not chrome — scan leftover
-    daemon's this-jar children for sibling chrome. Finding 185: when the lock is gone,
+    daemon's this-jar children for sibling chrome. Finding 198:
+    unique leftover fill / CRI on stale DevTools is not
+    chrome — scan leftover fill's this-jar parent and that
+    parent's children. Finding 185: when the lock is gone,
     leftover holders that inherited chrome's DevTools fd still
     advertise that unique listen. Finding 186: leftover this-jar
     helpers that are no longer leftover holders of chrome still
@@ -1290,16 +1296,35 @@ def unique_lock_chrome_hidden_by_leftover_file(
         # the file holder. Finding 197: leftover fill clients
         # exited and chrome dropped the inherited DevTools
         # listen, so leftover daemon uniquely holds stale
-        # ``DevToolsActivePort``. 184-196 required several
-        # leftover holders and never reached sibling chrome
-        # via leftover daemon's children. Unique leftover
-        # daemon / CRI / python is not chrome.
+        # ``DevToolsActivePort``. Finding 198: one leftover
+        # fill / CRI can uniquely hold that stale listen
+        # after leftover daemon dropped the fd. Chrome is a
+        # sibling under leftover daemon — children of the
+        # unique leftover fill miss chrome. Scan leftover
+        # fill's this-jar parent (leftover daemon) and that
+        # parent's children. A leftover fill whose parent
+        # is leftover CRI (cousin chrome) stays 86 — do
+        # not walk grandparents. Unique leftover daemon /
+        # CRI / python is not chrome.
         if _pid_is_chromium_browser(holder):
             return None
         if not _pid_names_this_jar(holder, user_data_dir):
             return None
-        parent = holder
+        try:
+            ppid = _proc_ppid(holder)
+        except Exception:
+            ppid = None
+        if (
+            isinstance(ppid, int)
+            and ppid > 1
+            and _pid_names_this_jar(ppid, user_data_dir)
+        ):
+            parent = ppid
+        else:
+            parent = holder
         scan_pids = [parent]
+        if holder not in scan_pids:
+            scan_pids.append(holder)
         try:
             for child in _this_jar_children(parent, user_data_dir):
                 if child not in scan_pids:
