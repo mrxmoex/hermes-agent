@@ -127,10 +127,23 @@ def test_running_instance_port_requires_live_pid_and_open_port(tmp_path, monkeyp
         _fake_running_instance(tmp_path, os.getpid(), port)
         assert browser.running_instance_cdp_port(str(tmp_path)) == port
 
-        # Both files outlive a closed Chromium: a dead pid must not be trusted.
+        # Dead lock pid is not trusted by itself. A sibling occupying
+        # the stale DevTools port is not this jar. This jar still
+        # listening after the lock died is finding 161.
         os.unlink(tmp_path / "SingletonLock")
         os.symlink("host-2147483000", tmp_path / "SingletonLock")
+        monkeypatch.setattr(
+            browser,
+            "_chromium_cmdline_tokens",
+            lambda pid: ["chrome", "--user-data-dir=/other/profile"],
+        )
         assert browser.running_instance_cdp_port(str(tmp_path)) is None
+        monkeypatch.setattr(
+            browser,
+            "_chromium_cmdline_tokens",
+            lambda pid: ["chrome", f"--user-data-dir={tmp_path}"],
+        )
+        assert browser.running_instance_cdp_port(str(tmp_path)) == port
     finally:
         listener.close()
     # Live pid, port no longer accepting: still not attachable.
