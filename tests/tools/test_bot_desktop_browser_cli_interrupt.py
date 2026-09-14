@@ -437,6 +437,39 @@ def test_agent_browser_invocation_is_token_match_not_substring():
     assert not _is_lighthouse_invocation(["yarn", "npm", "install", "lighthouse"])
     assert not _is_lighthouse_invocation(
         ["/bin/bash", "-c", "yarn npm exec lighthouse --port 9333"])
+    # Shebang node on the PM entry hid ``--package=`` leftover pins (107).
+    assert _is_lighthouse_invocation(
+        ["node", "/usr/share/yarn/bin/yarn.js", "npm", "exec",
+         "--package=lighthouse", "--", "--port", "9333"])
+    assert _is_lighthouse_invocation(
+        ["node", "/home/x/.yarn/releases/yarn-4.9.2.cjs", "npm", "exec",
+         "--package=lighthouse", "--", "--port", "9333"])
+    assert _is_lighthouse_invocation(
+        ["node", "/usr/lib/node_modules/npm/bin/npx-cli.js",
+         "--package=lighthouse", "--", "--port", "9333"])
+    assert _is_lighthouse_invocation(
+        ["node", "/usr/lib/node_modules/npm/bin/npx-cli.js",
+         "-p", "lighthouse", "--", "--port", "9333"])
+    assert _is_lighthouse_invocation(
+        ["node", "/usr/lib/node_modules/npm/bin/npm-cli.js", "exec",
+         "--package=lighthouse", "--", "--port", "9333"])
+    assert _is_lighthouse_invocation(
+        ["node", "/usr/lib/node_modules/pnpm/bin/pnpm.cjs", "exec",
+         "--package=lighthouse", "--", "--port", "9333"])
+    assert _is_chrome_devtools_mcp_invocation(
+        ["node", "/usr/lib/node_modules/npm/bin/npx-cli.js",
+         "--package=chrome-devtools-mcp", "--",
+         "--browserUrl", "http://127.0.0.1:9333"])
+    assert _is_agent_browser_invocation(
+        ["node", "/usr/lib/node_modules/npm/bin/npx-cli.js",
+         "--package=agent-browser", "--",
+         "--cdp", "http://127.0.0.1:9333"])
+    assert not _is_lighthouse_invocation(
+        ["node", "/tmp/other.js", "--package=lighthouse", "--",
+         "--port", "9333"])
+    assert not _is_lighthouse_invocation(
+        ["/bin/bash", "-c",
+         "node /usr/share/yarn/bin/yarn.js npm exec --package=lighthouse -- --port 9333"])
     assert _is_lighthouse_invocation(
         ["node", "/home/x/node_modules/lighthouse/cli/index.js",
          "--port=9333", "https://example.com"])
@@ -1558,6 +1591,97 @@ def test_unregistered_yarn_npm_exec_dock_cli_killed_on_takeover():
     assert corepack.killed == 1
     assert install.killed == 0
     assert other.killed == 0
+    assert bash_parent.killed == 0
+
+
+def test_unregistered_shebang_node_pm_dock_cli_killed_on_takeover():
+    """Shebang ``node …/yarn.js|npx-cli.js`` hid leftover ``--package=`` pins.
+
+    After Linux shebang the leftover writer is ``node``, so findings
+    105–106 never ran. ``node /tmp/other.js --package=lighthouse`` is
+    not a package-manager entry. Bash ``-c`` parent is not the writer.
+    """
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    bdb.remember_dock_cdp_port(9333)
+    yarn_js = _FakeProc(
+        10100,
+        ["node", "/usr/share/yarn/bin/yarn.js", "npm", "exec",
+         "--package=lighthouse", "--",
+         "--port", "9333", "https://example.com"],
+    )
+    berry = _FakeProc(
+        10101,
+        ["node", "/home/x/.yarn/releases/yarn-4.9.2.cjs", "npm", "exec",
+         "--package=lighthouse", "--",
+         "--port", "9333", "https://example.com"],
+    )
+    npx_equals = _FakeProc(
+        10102,
+        ["node", "/usr/lib/node_modules/npm/bin/npx-cli.js",
+         "--package=lighthouse", "--",
+         "--port", "9333", "https://example.com"],
+    )
+    npx_short = _FakeProc(
+        10103,
+        ["node", "/usr/lib/node_modules/npm/bin/npx-cli.js",
+         "-p", "lighthouse", "--",
+         "--port", "9333", "https://example.com"],
+    )
+    npm_cli = _FakeProc(
+        10104,
+        ["node", "/usr/lib/node_modules/npm/bin/npm-cli.js", "exec",
+         "--package=lighthouse", "--",
+         "--port", "9333", "https://example.com"],
+    )
+    pnpm_cjs = _FakeProc(
+        10105,
+        ["node", "/usr/lib/node_modules/pnpm/bin/pnpm.cjs", "exec",
+         "--package=lighthouse", "--",
+         "--port", "9333", "https://example.com"],
+    )
+    mcp = _FakeProc(
+        10106,
+        ["node", "/usr/lib/node_modules/npm/bin/npx-cli.js",
+         "--package=chrome-devtools-mcp", "--",
+         "--browserUrl", "http://127.0.0.1:9333"],
+    )
+    other_js = _FakeProc(
+        10107,
+        ["node", "/tmp/other.js", "--package=lighthouse", "--",
+         "--port", "9333", "https://example.com"],
+    )
+    other_port = _FakeProc(
+        10108,
+        ["node", "/usr/lib/node_modules/npm/bin/npx-cli.js",
+         "--package=lighthouse", "--",
+         "--port", "9222", "https://example.com"],
+    )
+    bash_parent = _FakeProc(
+        10109,
+        ["/bin/bash", "-c",
+         "node /usr/share/yarn/bin/yarn.js npm exec --package=lighthouse -- --port 9333"],
+    )
+    lease.acquire("human")
+    n = interrupt_unregistered_dock_cli(
+        processes=[
+            yarn_js, berry, npx_equals, npx_short, npm_cli, pnpm_cjs, mcp,
+            other_js, other_port, bash_parent,
+        ],
+        chromium_pid=9999,
+        owner_daemon_pid=9998,
+    )
+    assert n == 7
+    assert yarn_js.killed == 1
+    assert berry.killed == 1
+    assert npx_equals.killed == 1
+    assert npx_short.killed == 1
+    assert npm_cli.killed == 1
+    assert pnpm_cjs.killed == 1
+    assert mcp.killed == 1
+    assert other_js.killed == 0
+    assert other_port.killed == 0
     assert bash_parent.killed == 0
 
 

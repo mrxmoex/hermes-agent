@@ -1017,6 +1017,20 @@ _LIGHTHOUSE_NODE_ENTRYPOINTS = frozenset({
     "lighthouse", "lighthouse.js", "lighthouse-cli.js",
     "cli.js", "cli.mjs", "cli.cjs", "index.js",
 })
+_YARN_NODE_ENTRYPOINTS = frozenset({
+    "yarn", "yarn.js", "yarn.cjs", "yarn.mjs",
+    "cli.js", "cli.cjs", "cli.mjs",
+})
+_NPX_NODE_ENTRYPOINTS = frozenset({
+    "npx", "npx.js", "npx.cjs", "npx-cli.js", "npx-cli.cjs",
+})
+_NPM_NODE_ENTRYPOINTS = frozenset({
+    "npm", "npm.js", "npm.cjs", "npm-cli.js", "npm-cli.cjs",
+})
+_PNPM_NODE_ENTRYPOINTS = frozenset({
+    "pnpm", "pnpm.js", "pnpm.cjs", "pnpm.mjs",
+    "cli.js", "cli.cjs", "cli.mjs",
+})
 _PLAYWRIGHT_CDP_ENV = (
     "PW_TEST_CONNECT_WS_ENDPOINT",
     "PLAYWRIGHT_WS_ENDPOINT",
@@ -1518,20 +1532,122 @@ def _bun_x_child_argv(tokens: List[str]) -> Optional[List[str]]:
     return [] if saw_sub else None
 
 
+def _path_has_pkg(parts: List[str], *names: str) -> bool:
+    """True when a path part is ``name`` or ``.name`` (Yarn Berry ``.yarn``)."""
+    want = {n.lower() for n in names}
+    return any(p.lower() in want or p.lower().lstrip(".") in want for p in parts)
+
+
+def _token_is_yarn_script(token: str) -> bool:
+    """True when this token is the Yarn CLI or its Node entry.
+
+    Linux shebang rewrites argv0 to ``node``. Official
+    ``…/yarn/bin/yarn.js`` and Berry ``…/.yarn/releases/yarn-4.x.cjs``
+    are leftover writers. ``cat yarn.js`` is not.
+    """
+    if _token_basename_is(token, "yarn"):
+        return True
+    raw = (token or "").strip().strip("\"'")
+    if not raw:
+        return False
+    path = Path(raw)
+    name = path.name.lower()
+    parts = [p.lower() for p in path.parts]
+    if not _path_has_pkg(parts, "yarn"):
+        return False
+    if name in _YARN_NODE_ENTRYPOINTS:
+        return True
+    return name.startswith("yarn-") and name.endswith((".js", ".cjs", ".mjs"))
+
+
+def _token_is_npx_script(token: str) -> bool:
+    """True when this token is npx's Node entry (``npx-cli.js`` under npm)."""
+    if _token_basename_is(token, "npx"):
+        return True
+    raw = (token or "").strip().strip("\"'")
+    if not raw:
+        return False
+    return Path(raw).name.lower() in _NPX_NODE_ENTRYPOINTS
+
+
+def _token_is_npm_script(token: str) -> bool:
+    """True when this token is npm's Node entry (``npm-cli.js``)."""
+    if _token_basename_is(token, "npm"):
+        return True
+    raw = (token or "").strip().strip("\"'")
+    if not raw:
+        return False
+    path = Path(raw)
+    name = path.name.lower()
+    if name not in _NPM_NODE_ENTRYPOINTS:
+        return False
+    return _path_has_pkg([p.lower() for p in path.parts], "npm") or name.startswith("npm-")
+
+
+def _token_is_pnpm_script(token: str) -> bool:
+    """True when this token is pnpm's Node entry (``pnpm.cjs``)."""
+    if _token_basename_is(token, "pnpm"):
+        return True
+    raw = (token or "").strip().strip("\"'")
+    if not raw:
+        return False
+    path = Path(raw)
+    name = path.name.lower()
+    parts = [p.lower() for p in path.parts]
+    if not _path_has_pkg(parts, "pnpm"):
+        return False
+    return name in _PNPM_NODE_ENTRYPOINTS
+
+
+def _node_package_manager_argv(tokens: List[str]) -> Optional[List[str]]:
+    """``node …/yarn.js|npx-cli.js|npm-cli.js|pnpm.cjs <rest>`` → PM argv.
+
+    Finding 79 matches shebang ``node …/lighthouse/cli.js``. After
+    shebang the leftover *writer* for ``yarn npm exec --package=`` /
+    ``npx --package=`` is still ``node``, so findings 105–106 never
+    ran (finding 107). ``node /tmp/other.js --package=lighthouse``
+    is not a package-manager entry.
+    """
+    if not tokens or _launcher_basename(tokens[0]) not in _NODE_LAUNCHERS:
+        return None
+    i = 1
+    while i < len(tokens):
+        raw = str(tokens[i]) if tokens[i] is not None else ""
+        if raw == "--":
+            return None
+        if raw.startswith("-"):
+            i += 1
+            continue
+        if _token_is_yarn_script(raw):
+            return ["yarn"] + [str(t) for t in tokens[i + 1:]]
+        if _token_is_npx_script(raw):
+            return ["npx"] + [str(t) for t in tokens[i + 1:]]
+        if _token_is_npm_script(raw):
+            return ["npm"] + [str(t) for t in tokens[i + 1:]]
+        if _token_is_pnpm_script(raw):
+            return ["pnpm"] + [str(t) for t in tokens[i + 1:]]
+        return None
+    return None
+
+
 def _leftover_flag_tokens(tokens: List[str]) -> List[str]:
     """Argv the leftover CLI itself sees.
 
     ``npm exec --package=foo -- --browserUrl <dock>`` puts the child's
     flags after npm's ``--``. ``npx --package=lighthouse -- --port``
-    is the same shape (finding 105). Stopping ``_flag_value`` at the
-    first ``--`` then missed the dock aim. Peel corepack / exec|dlx /
-    bun x / npx *without* dropping child flags. A later ``--`` on the
-    child (lighthouse yargs) still ends flag parse.
+    is the same shape (finding 105). Shebang ``node …/npx-cli.js --``
+    is finding 107. Stopping ``_flag_value`` at the first ``--`` then
+    missed the dock aim. Peel corepack / exec|dlx / bun x / npx /
+    shebang node PM *without* dropping child flags. A later ``--`` on
+    the child (lighthouse yargs) still ends flag parse.
     """
     if not tokens:
         return []
     peeled = _corepack_command_tokens(tokens)
     work = peeled or [str(t) if t is not None else "" for t in tokens]
+    node_pm = _node_package_manager_argv(work)
+    if node_pm is not None:
+        return _leftover_flag_tokens(node_pm)
     child = _package_manager_child_argv(work)
     if child is not None:
         return child
@@ -1566,6 +1682,9 @@ def _is_agent_browser_invocation(tokens: List[str]) -> bool:
     if name0 in _NPX_LAUNCHERS:
         return _npx_invocation_matches(tokens, _token_basename_is_agent_browser)
     if name0 in _NODE_LAUNCHERS:
+        node_pm = _node_package_manager_argv(tokens)
+        if node_pm:
+            return _is_agent_browser_invocation(node_pm)
         return any(_token_is_agent_browser_script(t) for t in _first_non_flag_tokens(tokens))
     if _is_python_launcher(name0):
         rest = _first_non_flag_tokens(tokens)
@@ -1660,6 +1779,9 @@ def _is_playwright_invocation(tokens: List[str]) -> bool:
         return _npx_invocation_matches(
             tokens, lambda t: _token_basename_is(t, "playwright"))
     if name0 in _NODE_LAUNCHERS:
+        node_pm = _node_package_manager_argv(tokens)
+        if node_pm:
+            return _is_playwright_invocation(node_pm)
         return any(_token_is_playwright_script(t) for t in _first_non_flag_tokens(tokens))
     if _is_python_launcher(name0):
         rest = _first_non_flag_tokens(tokens)
@@ -1776,6 +1898,9 @@ def _is_chrome_remote_interface_invocation(tokens: List[str]) -> bool:
     if name0 in _NPX_LAUNCHERS:
         return _npx_invocation_matches(tokens, _token_is_chrome_remote_interface)
     if name0 in _NODE_LAUNCHERS:
+        node_pm = _node_package_manager_argv(tokens)
+        if node_pm:
+            return _is_chrome_remote_interface_invocation(node_pm)
         return any(_token_is_chrome_remote_interface(t) for t in _first_non_flag_tokens(tokens))
     return False
 
@@ -1806,6 +1931,9 @@ def _is_playwright_mcp_invocation(tokens: List[str]) -> bool:
     if name0 in _NPX_LAUNCHERS:
         return _npx_invocation_matches(tokens, _token_is_playwright_mcp)
     if name0 in _NODE_LAUNCHERS:
+        node_pm = _node_package_manager_argv(tokens)
+        if node_pm:
+            return _is_playwright_mcp_invocation(node_pm)
         return any(_token_is_playwright_mcp(t) for t in _first_non_flag_tokens(tokens))
     return False
 
@@ -1860,6 +1988,9 @@ def _is_chrome_devtools_mcp_invocation(tokens: List[str]) -> bool:
     if name0 in _NPX_LAUNCHERS:
         return _npx_invocation_matches(tokens, _token_is_chrome_devtools_mcp)
     if name0 in _NODE_LAUNCHERS:
+        node_pm = _node_package_manager_argv(tokens)
+        if node_pm:
+            return _is_chrome_devtools_mcp_invocation(node_pm)
         return any(_token_is_chrome_devtools_mcp(t) for t in _first_non_flag_tokens(tokens))
     return False
 
@@ -1910,6 +2041,9 @@ def _is_lighthouse_invocation(tokens: List[str]) -> bool:
     if name0 in _NPX_LAUNCHERS:
         return _npx_invocation_matches(tokens, _token_is_lighthouse)
     if name0 in _NODE_LAUNCHERS:
+        node_pm = _node_package_manager_argv(tokens)
+        if node_pm:
+            return _is_lighthouse_invocation(node_pm)
         return any(_token_is_lighthouse(t) for t in _first_non_flag_tokens(tokens))
     if _is_python_launcher(name0):
         rest = _first_non_flag_tokens(tokens)
