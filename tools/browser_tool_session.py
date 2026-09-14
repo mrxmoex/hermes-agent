@@ -1119,6 +1119,14 @@ _PACKAGE_EXEC_LAUNCHERS = frozenset({"npm", "pnpm", "yarn"})
 _PACKAGE_EXEC_SUBCOMMANDS = frozenset({"exec", "dlx"})
 _BUN_LAUNCHERS = frozenset({"bun"})
 _BUN_X_SUBCOMMANDS = frozenset({"x", "exec"})
+# bun verbs that are not ``bun <script>``. Official leftover daemons
+# spawn ``process.execPath`` + a script path (finding 142). ``bun run``
+# / ``bun install`` stay unknown (existing bun-x tests).
+_BUN_PACKAGE_VERBS = frozenset({
+    "run", "install", "i", "add", "remove", "rm", "update", "upgrade",
+    "outdated", "link", "unlink", "publish", "test", "build", "init",
+    "create", "repl", "pm", "patch",
+})
 _UVX_LAUNCHERS = frozenset({"uvx", "uv"})
 _NODE_LAUNCHERS = frozenset({"node", "nodejs", "iojs"})
 _ENV_LAUNCHERS = frozenset({"env"})
@@ -1620,6 +1628,35 @@ def _invocation_via_bun_x(tokens: List[str], matches) -> Optional[bool]:
     return bool(operands) and bool(matches(operands))
 
 
+def _bun_direct_script_operands(tokens: List[str]) -> Optional[List[str]]:
+    """``bun [flags] <script> …`` operands, else None.
+
+    Official leftover Playwright / chrome-devtools / older agent-browser
+    daemons spawn ``process.execPath`` + the script (finding 142). When
+    the parent CLI was started with bun / bunx, leftover argv0 is
+    ``bun``, not ``node``. Findings 138–140 only matched ``node``.
+    ``bun x`` / ``bun exec`` stay with ``_bun_x_operands``. ``bun run``
+    / ``bun install`` / ``bun add`` are package verbs, not leftover
+    script runners.
+    """
+    if not tokens or _launcher_basename(tokens[0]) not in _BUN_LAUNCHERS:
+        return None
+    if _bun_x_operands(tokens) is not None:
+        return None
+    rest = _first_non_flag_tokens(tokens, value_flags=_BUN_VALUE_FLAGS)
+    if not rest or rest[0] in _BUN_PACKAGE_VERBS:
+        return None
+    return rest
+
+
+def _invocation_via_bun_script(tokens: List[str], token_matches) -> Optional[bool]:
+    """None when argv is not ``bun <script>``; else leftover-CLI token match."""
+    operands = _bun_direct_script_operands(tokens)
+    if operands is None:
+        return None
+    return any(token_matches(t) for t in operands)
+
+
 def _package_manager_child_argv(tokens: List[str]) -> Optional[List[str]]:
     """Child argv after npm|pnpm|yarn exec|dlx or bun x|exec, flags kept.
 
@@ -1959,7 +1996,9 @@ def _is_agent_browser_invocation(tokens: List[str]) -> bool:
     ``agent-browser-<os>-<arch>`` as the daemon (no extra argv;
     ``AGENT_BROWSER_CDP`` frozen). Finding 112 used exact argv0
     ``agent-browser``; finding 140 matched Node ``daemon.js``.
-    Neither matched ``agent-browser-linux-x64``. The npm bin is
+    Neither matched ``agent-browser-linux-x64``. Finding 142:
+    official leftover Node daemons spawn ``process.execPath``; bun /
+    bunx parents leave ``bun …/daemon.js``. The npm bin is
     ``bin/agent-browser.js``. ``agent-browser-mcp`` is not a
     published triple. Do not treat the bash parent as the writer —
     PID-only kill of bash orphans the child still sending CDP.
@@ -1978,6 +2017,9 @@ def _is_agent_browser_invocation(tokens: List[str]) -> bool:
     if via is not None:
         return via
     via = _invocation_via_bun_x(tokens, _is_agent_browser_invocation)
+    if via is not None:
+        return via
+    via = _invocation_via_bun_script(tokens, _token_is_agent_browser_script)
     if via is not None:
         return via
     if name0 in _NPX_LAUNCHERS:
@@ -2142,8 +2184,12 @@ def _is_playwright_invocation(tokens: List[str]) -> bool:
     this jar.     ``playwright-cli attach --cdp=<dock>`` / ``npx @playwright/cli``
     are leftover Agent CLI (finding 109 / 136). Official leftover
     ``attach`` also leaves ``node …/cliDaemon.js --cdp=<dock>``
-    (finding 138). Do not match ``@playwright/mcp`` or a bare
-    ``playwright-core`` package token by substring.
+    (finding 138). Finding 142: official leftover
+    ``Session.startDaemon`` spawns ``process.execPath`` + the script.
+    When the parent was bun / bunx, leftover argv0 is ``bun``, not
+    ``node``. ``bun run`` is not this shape. Do not match
+    ``@playwright/mcp`` or a bare ``playwright-core`` package token
+    by substring.
     """
     if not tokens:
         return False
@@ -2164,6 +2210,9 @@ def _is_playwright_invocation(tokens: List[str]) -> bool:
     if via is not None:
         return via
     via = _invocation_via_bun_x(tokens, _is_playwright_invocation)
+    if via is not None:
+        return via
+    via = _invocation_via_bun_script(tokens, _token_is_playwright_script)
     if via is not None:
         return via
     if name0 in _NPX_LAUNCHERS:
@@ -2358,6 +2407,9 @@ def _is_chrome_remote_interface_invocation(tokens: List[str]) -> bool:
     via = _invocation_via_bun_x(tokens, _is_chrome_remote_interface_invocation)
     if via is not None:
         return via
+    via = _invocation_via_bun_script(tokens, _token_is_chrome_remote_interface)
+    if via is not None:
+        return via
     if name0 in _NPX_LAUNCHERS:
         return _npx_invocation_matches(tokens, _token_is_chrome_remote_interface)
     if name0 in _NODE_LAUNCHERS:
@@ -2492,6 +2544,9 @@ def _is_playwright_mcp_invocation(tokens: List[str]) -> bool:
     via = _invocation_via_bun_x(tokens, _is_playwright_mcp_invocation)
     if via is not None:
         return via
+    via = _invocation_via_bun_script(tokens, _token_is_playwright_mcp)
+    if via is not None:
+        return via
     if name0 in _NPX_LAUNCHERS:
         return _npx_invocation_matches(tokens, _token_is_playwright_mcp)
     if name0 in _NODE_LAUNCHERS:
@@ -2507,7 +2562,9 @@ def _is_playwright_cli_agent_invocation(tokens: List[str]) -> bool:
 
     ``playwright-cli``, ``npx @playwright/cli``,
     ``node …/@playwright/cli/cli.js``, ``npx playwright cli``, or
-    ``node …/lib/entry/cliDaemon.js`` (finding 138). Finding 109
+    ``node …/lib/entry/cliDaemon.js`` (finding 138). Finding 142:
+    official leftover spawns ``process.execPath``; bun / bunx parents
+    leave ``bun …/cliDaemon.js``. Finding 109
     matched argv0 ``playwright-cli`` / ``--cdp`` only. Official leftover
     also pins ``PLAYWRIGHT_MCP_USER_DATA_DIR`` / ``--config`` /
     ``~/.playwright/cli.config.json`` / ``.playwright/cli.config.json``
@@ -2549,6 +2606,19 @@ def _is_playwright_cli_agent_invocation(tokens: List[str]) -> bool:
     via = _invocation_via_bun_x(tokens, _is_playwright_cli_agent_invocation)
     if via is not None:
         return via
+    operands = _bun_direct_script_operands(tokens)
+    if operands is not None:
+        for i, tok in enumerate(operands):
+            if (
+                _token_is_playwright_cli_package(tok)
+                or _token_basename_is(tok, "playwright-cli")
+                or _token_is_playwright_cli_daemon(tok)
+            ):
+                return True
+            if _token_is_bundled_playwright_cli(tok):
+                rest = operands[i + 1:]
+                return bool(rest) and rest[0] == "cli"
+        return False
     if name0 in _NPX_LAUNCHERS:
         rest = _npx_package_tokens(tokens)
         if rest and (
@@ -2636,8 +2706,11 @@ def _is_chrome_devtools_mcp_invocation(tokens: List[str]) -> bool:
     Token-match only. Official leftover CLI is argv0 ``chrome-devtools``
     after ``npm i -g chrome-devtools-mcp``. Official leftover ``start``
     also leaves ``node …/daemon/daemon.js --browserUrl=<dock>``
-    (finding 139). ``--autoConnect`` / no pin launches or attaches a
-    Chrome we cannot prove is this jar — stay unknown.
+    (finding 139). Finding 142: official leftover
+    ``startDaemon`` uses ``process.execPath``; bun / bunx parents
+    leave ``bun …/daemon/daemon.js``. ``--autoConnect`` / no pin
+    launches or attaches a Chrome we cannot prove is this jar — stay
+    unknown.
     ``chrome-devtools-frontend`` is not this package.
     """
     if not tokens:
@@ -2654,6 +2727,9 @@ def _is_chrome_devtools_mcp_invocation(tokens: List[str]) -> bool:
     if via is not None:
         return via
     via = _invocation_via_bun_x(tokens, _is_chrome_devtools_mcp_invocation)
+    if via is not None:
+        return via
+    via = _invocation_via_bun_script(tokens, _token_is_chrome_devtools_mcp)
     if via is not None:
         return via
     if name0 in _NPX_LAUNCHERS:
@@ -2707,6 +2783,9 @@ def _is_lighthouse_invocation(tokens: List[str]) -> bool:
     if via is not None:
         return via
     via = _invocation_via_bun_x(tokens, _is_lighthouse_invocation)
+    if via is not None:
+        return via
+    via = _invocation_via_bun_script(tokens, _token_is_lighthouse)
     if via is not None:
         return via
     if name0 in _NPX_LAUNCHERS:
@@ -2798,6 +2877,10 @@ def _unregistered_cli_aims_at_dock(
     /path/to/agent-browser-<triple>`` with no extra argv. Finding 112
     used exact argv0 ``agent-browser``; finding 140 matched Node
     ``daemon.js``. Neither matched ``agent-browser-linux-x64``.
+    Finding 142: official leftover Playwright / chrome-devtools /
+    older agent-browser daemons spawn ``process.execPath`` + script.
+    bun / bunx parents leave ``bun …/cliDaemon.js`` /
+    ``bun …/daemon.js``. Findings 138–140 only matched ``node``.
     ``agent-browser-mcp`` is not a published triple. Positional
     ``connect <port|url>`` is the in-flight attach. Official leftover
     globals before ``connect`` (finding 134) — ``--state`` /

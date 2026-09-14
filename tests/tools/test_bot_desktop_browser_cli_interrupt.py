@@ -283,6 +283,14 @@ def test_agent_browser_invocation_is_token_match_not_substring():
         ["node", "/tmp/agent-browser/malware.js"])
     assert not _is_agent_browser_invocation(
         ["/bin/bash", "-c", "agent-browser --cdp http://127.0.0.1:9333 fill"])
+    # Finding 142: official leftover Node daemon spawned via bun
+    # process.execPath. bun run is not this shape.
+    assert _is_agent_browser_invocation(["bun", _ab_daemon])
+    assert _is_agent_browser_invocation(
+        ["bun", "--bun", _ab_daemon])
+    assert not _is_agent_browser_invocation(
+        ["bun", "/home/x/node_modules/other/daemon.js"])
+    assert not _is_agent_browser_invocation(["bun", "run", "agent-browser"])
     # Finding 141: official leftover (agent-browser 0.37.x) re-execs
     # the published native binary as the daemon. Finding 112 used
     # exact argv0 agent-browser; finding 140 matched Node daemon.js.
@@ -365,6 +373,15 @@ def test_agent_browser_invocation_is_token_match_not_substring():
     )
     assert not _unregistered_cli_aims_at_dock(
         ["node", "/home/x/node_modules/other/daemon.js"],
+        {"AGENT_BROWSER_CDP": "http://127.0.0.1:9333"}, None, 9333,
+    )
+    # Finding 142: bun process.execPath leftover Node daemon.
+    assert _unregistered_cli_aims_at_dock(
+        ["bun", _ab_daemon],
+        {"AGENT_BROWSER_CDP": "http://127.0.0.1:9333"}, None, 9333,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["bun", "/home/x/node_modules/other/daemon.js"],
         {"AGENT_BROWSER_CDP": "http://127.0.0.1:9333"}, None, 9333,
     )
     # Finding 141: native leftover daemon. Env pin aims; no pin /
@@ -839,6 +856,23 @@ def test_agent_browser_invocation_is_token_match_not_substring():
          "dashboardApp.js", "--cdp=http://127.0.0.1:9333"])
     assert not _is_playwright_invocation(
         ["/usr/bin/cat", _daemon_core])
+    # Finding 142: official leftover startDaemon uses process.execPath.
+    # bun / bunx parents leave bun …/cliDaemon.js, not node.
+    assert _is_playwright_invocation(
+        ["bun", _daemon_core, "default", "--cdp=http://127.0.0.1:9333"])
+    assert _is_playwright_invocation(
+        ["bun", "--bun", _daemon_pw, "mysession",
+         "--cdp=http://127.0.0.1:9333"])
+    assert _is_playwright_cli_agent_invocation(
+        ["bun", _daemon_core, "default", "--cdp=http://127.0.0.1:9333"])
+    assert not _is_playwright_invocation(
+        ["bun", "run", "playwright-cli"])
+    assert not _is_playwright_invocation(
+        ["bun", "/tmp/other.js", "--cdp=http://127.0.0.1:9333"])
+    assert _unregistered_cli_aims_at_dock(
+        ["bun", _daemon_core, "default", "--cdp=http://127.0.0.1:9333"],
+        {}, None, 9333,
+    )
     assert _unregistered_cli_aims_at_dock(
         ["node", _daemon_core, "default", "--cdp=http://127.0.0.1:9333"],
         {}, None, 9333,
@@ -922,6 +956,16 @@ def test_agent_browser_invocation_is_token_match_not_substring():
          "--browserUrl=http://127.0.0.1:9333"])
     assert not _is_chrome_devtools_mcp_invocation(
         ["/usr/bin/cat", _cd_daemon])
+    # Finding 142: official leftover startDaemon uses process.execPath.
+    assert _is_chrome_devtools_mcp_invocation(
+        ["bun", _cd_daemon, "--browserUrl=http://127.0.0.1:9333"])
+    assert _unregistered_cli_aims_at_dock(
+        ["bun", _cd_daemon, "--browserUrl=http://127.0.0.1:9333"],
+        {}, None, 9333,
+    )
+    assert not _is_chrome_devtools_mcp_invocation(
+        ["bun", "/home/x/node_modules/other/daemon.js",
+         "--browserUrl=http://127.0.0.1:9333"])
     assert not _unregistered_cli_aims_at_dock(
         ["chrome-devtools", "fill", "1", "uid", "secret"],
         {}, None, 9333,
@@ -5682,6 +5726,92 @@ def test_unregistered_agent_browser_native_daemon_killed_on_takeover():
     assert incomplete.killed == 0
     assert unpinned_fill.killed == 0
     assert cat_bin.killed == 0
+    assert bash_parent.killed == 0
+
+
+def test_unregistered_bun_execpath_daemons_killed_on_takeover():
+    """terminal() leftover daemons spawned via bun process.execPath hid attach.
+
+    Official leftover Playwright ``attach --cdp``, chrome-devtools
+    ``start --browserUrl``, and older agent-browser ``connect`` spawn
+    ``process.execPath`` + the daemon script. When the parent CLI was
+    bun / bunx, leftover argv0 is ``bun``, not ``node``. Findings
+    138–140 only matched ``node``, so Take over left those holders
+    sending CDP. ``bun run`` / another Chrome / a random script /
+    later unpinned ``fill`` / the bash ``-c`` parent stay up.
+    """
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    pw = "/home/x/node_modules/playwright-core/lib/entry/cliDaemon.js"
+    cd = "/home/x/node_modules/chrome-devtools-mcp/build/src/daemon/daemon.js"
+    ab = "/home/x/node_modules/agent-browser/dist/daemon.js"
+    bdb.remember_dock_cdp_port(9333)
+    leftover_pw = _FakeProc(
+        10900,
+        ["bun", pw, "default", "--cdp=http://127.0.0.1:9333"],
+    )
+    leftover_cd = _FakeProc(
+        10901,
+        ["bun", cd, "--browserUrl=http://127.0.0.1:9333"],
+    )
+    leftover_ab = _FakeProc(
+        10902,
+        ["bun", ab],
+        {"AGENT_BROWSER_CDP": "http://127.0.0.1:9333",
+         "AGENT_BROWSER_DAEMON": "1"},
+    )
+    via_bun_flag = _FakeProc(
+        10903,
+        ["bun", "--bun", pw, "s", "--cdp=http://127.0.0.1:9333"],
+    )
+    bun_run = _FakeProc(
+        10904,
+        ["bun", "run", "playwright-cli", "attach",
+         "--cdp", "http://127.0.0.1:9333"],
+    )
+    other_pw = _FakeProc(
+        10905,
+        ["bun", pw, "default", "--cdp=http://127.0.0.1:9222"],
+    )
+    other_js = _FakeProc(
+        10906,
+        ["bun", "/tmp/other.js", "--cdp=http://127.0.0.1:9333"],
+    )
+    other_daemon = _FakeProc(
+        10907,
+        ["bun", "/home/x/node_modules/other/daemon.js",
+         "--browserUrl=http://127.0.0.1:9333"],
+    )
+    unpinned_fill = _FakeProc(
+        10908,
+        ["playwright-cli", "fill", "secret"],
+    )
+    bash_parent = _FakeProc(
+        10909,
+        ["/bin/bash", "-c",
+         f"bun {pw} default --cdp=http://127.0.0.1:9333"],
+    )
+    lease.acquire("human")
+    n = interrupt_unregistered_dock_cli(
+        processes=[
+            leftover_pw, leftover_cd, leftover_ab, via_bun_flag,
+            bun_run, other_pw, other_js, other_daemon, unpinned_fill,
+            bash_parent,
+        ],
+        chromium_pid=9999,
+        owner_daemon_pid=9998,
+    )
+    assert n == 4
+    assert leftover_pw.killed == 1
+    assert leftover_cd.killed == 1
+    assert leftover_ab.killed == 1
+    assert via_bun_flag.killed == 1
+    assert bun_run.killed == 0
+    assert other_pw.killed == 0
+    assert other_js.killed == 0
+    assert other_daemon.killed == 0
+    assert unpinned_fill.killed == 0
     assert bash_parent.killed == 0
 
 
