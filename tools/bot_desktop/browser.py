@@ -719,6 +719,36 @@ def _recover_cdp_port_from_singleton(user_data_dir: str, pid: int) -> Optional[i
     return _unique_recoverable_listen_port(targets)
 
 
+def lock_listed_persist_port(user_data_dir: Optional[str] = None) -> Optional[int]:
+    """Stamped persist when this jar's lock pid still lists it, or ``None``.
+
+    Finding 174: unique-listen recover is unknown when Chromium has
+    several specific loopbacks (finding 85). Persist already named a
+    listen this pid still holds — that is not a guess. Finding 175:
+    leftover identity must not stamp a different this-jar listen
+    (stale file helpers) over that persist after a persist TCP miss.
+    File still on the lock is finding 172. A recycled lock pid is not
+    this jar. No HTTP.
+    """
+    if user_data_dir is None:
+        user_data_dir = str(profile_dir())
+    pid = _lock_pid(user_data_dir)
+    if pid is None or not _pid_names_this_jar(pid, user_data_dir):
+        return None
+    try:
+        persist = last_known_dock_cdp_port()
+    except Exception:
+        persist = None
+    if not (isinstance(persist, int) and 1 <= persist <= 65535):
+        return None
+    try:
+        if persist in _loopback_listen_ports_for_pid(pid):
+            return persist
+    except Exception:
+        return None
+    return None
+
+
 def running_instance_cdp_port(user_data_dir: str, *, exclude_session: Optional[str] = None) -> Optional[int]:
     """DevTools port of a Chromium currently running on ``user_data_dir``, or ``None``.
 
@@ -792,16 +822,8 @@ def running_instance_cdp_port(user_data_dir: str, *, exclude_session: Optional[s
                 if hosts and _cdp_port_reachable(candidate, hosts):
                     port = candidate
         lock_ports = _loopback_listen_ports_for_pid(pid)
-        persist = None
-        try:
-            persist = last_known_dock_cdp_port()
-        except Exception:
-            persist = None
-        persist_on_lock = (
-            isinstance(persist, int)
-            and 1 <= persist <= 65535
-            and persist in lock_ports
-        )
+        persist = lock_listed_persist_port(user_data_dir)
+        persist_on_lock = persist is not None
         if port is None:
             recovered = _recover_cdp_port_from_singleton(user_data_dir, pid)
             if (

@@ -1073,6 +1073,14 @@ def test_file_named_helpers_do_not_hide_lock_listed_persist(tmp_path, monkeypatc
     assert browser.running_instance_cdp_port(str(tmp_path)) is None
     assert browser.last_known_dock_cdp_port() == 9333
     assert _remembered_dock_attach_port() == 9333
+    # Finding 175: named-listen identity after this miss must not stamp
+    # stale file helpers over lock-listed persist.
+    assert _cdp_url_is_bot_desktop_browser("http://[::1]:40141") is True
+    assert browser.last_known_dock_cdp_port() == 9333
+    assert _remembered_dock_attach_port() == 9333
+    assert _cdp_url_is_bot_desktop_browser("http://[::1]:9333") is True
+    assert _cdp_url_is_bot_desktop_browser("http://127.0.0.1:40141") is False
+    assert _cdp_url_is_bot_desktop_browser("9222") is False
     assert browser.dock_cdp_attach_target(9222) == "9222"
 
 
