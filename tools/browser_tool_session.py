@@ -5364,6 +5364,8 @@ def _remembered_dock_attach_port(*, exclude_session: Optional[str] = None) -> Op
                     # stamped). Finding 180: persist_live synced
                     # chrome into the file and memory; named is
                     # then leftover DevTools. Prefer that persist.
+                    # Finding 182: running_instance is the other
+                    # live-stamp door and syncs the same way.
                     # A different file-named live listen with
                     # empty / leftover memory is still finding 172.
                     try:

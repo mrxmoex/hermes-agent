@@ -847,7 +847,11 @@ def running_instance_cdp_port(user_data_dir: str, *, exclude_session: Optional[s
     Finding 179: that persist may still be this-jar inode-listed
     after Take over unlinks ``SingletonLock``. Do not let 164
     overwrite that stamp with a stale ``DevToolsActivePort``
-    helpers still hold.
+    helpers still hold. Finding 182: ``remember_dock_cdp_port``
+    writes the file only. Agent attach calls this function
+    without ``persist_live`` (180). Sync in-process memory on a
+    live stamp so a later unlink cannot treat leftover memory
+    as lock-listed chrome.
     An instance
     agent-browser launched for ``exclude_session`` itself is reported as ``None``:
     its daemon already owns that browser, and handing it ``--cdp`` would make it
@@ -954,6 +958,12 @@ def running_instance_cdp_port(user_data_dir: str, *, exclude_session: Optional[s
     try:
         if Path(user_data_dir).resolve() == profile_dir().resolve():
             remember_dock_cdp_port(port)
+            # Finding 182: remember writes the file only. Agent
+            # attach calls this without persist_live. Leftover
+            # memory then became lock-listed after Take over
+            # unlinked the lock (179) and attach followed
+            # leftover helpers. A miss must not clobber chrome.
+            _sync_last_dock_cdp_port(port)
     except OSError:
         pass
     return port
@@ -1122,7 +1132,9 @@ def persist_live_dock_cdp_port() -> Optional[int]:
     writes the file only, so a live stamp left leftover memory
     in place. Take over can then unlink the lock and 179 / 172
     follow that leftover. Sync in-process memory when this
-    stamp succeeds. A miss must not clobber chrome memory.
+    stamp succeeds. Finding 182: ``running_instance_cdp_port``
+    is the other live-stamp door (agent attach) and syncs
+    itself. A miss must not clobber chrome memory.
     """
     try:
         port = running_instance_cdp_port(str(profile_dir()))
@@ -1135,13 +1147,26 @@ def persist_live_dock_cdp_port() -> Optional[int]:
             port = None
     if port is not None:
         remember_dock_cdp_port(port)
-        try:
-            from hermes_constants import hermes_home_key
-            from tools.browser_tool_session import _last_dock_cdp_port
-            _last_dock_cdp_port[hermes_home_key()] = port
-        except Exception:
-            pass
+        _sync_last_dock_cdp_port(port)
     return port
+
+
+def _sync_last_dock_cdp_port(port: int) -> None:
+    """In-process leftover-identity cache for a live dock stamp.
+
+    ``remember_dock_cdp_port`` writes the file only (finding 178).
+    persist_live (180) and running_instance (182) sync memory
+    themselves. Do not call this from ``remember_dock_cdp_port`` —
+    a leftover ``remember(40141)`` must not clobber chrome memory.
+    """
+    if not isinstance(port, int) or not (1 <= port <= 65535):
+        return
+    try:
+        from hermes_constants import hermes_home_key
+        from tools.browser_tool_session import _last_dock_cdp_port
+        _last_dock_cdp_port[hermes_home_key()] = port
+    except Exception:
+        pass
 
 
 def remember_dock_cdp_port(port: int) -> None:

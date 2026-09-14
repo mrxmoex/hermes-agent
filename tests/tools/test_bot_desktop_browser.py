@@ -1639,6 +1639,106 @@ def test_restart_empty_memory_does_not_stamp_helpers_over_persist_file(
     assert browser.last_known_dock_cdp_port() == 40141
 
 
+def test_running_instance_syncs_memory_so_missing_lock_keeps_chrome(
+    tmp_path, monkeypatch,
+):
+    """Finding 182: running_instance must sync leftover memory before unlink.
+
+    Finding 174 stamps chrome while the lock still lists persist and
+    not leftover ``DevToolsActivePort`` helpers. Agent attach calls
+    ``running_instance_cdp_port`` without persist_live. ``remember``
+    writes the file only, so memory stayed on the leftover. Finding
+    179 then treated that leftover as lock-listed after Take over
+    unlinked SingletonLock, and attach followed leftover helpers.
+    Sync memory on a live stamp. A miss must not clobber chrome
+    memory. 9222 and the other family stay unknown.
+    """
+    from hermes_constants import hermes_home_key
+    from tools.browser_tool_session import (
+        _cdp_url_is_bot_desktop_browser,
+        _last_dock_cdp_port,
+        _remembered_dock_attach_port,
+        _reset_dock_port_memory_for_tests,
+    )
+
+    monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path)
+    monkeypatch.setattr(browser, "profile_dir", lambda: tmp_path)
+    monkeypatch.setattr(browser, "_lock_pid", lambda d: 4240)
+    monkeypatch.setattr(
+        browser,
+        "_chromium_cmdline_tokens",
+        lambda pid: ["chrome", f"--user-data-dir={tmp_path}"],
+    )
+    monkeypatch.setattr(
+        browser, "_loopback_listen_ports_for_pid",
+        lambda pid: {9333} if pid == 4240 else set(),
+    )
+    monkeypatch.setattr(
+        browser, "_loopback_listen_targets_for_pid",
+        lambda pid: {("::1", 9333)} if pid == 4240 else set(),
+    )
+    monkeypatch.setattr(browser, "_recover_cdp_port_from_singleton", lambda *a, **k: None)
+
+    def _inodes(port):
+        if port == 40141:
+            return {7: {"::1"}}
+        if port == 9333:
+            return {8: {"::1"}}
+        return {}
+
+    def _holders(want):
+        out = {}
+        if 7 in want:
+            out[4242] = {7}
+            out[4243] = {7}
+        if 8 in want:
+            out[4240] = {8}
+        return out
+
+    monkeypatch.setattr(browser, "_loopback_listen_inodes_for_port", _inodes)
+    monkeypatch.setattr(browser, "_pids_holding_socket_inodes", _holders)
+    monkeypatch.setattr(
+        browser,
+        "_cdp_port_reachable",
+        lambda port, hosts: port == 9333 and "::1" in hosts,
+    )
+    monkeypatch.setattr(
+        browser, "_configured_cdp_override_url",
+        lambda: "http://[::1]:40141",
+    )
+    _reset_dock_port_memory_for_tests()
+    browser.remember_dock_cdp_port(9333)
+    _last_dock_cdp_port[hermes_home_key()] = 40141
+    (tmp_path / "DevToolsActivePort").write_text(
+        "40141\n/devtools/browser/abc\n", encoding="utf-8",
+    )
+    assert browser.lock_listed_persist_port() == 9333
+    assert browser.file_named_dock_listen_port() == 40141
+    assert browser.running_instance_cdp_port(str(tmp_path)) == 9333
+    assert browser.last_known_dock_cdp_port() == 9333
+    assert _last_dock_cdp_port.get(hermes_home_key()) == 9333
+    assert _remembered_dock_attach_port() == 9333
+
+    monkeypatch.setattr(browser, "_lock_pid", lambda d: None)
+    monkeypatch.setattr(
+        browser, "_loopback_listen_ports_for_pid", lambda pid: set(),
+    )
+    monkeypatch.setattr(
+        browser, "_loopback_listen_targets_for_pid", lambda pid: set(),
+    )
+    assert browser.lock_listed_persist_port() == 9333
+    assert browser.file_named_dock_listen_port() == 40141
+    assert browser.running_instance_cdp_port(str(tmp_path)) is None
+    assert browser.persist_live_dock_cdp_port() is None
+    assert _remembered_dock_attach_port() == 9333
+    assert _cdp_url_is_bot_desktop_browser("http://[::1]:40141") is True
+    assert _cdp_url_is_bot_desktop_browser("http://[::1]:9333") is True
+    assert _cdp_url_is_bot_desktop_browser("http://127.0.0.1:40141") is False
+    assert _cdp_url_is_bot_desktop_browser("9222") is False
+    assert browser.last_known_dock_cdp_port() == 9333
+    assert _last_dock_cdp_port.get(hermes_home_key()) == 9333
+
+
 def test_lock_pid_dead_family_does_not_shop_holder_squat(tmp_path, monkeypatch):
     """Finding 165: lock pid still lists the file port; its family is dead.
 
