@@ -7609,6 +7609,145 @@ def test_unregistered_host_port_killed_when_persist_is_stale(monkeypatch, tmp_pa
         listener.close()
 
 
+def test_unregistered_other_listen_killed_when_recover_is_live(monkeypatch, tmp_path):
+    """Finding 173: live recover hid leftover on another this-jar listen.
+
+    ``running_instance_cdp_port`` returns the file-named port when that
+    TCP probe works. Leftover lighthouse / CRI ``--port`` and
+    ``--cdp`` aimed at the inherited other listen then looked like
+    another Chrome. Named-listen identity for that port. 9222, the
+    other family, LAN, unpinned lighthouse, and the bash ``-c`` parent
+    stay up. Do not stamp persist to the inherited listen.
+    """
+    import os
+    import socket
+
+    from tools.bot_desktop import browser as bdb
+    from tools.bot_desktop import runtime
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    live6 = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+    live6.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+    live6.bind(("::1", 0))
+    live6.listen(8)
+    live = live6.getsockname()[1]
+    live4 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    live4.bind(("127.0.0.1", live))
+    live4.listen(8)
+    stale6 = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+    stale6.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+    stale6.bind(("::1", 0))
+    stale6.listen(8)
+    stale = stale6.getsockname()[1]
+    stale4 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    stale4.bind(("127.0.0.1", stale))
+    stale4.listen(8)
+
+    def _drain(listener):
+        def _run():
+            while True:
+                try:
+                    conn, _ = listener.accept()
+                except OSError:
+                    return
+                try:
+                    conn.close()
+                except OSError:
+                    pass
+        threading.Thread(target=_run, daemon=True).start()
+
+    for sock in (live6, live4, stale6, stale4):
+        _drain(sock)
+
+    profile = tmp_path / "browser-profile"
+    profile.mkdir()
+    os.symlink(f"host-{os.getpid()}", profile / "SingletonLock")
+    (profile / "DevToolsActivePort").write_text(
+        f"{live}\n/devtools/browser/abc\n", encoding="utf-8",
+    )
+    monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path)
+    monkeypatch.setattr(bdb, "profile_dir", lambda: profile)
+    monkeypatch.setattr(
+        bdb,
+        "_chromium_cmdline_tokens",
+        lambda pid: ["chrome", f"--user-data-dir={profile}", "--remote-debugging-port=0"],
+    )
+    monkeypatch.setattr(bdb, "_loopback_listen_ports_for_pid", lambda pid: {live, stale})
+    monkeypatch.setattr(
+        bdb,
+        "_loopback_listen_targets_for_pid",
+        lambda pid: {("::1", live), ("::1", stale)},
+    )
+    monkeypatch.setattr(bdb, "_configured_cdp_override_url", lambda: "")
+    try:
+        leftover_lh = _FakeProc(
+            11271,
+            ["npx", "lighthouse", "https://example.com", "--port", str(stale)],
+        )
+        leftover_lh_host = _FakeProc(
+            11272,
+            ["npx", "lighthouse", "--hostname", "::1", "--port", str(stale)],
+        )
+        leftover_cri = _FakeProc(
+            11273,
+            ["npx", "chrome-remote-interface", "--port", str(stale), "inspect"],
+        )
+        leftover_cdp = _FakeProc(
+            11274,
+            ["agent-browser", "--cdp", f"http://[::1]:{stale}", "fill"],
+        )
+        sibling = _FakeProc(
+            11275,
+            ["npx", "lighthouse", "--port", "9222", "https://example.com"],
+        )
+        leftover_v4 = _FakeProc(
+            11276,
+            ["npx", "lighthouse", "--hostname", "127.0.0.1", "--port", str(stale)],
+        )
+        unpinned = _FakeProc(
+            11277,
+            ["npx", "lighthouse", "https://example.com"],
+        )
+        lan = _FakeProc(
+            11278,
+            ["npx", "lighthouse", "--hostname", "10.0.0.5", "--port", str(stale)],
+        )
+        bash_parent = _FakeProc(
+            11279,
+            ["/bin/bash", "-c", f"npx lighthouse --port {stale} https://example.com"],
+        )
+        advertised = _FakeProc(
+            11280,
+            ["agent-browser", "--cdp", f"http://[::1]:{live}", "fill"],
+        )
+        lease.acquire("human")
+        n = interrupt_unregistered_dock_cli(
+            processes=[
+                leftover_lh, leftover_lh_host, leftover_cri, leftover_cdp,
+                sibling, leftover_v4, unpinned, lan, bash_parent, advertised,
+            ],
+            chromium_pid=9999,
+            owner_daemon_pid=9998,
+        )
+        assert leftover_lh.killed == 1
+        assert leftover_lh_host.killed == 1
+        assert leftover_cri.killed == 1
+        assert leftover_cdp.killed == 1
+        assert sibling.killed == 0
+        assert leftover_v4.killed == 0
+        assert unpinned.killed == 0
+        assert lan.killed == 0
+        assert bash_parent.killed == 0
+        assert advertised.killed == 1
+        assert n == 5
+        assert bdb.last_known_dock_cdp_port() == live
+    finally:
+        live6.close()
+        live4.close()
+        stale6.close()
+        stale4.close()
+
+
 def test_unregistered_stale_lock_pid_does_not_spare_leftover(monkeypatch):
     """Finding 157: Take over skipped the raw SingletonLock pid.
 

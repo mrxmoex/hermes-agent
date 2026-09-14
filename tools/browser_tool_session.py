@@ -4912,6 +4912,15 @@ def _cdp_url_is_bot_desktop_browser(cdp_url: str) -> bool:
     Finding 169: persist file then in-process memory. A stale
     ``_last_dock_cdp_port`` must not hide leftover ``--cdp`` aimed at
     the live stamp when named-listen hosts are empty.
+
+    Finding 173: a live recover / file-named stamp must not hide leftover
+    CDP aimed at another this-jar listen (inherited old fd + new
+    DevTools). ``running_instance_cdp_port`` returns the advertised
+    port when that TCP probe works — leftover ``--cdp`` / lighthouse
+    ``--port`` on the other listen then looked like another Chrome.
+    Fall through to named-listen identity for *want*. Do not stamp
+    persist to that other listen — recover already named the
+    advertised port. The other family squat and 9222 stay unknown.
     """
     want = _loopback_cdp_port(cdp_url)
     if want is None:
@@ -4920,26 +4929,31 @@ def _cdp_url_is_bot_desktop_browser(cdp_url: str) -> bool:
     from tools.bot_desktop import browser as _bd_browser
     live = _bd_browser.running_instance_cdp_port(str(_bd_browser.profile_dir()))
     key = hermes_home_key()
-    if live is not None:
+    recovered = live is not None
+    if recovered:
         _last_dock_cdp_port[key] = live
         _bd_browser.remember_dock_cdp_port(live)
-        return live == want and _leftover_cdp_host_matches_this_jar(cdp_url, live)
+        if live == want:
+            return _leftover_cdp_host_matches_this_jar(cdp_url, live)
     # Named port this jar still inode-listens on beats a stale persist
     # file and does not need the operator override (finding 155).
-    # Stamp persist only when a fresh TCP accept works (finding 165).
-    # Leftover identity does not wait on that probe (finding 166).
+    # Stamp persist only when a fresh TCP accept works (finding 165)
+    # and recover missed (finding 173 must not overwrite the advertised
+    # stamp with the inherited listen leftover aimed at). Leftover
+    # identity does not wait on that probe (finding 166).
     try:
         hosts = _bd_browser._this_jar_listen_connect_hosts(want)
     except Exception:
         hosts = ()
     if hosts:
-        try:
-            named = _bd_browser._this_jar_listens_on_port(want)
-        except Exception:
-            named = False
-        if named:
-            _last_dock_cdp_port[key] = want
-            _bd_browser.remember_dock_cdp_port(want)
+        if not recovered:
+            try:
+                named = _bd_browser._this_jar_listens_on_port(want)
+            except Exception:
+                named = False
+            if named:
+                _last_dock_cdp_port[key] = want
+                _bd_browser.remember_dock_cdp_port(want)
         return _leftover_cdp_host_matches_this_jar(cdp_url, want)
     # Persist file then memory. ``remember_dock_cdp_port`` does not
     # update ``_last_dock_cdp_port``, so a later live stamp hid leftover

@@ -2035,6 +2035,100 @@ def test_named_listen_host_port_aims_when_persist_is_stale(
         listener.close()
 
 
+def test_named_listen_other_port_aims_when_recover_is_live(
+    monkeypatch, tmp_path,
+):
+    """Finding 173: live recover hid leftover CDP on another this-jar listen.
+
+    ``running_instance_cdp_port`` returns the file-named port when that
+    TCP probe works. Leftover ``--cdp`` / lighthouse ``--port`` aimed at
+    the inherited other listen then looked like another Chrome — same
+    jar, second fd. Named-listen identity for *want*. Do not stamp
+    persist to that other listen. 9222 and the other family stay unknown.
+    """
+    import os
+    import socket
+
+    import tools.bot_desktop.browser as bdb
+    from tools.browser_tool_session import (
+        _cdp_url_is_bot_desktop_browser,
+        _leftover_cdp_aims_at_dock,
+        _leftover_host_port_aims_at_dock,
+        _unregistered_cli_aims_at_dock,
+    )
+
+    profile = tmp_path / "browser-profile"
+    profile.mkdir()
+    os.symlink(f"host-{os.getpid()}", profile / "SingletonLock")
+    monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path)
+    monkeypatch.setattr(bdb, "profile_dir", lambda: profile)
+    monkeypatch.setattr(
+        bdb,
+        "_chromium_cmdline_tokens",
+        lambda pid: ["chrome", f"--user-data-dir={profile}", "--remote-debugging-port=0"],
+    )
+    live6 = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+    live6.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+    live6.bind(("::1", 0))
+    live6.listen(8)
+    live = live6.getsockname()[1]
+    live4 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    live4.bind(("127.0.0.1", live))
+    live4.listen(8)
+    stale6 = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+    stale6.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+    stale6.bind(("::1", 0))
+    stale6.listen(8)
+    stale = stale6.getsockname()[1]
+    stale4 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    stale4.bind(("127.0.0.1", stale))
+    stale4.listen(8)
+    _drain_listen(live6)
+    _drain_listen(live4)
+    _drain_listen(stale6)
+    _drain_listen(stale4)
+    (profile / "DevToolsActivePort").write_text(
+        f"{live}\n/devtools/browser/abc\n", encoding="utf-8",
+    )
+    monkeypatch.setattr(bdb, "_loopback_listen_ports_for_pid", lambda pid: {live, stale})
+    monkeypatch.setattr(
+        bdb,
+        "_loopback_listen_targets_for_pid",
+        lambda pid: {("::1", live), ("::1", stale)},
+    )
+    monkeypatch.setattr(bdb, "_configured_cdp_override_url", lambda: "")
+    try:
+        assert bdb.running_instance_cdp_port(str(profile)) == live
+        assert bdb.last_known_dock_cdp_port() == live
+        assert _cdp_url_is_bot_desktop_browser(f"http://[::1]:{stale}") is True
+        assert _cdp_url_is_bot_desktop_browser(str(stale)) is True
+        assert _cdp_url_is_bot_desktop_browser(f"http://127.0.0.1:{stale}") is False
+        assert _cdp_url_is_bot_desktop_browser("9222") is False
+        assert _leftover_cdp_aims_at_dock(f"http://[::1]:{stale}", live) is True
+        assert _leftover_host_port_aims_at_dock(None, stale, live) is True
+        assert _leftover_host_port_aims_at_dock("::1", stale, live) is True
+        assert _leftover_host_port_aims_at_dock("127.0.0.1", stale, live) is False
+        assert _leftover_host_port_aims_at_dock(None, 9222, live) is False
+        assert _unregistered_cli_aims_at_dock(
+            ["npx", "lighthouse", "https://example.com", "--port", str(stale)],
+            {}, profile, live,
+        ) is True
+        assert _unregistered_cli_aims_at_dock(
+            ["agent-browser", "--cdp", f"http://[::1]:{stale}", "fill"],
+            {}, profile, live,
+        ) is True
+        assert _unregistered_cli_aims_at_dock(
+            ["npx", "lighthouse", "--port", "9222", "https://example.com"],
+            {}, profile, live,
+        ) is False
+        assert bdb.last_known_dock_cdp_port() == live
+    finally:
+        live6.close()
+        live4.close()
+        stale6.close()
+        stale4.close()
+
+
 def test_stale_lock_pid_is_not_this_jar_chromium(monkeypatch, tmp_path):
     """Finding 157: a leftover pid on SingletonLock is not the dock.
 
