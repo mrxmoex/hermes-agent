@@ -7670,6 +7670,87 @@ def test_unregistered_recycled_lock_devtools_is_not_this_jar(monkeypatch):
         listener.close()
 
 
+def test_unregistered_recycled_lock_family_does_not_hide_persist(monkeypatch):
+    """Finding 159: recycled lock pid must not invert leftover family.
+
+    Persist still names this jar after Take over unlinks DevTools.
+    A live SingletonLock pid that does not name this jar and listens
+    only on ``::1`` used to make leftover ``--cdp http://127.0.0.1``
+    look like a sibling squat. Production Take over does not pass
+    ``chromium_pid``. Same-jar ``::1`` still spares leftover IPv4.
+    9222 and the bash ``-c`` parent stay up.
+    """
+    import os
+
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    profile = bdb.profile_dir()
+    profile.mkdir(parents=True, exist_ok=True)
+    lock = profile / "SingletonLock"
+    if lock.exists() or lock.is_symlink():
+        lock.unlink()
+    os.symlink(f"host-{os.getpid()}", lock)
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: None)
+    monkeypatch.setattr(bdb, "_configured_cdp_override_url", lambda: "")
+    monkeypatch.setattr(
+        bdb,
+        "_chromium_cmdline_tokens",
+        lambda pid: ["chrome", "--user-data-dir=/other/profile"],
+    )
+    monkeypatch.setattr(bdb, "_loopback_listen_ports_for_pid", lambda pid: {9333})
+    monkeypatch.setattr(
+        bdb, "_loopback_listen_targets_for_pid", lambda pid: {("::1", 9333)},
+    )
+    bdb.remember_dock_cdp_port(9333)
+    leftover = _FakeProc(
+        11231,
+        ["agent-browser", "--cdp", "http://127.0.0.1:9333", "fill"],
+    )
+    leftover_v6 = _FakeProc(
+        11232,
+        ["agent-browser", "--cdp", "http://[::1]:9333", "fill"],
+    )
+    leftover_port = _FakeProc(
+        11233,
+        ["npx", "lighthouse", "https://example.com", "--port", "9333"],
+    )
+    sibling = _FakeProc(
+        11234,
+        ["agent-browser", "--cdp", "http://127.0.0.1:9222", "fill"],
+    )
+    bash_parent = _FakeProc(
+        11235,
+        ["/bin/bash", "-c", "agent-browser --cdp http://127.0.0.1:9333 fill"],
+    )
+    lease.acquire("human")
+    n = interrupt_unregistered_dock_cli(
+        processes=[leftover, leftover_v6, leftover_port, sibling, bash_parent],
+    )
+    assert leftover.killed == 1
+    assert leftover_v6.killed == 1
+    assert leftover_port.killed == 1
+    assert sibling.killed == 0
+    assert bash_parent.killed == 0
+    assert n == 3
+
+    leftover.killed = leftover_v6.killed = leftover_port.killed = 0
+    monkeypatch.setattr(
+        bdb,
+        "_chromium_cmdline_tokens",
+        lambda pid: ["chrome", f"--user-data-dir={profile}"],
+    )
+    n = interrupt_unregistered_dock_cli(
+        processes=[leftover, leftover_v6, leftover_port, sibling, bash_parent],
+    )
+    assert leftover.killed == 0
+    assert leftover_v6.killed == 1
+    assert leftover_port.killed == 1
+    assert sibling.killed == 0
+    assert bash_parent.killed == 0
+    assert n == 2
+
+
 def test_stop_reserved_calls_unregistered_interrupt(monkeypatch):
     from tools.browser_tool_session import interrupt_unregistered_dock_cli as real
     from tools.browser_tool_supervisor_lease import stop_reserved_supervisors

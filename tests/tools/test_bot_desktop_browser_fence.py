@@ -2065,6 +2065,69 @@ def test_devtools_file_recycled_lock_is_not_this_jar(monkeypatch, tmp_path):
         listener.close()
 
 
+def test_recycled_lock_family_does_not_hide_persisted_dock(monkeypatch, tmp_path):
+    """Finding 159: recycled lock pid inverted finding 145.
+
+    Family check used the raw SingletonLock pid. A live pid that does
+    not name this jar and listens only on ``::1`` made leftover
+    ``--cdp http://127.0.0.1:<persist>`` look like a sibling squat,
+    so Take over left the writer. Dead / recycled lock stays
+    port-only. Same-jar ``::1`` still rejects leftover IPv4.
+    """
+    import os
+
+    import tools.bot_desktop.browser as bdb
+    from tools.browser_tool_session import (
+        _cdp_url_is_bot_desktop_browser,
+        _leftover_cdp_host_matches_this_jar,
+        _last_dock_cdp_port,
+    )
+
+    profile = tmp_path / "browser-profile"
+    profile.mkdir()
+    os.symlink(f"host-{os.getpid()}", profile / "SingletonLock")
+    monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path)
+    monkeypatch.setattr(bdb, "profile_dir", lambda: profile)
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: None)
+    monkeypatch.setattr(bdb, "_configured_cdp_override_url", lambda: "")
+    monkeypatch.setattr(
+        bdb, "_loopback_listen_ports_for_pid", lambda pid: {9333},
+    )
+    monkeypatch.setattr(
+        bdb, "_loopback_listen_targets_for_pid", lambda pid: {("::1", 9333)},
+    )
+    dock = "http://127.0.0.1:9333"
+    v6 = "http://[::1]:9333"
+    other = "http://127.0.0.1:9222"
+
+    monkeypatch.setattr(
+        bdb,
+        "_chromium_cmdline_tokens",
+        lambda pid: ["chrome", "--user-data-dir=/other/profile"],
+    )
+    _last_dock_cdp_port.clear()
+    bdb.remember_dock_cdp_port(9333)
+    assert bdb._this_jar_chromium_pid(str(profile)) is None
+    assert _leftover_cdp_host_matches_this_jar(dock, 9333) is True
+    assert _cdp_url_is_bot_desktop_browser(dock) is True
+    assert _cdp_url_is_bot_desktop_browser(v6) is True
+    assert _cdp_url_is_bot_desktop_browser(other) is False
+
+    monkeypatch.setattr(
+        bdb,
+        "_chromium_cmdline_tokens",
+        lambda pid: ["chrome", f"--user-data-dir={profile}"],
+    )
+    _last_dock_cdp_port.clear()
+    (tmp_path / "dock-cdp-port").unlink(missing_ok=True)
+    bdb.remember_dock_cdp_port(9333)
+    assert bdb._this_jar_chromium_pid(str(profile)) == os.getpid()
+    assert _leftover_cdp_host_matches_this_jar(dock, 9333) is False
+    assert _cdp_url_is_bot_desktop_browser(dock) is False
+    assert _cdp_url_is_bot_desktop_browser(v6) is True
+    assert _cdp_url_is_bot_desktop_browser(other) is False
+
+
 def test_vault_ensure_does_not_probe_raw_dock_url_while_human_holds(monkeypatch):
     """Session admit can be a no-op while ``get cdp-url`` names the dock."""
     import tools.bot_desktop.browser as bdb

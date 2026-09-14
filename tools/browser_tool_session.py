@@ -1000,11 +1000,18 @@ def _loopback_cdp_port(url: str) -> Optional[int]:
 
 
 def _dock_listen_connect_hosts(port: int) -> Tuple[str, ...]:
-    """This jar's connect hosts for *port*, or empty when unknown."""
+    """This jar's connect hosts for *port*, or empty when unknown.
+
+    Finding 145 used the raw SingletonLock pid. A recycled lock pid
+    that does not name this jar still has listens — leftover
+    ``--cdp http://127.0.0.1:<persist>`` then looked like a sibling
+    squat when that pid was ``::1``-only (finding 159). Recover /
+    Take over already refuse that pid. Empty hosts stay port-only.
+    """
     from tools.bot_desktop import browser as _bd_browser
 
     try:
-        pid = _bd_browser._lock_pid(str(_bd_browser.profile_dir()))
+        pid = _bd_browser._this_jar_chromium_pid()
     except Exception:
         return ()
     if pid is None:
@@ -1021,10 +1028,11 @@ def _leftover_cdp_host_matches_this_jar(cdp_url: str, port: int) -> bool:
     Persist is family-correct (finding 144): a ::1-only dock plus a
     sibling on ``127.0.0.1:same`` is not stamped. Leftover identity
     still compared ports only, so ``--cdp http://127.0.0.1:<dock>``
-    aimed at the squat (finding 145). Port-only / localhost / a
+    aimed at the squat (finding 145).     Port-only / localhost / a
     hostname stay unknown-family (official leftover resolves those
-    via getaddrinfo). No listen info (planted 9333, dead lock) stays
-    port-only — do not fail-closed every fixture.
+    via getaddrinfo). No listen info (planted 9333, dead lock, or a
+    recycled lock pid that is not this jar) stays port-only — do
+    not fail-closed every fixture.
     """
     text = (cdp_url or "").strip()
     if not text or text.isdigit():
