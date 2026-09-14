@@ -355,7 +355,15 @@ def browser_cdp(method: str, params: Optional[Dict[str, Any]] = None, target_id:
     if not _WS_AVAILABLE:
         return tool_error("The 'websockets' Python package is required but not installed. "
                           "Install it with: pip install websockets")
-    endpoint = _resolve_cdp_endpoint(task_id=effective_task_id)
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.browser_tool_session import _session_owner_home
+    owner = _session_owner_home(effective_task_id)
+    token = set_hermes_home_override(owner) if owner else None
+    try:
+        endpoint = _resolve_cdp_endpoint()
+    finally:
+        if token is not None:
+            reset_hermes_home_override(token)
     if not endpoint:
         return tool_error("No CDP endpoint is available. Run '/browser connect' to attach to a running Chrome, "
                           "Brave, Chromium, or Edge browser, or set 'browser.cdp_url' in config.yaml. The Camofox "
