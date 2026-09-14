@@ -2965,15 +2965,20 @@ def _unregistered_cli_aims_at_dock(
     Finding 111 only checked ``--user-data-dir``. Official leftover
     Playwright 1.62+ is also ``npx playwright mcp`` (finding 135) —
     finding 127 only matched ``@playwright/mcp``, so env / ``--config``
-    on the bundled subcommand stayed unknown.     Official leftover Agent
+    on the bundled subcommand stayed unknown. Finding 143: official
+    leftover ``loadConfig`` also reads INI, so ``--config dock.ini``
+    hid the same pins.     Official leftover Agent
     CLI (finding 136) is ``playwright-cli`` / ``npx @playwright/cli`` /
     ``npx playwright cli`` and reads the same env keys plus
-    ``~/.playwright/cli.config.json`` (writer HOME) and
+    ``~/.playwright/cli.config.json`` (writer HOME, or
+    ``PWTEST_CLI_GLOBAL_CONFIG`` — finding 143) and
     ``.playwright/cli.config.json`` (writer cwd), replaced by
     ``--config`` / ``PLAYWRIGHT_MCP_CONFIG``. Finding 109 / 111 only
     checked argv ``--cdp`` / ``--profile``, so Take over left
     ``npx @playwright/cli --config {browser.userDataDir}`` and
-    ``npx @playwright/cli attach --cdp`` running. Official leftover
+    ``npx @playwright/cli attach --cdp`` running. Finding 127 / 136
+    ``json.loads`` only, so Take over left INI ``--config`` and a
+    relocated global file running. Official leftover
     ``attach --cdp`` also exits after spawning
     ``node …/cliDaemon.js <session> --cdp=<dock>`` (finding 138) —
     finding 109 / 136 only matched the parent CLI, so Take over left
@@ -3325,39 +3330,81 @@ def _chrome_devtools_config_aims_at_dock(
 _PLAYWRIGHT_MCP_CONFIG_MAX_BYTES = 256 * 1024
 
 
-def _playwright_mcp_config_pins(
-    tokens: List[str],
-    environ: Dict[str, str],
-    cwd: Optional[Path],
-) -> Tuple[Optional[str], Optional[str]]:
-    """``(cdpEndpoint, userDataDir)`` from leftover MCP ``--config`` / env.
+def _playwright_ini_unquote(value: str) -> str:
+    """Strip one npm ``ini`` quote layer. Playwright ``loadConfig`` uses that parser."""
+    text = (value or "").strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
+        return text[1:-1]
+    return text
 
-    Official leftover: ``npx @playwright/mcp --config mcp.json`` with
-    ``browser.cdpEndpoint`` / ``browser.userDataDir``. Finding 109
-    covered argv / ``PLAYWRIGHT_MCP_CDP_ENDPOINT``; finding 111 covered
-    argv ``--user-data-dir``.     The config file hid both. Relative paths
-    resolve against the leftover writer cwd — gateway cwd must not
-    decide the pin (finding 137). Unreadable / oversized /
-    non-JSON stays unknown. ``remoteEndpoint`` is Playwright protocol,
-    not CDP.
+
+def _playwright_ini_to_config(text: str) -> Optional[dict]:
+    """Official leftover ``loadConfig`` INI fallback (playwright-core ``configIni``).
+
+    Finding 127 / 136 ``json.loads`` only. Official leftover
+    ``loadConfig`` parses ``.ini`` and any file that does not start
+    with ``{`` via npm ``ini`` + dotted ``browser.cdpEndpoint`` /
+    ``browser.userDataDir`` or a ``[browser]`` section. Take over
+    left ``--config dock.ini`` / an INI-shaped
+    ``.playwright/cli.config.json`` typing. A leading ``{`` that
+    fails JSON stays unknown — official leftover does not INI-fallback
+    a JSON object. ``remoteEndpoint`` is not read here.
     """
-    path_text = _flag_value(tokens, ("--config",))
-    if not path_text:
-        path_text = (environ.get("PLAYWRIGHT_MCP_CONFIG") or "").strip()
-    text = (path_text or "").strip()
-    if not text:
-        return None, None
-    path = _leftover_resolve_config_path(text, cwd)
-    if path is None:
-        return None, None
+    import configparser
+
+    parser = configparser.RawConfigParser(interpolation=None)
+    parser.optionxform = str
+    try:
+        parser.read_string(text)
+    except configparser.MissingSectionHeaderError:
+        parser = configparser.RawConfigParser(interpolation=None)
+        parser.optionxform = str
+        try:
+            parser.read_string("[__pw_top__]\n" + text)
+        except configparser.Error:
+            return None
+    except configparser.Error:
+        return None
+    browser: Dict[str, str] = {}
+    for section in parser.sections():
+        for key, raw in parser.items(section):
+            if key in {"browser.cdpEndpoint", "browser.userDataDir"}:
+                short = key.split(".", 1)[1]
+                val = _playwright_ini_unquote(raw)
+                if val:
+                    browser[short] = val
+    if parser.has_section("browser"):
+        for key in ("cdpEndpoint", "userDataDir"):
+            if not parser.has_option("browser", key):
+                continue
+            val = _playwright_ini_unquote(parser.get("browser", key))
+            if val:
+                browser[key] = val
+    return {"browser": browser} if browser else {}
+
+
+def _playwright_load_config_object(path: Path) -> Optional[dict]:
+    """One leftover Playwright MCP / Agent CLI config file, JSON or INI."""
     try:
         if path.stat().st_size > _PLAYWRIGHT_MCP_CONFIG_MAX_BYTES:
-            return None, None
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
-        return None, None
-    if not isinstance(data, dict):
-        return None, None
+            return None
+        raw = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return None
+    if raw.startswith("\ufeff"):
+        raw = raw[1:]
+    if re.match(r"^\s*\{", raw):
+        try:
+            data = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            return None
+        return data if isinstance(data, dict) else None
+    return _playwright_ini_to_config(raw)
+
+
+def _playwright_browser_pins_from_config_data(
+    data: dict,
+) -> Tuple[Optional[str], Optional[str]]:
     browser = data.get("browser")
     if not isinstance(browser, dict):
         return None, None
@@ -3372,6 +3419,41 @@ def _playwright_mcp_config_pins(
     else:
         pinned = pinned.strip()
     return cdp, pinned
+
+
+def _playwright_mcp_config_pins(
+    tokens: List[str],
+    environ: Dict[str, str],
+    cwd: Optional[Path],
+) -> Tuple[Optional[str], Optional[str]]:
+    """``(cdpEndpoint, userDataDir)`` from leftover MCP ``--config`` / env.
+
+    Official leftover: ``npx @playwright/mcp --config mcp.json`` with
+    ``browser.cdpEndpoint`` / ``browser.userDataDir``. Finding 109
+    covered argv / ``PLAYWRIGHT_MCP_CDP_ENDPOINT``; finding 111 covered
+    argv ``--user-data-dir``.     The config file hid both. Finding 143:
+    official leftover ``loadConfig`` also reads INI (``.ini`` and any
+    file that does not start with ``{``). Finding 127 ``json.loads``
+    only, so Take over left ``--config dock.ini``. Relative paths
+    resolve against the leftover writer cwd — gateway cwd must not
+    decide the pin (finding 137). Unreadable / oversized / a leading
+    ``{`` that is not JSON stays unknown. ``remoteEndpoint`` is
+    Playwright protocol, not CDP. Do not treat chrome-devtools
+    ``--config`` as this file.
+    """
+    path_text = _flag_value(tokens, ("--config",))
+    if not path_text:
+        path_text = (environ.get("PLAYWRIGHT_MCP_CONFIG") or "").strip()
+    text = (path_text or "").strip()
+    if not text:
+        return None, None
+    path = _leftover_resolve_config_path(text, cwd)
+    if path is None:
+        return None, None
+    data = _playwright_load_config_object(path)
+    if not isinstance(data, dict):
+        return None, None
+    return _playwright_browser_pins_from_config_data(data)
 
 
 def _leftover_resolve_config_path(
@@ -3400,29 +3482,45 @@ def _playwright_cli_resolve_config_path(
 def _playwright_cli_browser_pins_from_path(
     path: Path,
 ) -> Tuple[Optional[str], Optional[str]]:
-    """``(cdpEndpoint, userDataDir)`` from one leftover Agent CLI JSON file."""
-    try:
-        if path.stat().st_size > _PLAYWRIGHT_MCP_CONFIG_MAX_BYTES:
-            return None, None
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
-        return None, None
+    """``(cdpEndpoint, userDataDir)`` from one leftover Agent CLI config file.
+
+    Finding 143: official leftover ``loadConfig`` is JSON or INI, not
+    ``json.loads`` only.
+    """
+    data = _playwright_load_config_object(path)
     if not isinstance(data, dict):
         return None, None
-    browser = data.get("browser")
-    if not isinstance(browser, dict):
-        return None, None
-    cdp = browser.get("cdpEndpoint")
-    pinned = browser.get("userDataDir")
-    if not isinstance(cdp, str) or not cdp.strip():
-        cdp = None
-    else:
-        cdp = cdp.strip()
-    if not isinstance(pinned, str) or not pinned.strip():
-        pinned = None
-    else:
-        pinned = pinned.strip()
-    return cdp, pinned
+    return _playwright_browser_pins_from_config_data(data)
+
+
+def _playwright_cli_global_config_root(
+    environ: Dict[str, str],
+    cwd: Optional[Path],
+) -> Optional[Path]:
+    """Directory official leftover joins with ``.playwright/cli.config.json``.
+
+    ``resolveCLIConfigForCLI`` uses ``PWTEST_CLI_GLOBAL_CONFIG ?? homedir``.
+    Finding 136 only read leftover ``HOME`` / ``USERPROFILE``, so a
+    relocated global pin never aimed. Relative
+    ``PWTEST_CLI_GLOBAL_CONFIG`` is the leftover writer cwd — gateway
+    cwd / ``Path.home()`` must not decide it. A set but unresolvable
+    relative root skips the global file (do not fall through to HOME;
+    official leftover would not read HOME either).
+    """
+    relocated = (environ.get("PWTEST_CLI_GLOBAL_CONFIG") or "").strip()
+    if relocated:
+        root = Path(relocated)
+        if root.is_absolute():
+            return root
+        if cwd is None:
+            return None
+        return cwd / root
+    home = (environ.get("HOME") or "").strip()
+    if not home:
+        home = (environ.get("USERPROFILE") or "").strip()
+    if not home:
+        return None
+    return Path(home)
 
 
 def _playwright_cli_config_pins(
@@ -3433,25 +3531,26 @@ def _playwright_cli_config_pins(
     """Merge leftover Agent CLI config: global HOME then ``--config`` / cwd auto.
 
     Official leftover, lowest → highest: ``~/.playwright/cli.config.json``
-    (writer HOME), then ``.playwright/cli.config.json`` (writer cwd)
-    replaced by ``--config`` / ``PLAYWRIGHT_MCP_CONFIG``. Env and CLI
+    (writer HOME, or ``PWTEST_CLI_GLOBAL_CONFIG`` — finding 143), then
+    ``.playwright/cli.config.json`` (writer cwd) replaced by
+    ``--config`` / ``PLAYWRIGHT_MCP_CONFIG``. Env and CLI
     flags are applied by the caller. Finding 109 / 111 only checked
-    argv ``--cdp`` / ``--profile``. Relative ``--config`` and the
-    project auto file resolve against the leftover writer cwd —
-    gateway cwd must not decide the pin. Global file uses leftover
-    ``HOME`` / ``USERPROFILE``, not ``Path.home()``. Unreadable /
-    oversized / non-JSON stays unknown. ``remoteEndpoint`` is
-    Playwright protocol, not CDP. Do not apply these auto files to
+    argv ``--cdp`` / ``--profile``. Finding 127 / 136 ``json.loads``
+    only; official leftover ``loadConfig`` also reads INI. Relative
+    ``--config`` and the project auto file resolve against the leftover
+    writer cwd — gateway cwd must not decide the pin. Global file uses
+    leftover ``PWTEST_CLI_GLOBAL_CONFIG`` / ``HOME`` / ``USERPROFILE``,
+    not ``Path.home()``. Unreadable / oversized / a leading ``{`` that
+    is not JSON stays unknown. ``remoteEndpoint`` is Playwright
+    protocol, not CDP. Do not apply these auto files to
     ``@playwright/mcp`` or ``codegen``.
     """
     cdp: Optional[str] = None
     pinned: Optional[str] = None
-    home = (environ.get("HOME") or "").strip()
-    if not home:
-        home = (environ.get("USERPROFILE") or "").strip()
-    if home:
+    global_root = _playwright_cli_global_config_root(environ, cwd)
+    if global_root is not None:
         global_cdp, global_dir = _playwright_cli_browser_pins_from_path(
-            Path(home) / ".playwright" / "cli.config.json",
+            global_root / ".playwright" / "cli.config.json",
         )
         if global_cdp:
             cdp = global_cdp

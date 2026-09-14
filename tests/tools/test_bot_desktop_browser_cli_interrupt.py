@@ -779,6 +779,114 @@ def test_agent_browser_invocation_is_token_match_not_substring():
         ["playwright-cli"],
         {}, _jar, None,
     )
+    # Finding 143: official leftover loadConfig also reads INI
+    # (playwright-core configIni) and Agent CLI relocates the global
+    # file via PWTEST_CLI_GLOBAL_CONFIG. Finding 127 / 136 json.loads
+    # + HOME only, so Take over left --config dock.ini / an INI-shaped
+    # auto file / a relocated global pin. codegen / chrome-devtools
+    # --config / remoteEndpoint / a leading { that is not JSON /
+    # another jar / Path.home() / gateway cwd stay unknown.
+    _pw_ini_section = _jar.parent / "pw-dock.ini"
+    _pw_ini_section.write_text(
+        "[browser]\n"
+        f"userDataDir={_jar}\n"
+    )
+    _pw_ini_dotted = _jar.parent / "pw-dock-dotted.ini"
+    _pw_ini_dotted.write_text(
+        "browser.cdpEndpoint=http://127.0.0.1:9333\n"
+    )
+    _pw_ini_dir = _jar.parent / "pw-dock-dir.ini"
+    _pw_ini_dir.write_text(f"browser.userDataDir={_jar}\n")
+    _pw_ini_other = _jar.parent / "pw-other.ini"
+    _pw_ini_other.write_text("[browser]\nuserDataDir=/tmp/other-chrome\n")
+    _pw_ini_remote = _jar.parent / "pw-remote.ini"
+    _pw_ini_remote.write_text(
+        "[browser]\nremoteEndpoint=ws://127.0.0.1:9333\n"
+    )
+    _pw_ini_bad_json = _jar.parent / "pw-bad-object.json"
+    _pw_ini_bad_json.write_text("{not json, but looks like an object\n")
+    _pw_ini_auto = _jar.parent / "pw-ini-auto"
+    _pw_ini_auto.mkdir(parents=True, exist_ok=True)
+    (_pw_ini_auto / ".playwright").mkdir(parents=True, exist_ok=True)
+    (_pw_ini_auto / ".playwright" / "cli.config.json").write_text(
+        f"browser.userDataDir={_jar}\n"
+    )
+    _pw_ini_reloc = _jar.parent / "pw-reloc-root"
+    (_pw_ini_reloc / ".playwright").mkdir(parents=True, exist_ok=True)
+    (_pw_ini_reloc / ".playwright" / "cli.config.json").write_text(
+        json.dumps({"browser": {"cdpEndpoint": "http://127.0.0.1:9333"}})
+    )
+    _pw_ini_home_other = _jar.parent / "pw-home-other"
+    (_pw_ini_home_other / ".playwright").mkdir(parents=True, exist_ok=True)
+    (_pw_ini_home_other / ".playwright" / "cli.config.json").write_text(
+        json.dumps({"browser": {"userDataDir": str(_jar)}})
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["playwright-cli", "--config", str(_pw_ini_section)],
+        {}, _jar, None,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "@playwright/cli", "--config", str(_pw_ini_dotted)],
+        {}, _jar, 9333,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "playwright", "cli", "--config", "pw-dock-dir.ini"],
+        {}, _jar, None, cwd=_jar.parent,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "@playwright/mcp", "--config", str(_pw_ini_section)],
+        {}, _jar, None,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "@playwright/mcp", "--config", str(_pw_ini_dotted)],
+        {}, _jar, 9333,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["playwright-cli"],
+        {}, _jar, None, cwd=_pw_ini_auto,
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "@playwright/cli"],
+        {"PWTEST_CLI_GLOBAL_CONFIG": str(_pw_ini_reloc),
+         "HOME": str(_pw_ini_home_other)},
+        _jar, 9333, cwd=_jar.parent / "pw-reloc-cwd",
+    )
+    assert _unregistered_cli_aims_at_dock(
+        ["playwright-cli"],
+        {"PWTEST_CLI_GLOBAL_CONFIG": "pw-reloc-root",
+         "HOME": str(_pw_ini_home_other)},
+        _jar, 9333, cwd=_jar.parent,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["npx", "playwright", "codegen", "--config", str(_pw_ini_section)],
+        {}, _jar, None,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["chrome-devtools", "--config", str(_pw_ini_section)],
+        {}, _jar, None,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["playwright-cli", "--config", str(_pw_ini_other)],
+        {}, _jar, None,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["playwright-cli", "--config", str(_pw_ini_remote)],
+        {}, _jar, 9333,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["playwright-cli", "--config", str(_pw_ini_bad_json)],
+        {}, _jar, 9333,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["playwright-cli"],
+        {"PWTEST_CLI_GLOBAL_CONFIG": "pw-reloc-root",
+         "HOME": str(_pw_ini_home_other)},
+        _jar, 9333,
+    )
+    assert not _unregistered_cli_aims_at_dock(
+        ["playwright-cli", "--config", "pw-dock-dir.ini"],
+        {}, _jar, None,
+    )
     # Leftover daemon freezes AGENT_BROWSER_CDP; connect <port> is the
     # in-flight attach (finding 112). --auto-connect cannot prove this jar.
     assert _unregistered_cli_aims_at_dock(
@@ -5811,6 +5919,146 @@ def test_unregistered_bun_execpath_daemons_killed_on_takeover():
     assert other_pw.killed == 0
     assert other_js.killed == 0
     assert other_daemon.killed == 0
+    assert unpinned_fill.killed == 0
+    assert bash_parent.killed == 0
+
+
+def test_unregistered_playwright_ini_and_pwtest_global_killed_on_takeover():
+    """terminal() Playwright leftover hid INI --config and relocated global.
+
+    Official leftover ``loadConfig`` (playwright-core) reads INI
+    (``.ini`` / a ``cli.config.json`` that does not start with ``{``)
+    and Agent CLI joins ``PWTEST_CLI_GLOBAL_CONFIG`` with
+    ``.playwright/cli.config.json``. Finding 127 / 136 ``json.loads``
+    + leftover HOME only, so Take over left those writers typing.
+    ``codegen`` / chrome-devtools ``--config`` / ``remoteEndpoint`` /
+    a leading ``{`` that is not JSON / another jar / missing leftover
+    cwd / the bash ``-c`` parent stay up.
+    """
+    from hermes_constants import get_hermes_home
+    from tools.bot_desktop import browser as bdb
+    from tools.browser_tool_session import interrupt_unregistered_dock_cli
+
+    profile = bdb.profile_dir()
+    cwd = profile.parent
+    cwd.mkdir(parents=True, exist_ok=True)
+    ini_section = cwd / "pw-dock.ini"
+    ini_section.write_text(
+        "[browser]\n"
+        f"userDataDir={profile}\n"
+    )
+    ini_dotted = cwd / "pw-dock-dotted.ini"
+    ini_dotted.write_text("browser.cdpEndpoint=http://127.0.0.1:9333\n")
+    auto_dir = cwd / "pw-ini-auto"
+    (auto_dir / ".playwright").mkdir(parents=True, exist_ok=True)
+    (auto_dir / ".playwright" / "cli.config.json").write_text(
+        f"browser.userDataDir={profile}\n"
+    )
+    reloc = cwd / "pw-reloc-root"
+    (reloc / ".playwright").mkdir(parents=True, exist_ok=True)
+    (reloc / ".playwright" / "cli.config.json").write_text(json.dumps({
+        "browser": {"cdpEndpoint": "http://127.0.0.1:9333"},
+    }))
+    home_other = get_hermes_home() / "pw-home-other"
+    (home_other / ".playwright").mkdir(parents=True, exist_ok=True)
+    (home_other / ".playwright" / "cli.config.json").write_text(json.dumps({
+        "browser": {"userDataDir": str(profile)},
+    }))
+    other_ini = cwd / "pw-other.ini"
+    other_ini.write_text("[browser]\nuserDataDir=/tmp/other-chrome\n")
+    remote_ini = cwd / "pw-remote.ini"
+    remote_ini.write_text("[browser]\nremoteEndpoint=ws://127.0.0.1:9333\n")
+    bad_json = cwd / "pw-bad-object.json"
+    bad_json.write_text("{not json, but looks like an object\n")
+    bdb.remember_dock_cdp_port(9333)
+    leftover_cli = _FakeProc(
+        11000,
+        ["playwright-cli", "--config", str(ini_section)],
+    )
+    leftover_mcp = _FakeProc(
+        11001,
+        ["npx", "@playwright/mcp", "--config", str(ini_section)],
+    )
+    leftover_dotted = _FakeProc(
+        11002,
+        ["npx", "@playwright/cli", "--config", str(ini_dotted)],
+    )
+    leftover_auto = _FakeProc(
+        11003,
+        ["playwright-cli"],
+        cwd=auto_dir,
+    )
+    leftover_pwtest = _FakeProc(
+        11004,
+        ["npx", "@playwright/cli"],
+        {"PWTEST_CLI_GLOBAL_CONFIG": str(reloc),
+         "HOME": str(home_other)},
+        cwd=cwd / "pw-reloc-cwd",
+    )
+    codegen = _FakeProc(
+        11005,
+        ["npx", "playwright", "codegen", "--config", str(ini_section)],
+    )
+    chrome_devtools = _FakeProc(
+        11006,
+        ["chrome-devtools", "--config", str(ini_section)],
+    )
+    other_jar = _FakeProc(
+        11007,
+        ["playwright-cli", "--config", str(other_ini)],
+    )
+    remote = _FakeProc(
+        11008,
+        ["playwright-cli", "--config", str(remote_ini)],
+    )
+    broken_json = _FakeProc(
+        11009,
+        ["playwright-cli", "--config", str(bad_json)],
+    )
+    missing_cwd = _FakeProc(
+        11010,
+        ["playwright-cli", "--config", "pw-dock.ini"],
+        {"HOME": str(home_other)},
+    )
+    pwtest_no_cwd = _FakeProc(
+        11011,
+        ["playwright-cli"],
+        {"PWTEST_CLI_GLOBAL_CONFIG": "pw-reloc-root",
+         "HOME": str(home_other)},
+    )
+    unpinned_fill = _FakeProc(
+        11012,
+        ["playwright-cli", "fill", "secret"],
+    )
+    bash_parent = _FakeProc(
+        11013,
+        ["/bin/bash", "-c",
+         f"playwright-cli --config {ini_section}"],
+    )
+    lease.acquire("human")
+    n = interrupt_unregistered_dock_cli(
+        processes=[
+            leftover_cli, leftover_mcp, leftover_dotted, leftover_auto,
+            leftover_pwtest, codegen, chrome_devtools, other_jar, remote,
+            broken_json, missing_cwd, pwtest_no_cwd, unpinned_fill,
+            bash_parent,
+        ],
+        chromium_pid=9999,
+        owner_daemon_pid=9998,
+    )
+    assert n == 5
+    assert leftover_cli.killed == 1
+    assert leftover_mcp.killed == 1
+    assert leftover_dotted.killed == 1
+    assert leftover_auto.killed == 1
+    assert leftover_pwtest.killed == 1
+    assert codegen.killed == 0
+    assert chrome_devtools.killed == 0
+    assert other_jar.killed == 0
+    assert remote.killed == 0
+    assert broken_json.killed == 0
+    assert missing_cwd.killed == 0
+    assert pwtest_no_cwd.killed == 0
     assert unpinned_fill.killed == 0
     assert bash_parent.killed == 0
 
