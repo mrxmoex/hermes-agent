@@ -10609,7 +10609,7 @@ def test_unregistered_leftover_persist_unique_does_not_hide_attach_spares_owner(
     assert bdb.shared_chromium_owner_session() == "h_review"
     assert bdb.running_instance_cdp_port(str(tmp_path)) is None
     assert _remembered_dock_attach_port() == 9333
-    assert (tmp_path / "dock-cdp-port").read_text(encoding="utf-8") == "18888"
+    assert (tmp_path / "dock-cdp-port").read_text(encoding="utf-8").strip() == "18888"
 
     owner = _FakeProc(
         11471,

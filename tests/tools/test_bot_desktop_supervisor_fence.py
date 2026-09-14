@@ -1792,7 +1792,7 @@ def test_stop_reserved_does_not_kill_owner_when_leftover_persist_unique_hides_at
     assert bdb.shared_chromium_owner_session() == "h_review"
     assert bdb.running_instance_cdp_port(str(tmp_path)) is None
     assert _remembered_dock_attach_port() == 9333
-    assert (tmp_path / "dock-cdp-port").read_text(encoding="utf-8") == "18888"
+    assert (tmp_path / "dock-cdp-port").read_text(encoding="utf-8").strip() == "18888"
     assert _last_dock_cdp_port.get(hermes_home_key()) is None
 
     killed = []

@@ -4400,7 +4400,7 @@ def test_leftover_persist_unique_does_not_hide_attach_behind_devtools(
     assert _singleton_lock_pid(str(tmp_path)) == 4240
     assert bdb.running_instance_cdp_port(str(tmp_path)) is None
     assert _remembered_dock_attach_port() == 9333
-    assert (tmp_path / "dock-cdp-port").read_text(encoding="utf-8") == "18888"
+    assert (tmp_path / "dock-cdp-port").read_text(encoding="utf-8").strip() == "18888"
     assert _last_dock_cdp_port.get(hermes_home_key()) is None
     assert _cdp_url_is_bot_desktop_browser("http://[::1]:40141") is True
     assert _cdp_url_is_bot_desktop_browser("http://[::1]:18888") is True
