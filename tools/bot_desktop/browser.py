@@ -851,6 +851,30 @@ def _this_jar_listen_connect_hosts(want: Optional[int]) -> Tuple[str, ...]:
     return _union_listen_hosts(_this_jar_listen_holders(want, user_data_dir))
 
 
+def dock_cdp_attach_target(port: int) -> str:
+    """CDP target for attaching to this jar's *port*. Family-correct.
+
+    Persist / ``running_instance_cdp_port`` are a port. Agent-browser
+    ``--cdp <port>`` is unknown-family (localhost / ``127.0.0.1``), so
+    a ``::1``-only dock plus a sibling on ``127.0.0.1:same`` attached
+    to the squat — leftover identity already rejects that family
+    (finding 145). Prefer a this-jar connect host. Empty hosts stay
+    a bare port (fixtures / unknown listen). No HTTP.
+    """
+    if not isinstance(port, int) or not (1 <= port <= 65535):
+        return ""
+    try:
+        hosts = _this_jar_listen_connect_hosts(port)
+    except Exception:
+        hosts = ()
+    if not hosts:
+        return str(port)
+    host = hosts[0]
+    if ":" in host and not host.startswith("["):
+        return f"http://[{host}]:{port}"
+    return f"http://{host}:{port}"
+
+
 def _this_jar_listens_on_port(want: Optional[int]) -> bool:
     """True when this profile's Chromium inode-listens on ``want``.
 

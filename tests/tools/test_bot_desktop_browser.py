@@ -8,6 +8,7 @@ import os
 import socket
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 from tools.bot_desktop import browser, runtime
@@ -1239,11 +1240,67 @@ def test_agent_attaches_to_human_started_browser(monkeypatch):
 
     monkeypatch.setattr(browser, "running_instance_cdp_port", lambda d, **kw: 41234)
     session._run_browser_command_unfenced("t", "open", ["https://x"], 10, None, "agent-browser", info)
+    # Unknown listen family stays a bare port (finding 167).
     assert argvs[-1][:5] == ["agent-browser", "--session", "h_abc", "--cdp", "41234"]
 
     monkeypatch.setattr(browser, "running_instance_cdp_port", lambda d, **kw: None)
     session._run_browser_command_unfenced("t", "open", ["https://x"], 10, None, "agent-browser", info)
     assert "--cdp" not in argvs[-1] and argvs[-1][:3] == ["agent-browser", "--session", "h_abc"]
+
+
+def test_agent_attach_uses_this_jar_listen_family(tmp_path, monkeypatch):
+    """Finding 167: ``--cdp <port>`` raced to the other loopback family's squat.
+
+    Persist / ``running_instance_cdp_port`` are a port. Agent-browser
+    treats a bare port as localhost / ``127.0.0.1``. A ``::1``-only
+    dock plus a sibling on ``127.0.0.1:same`` then attached to the
+    squat — leftover identity already rejects that family (finding
+    145). Attach with this jar's connect host. Empty hosts stay a
+    bare port. 9222 stays unknown.
+    """
+    from tools import browser_tool_session as session
+    from tools.browser_tool_session import _reset_dock_port_memory_for_tests
+
+    v6, v4, port, profile = _ipv6_only_dock(tmp_path, monkeypatch)
+    def _drain():
+        while True:
+            try:
+                conn, _ = v6.accept()
+                conn.close()
+            except OSError:
+                return
+    threading.Thread(target=_drain, daemon=True).start()
+    try:
+        _reset_dock_port_memory_for_tests()
+        assert browser.running_instance_cdp_port(str(profile)) == port
+        assert browser._this_jar_listen_connect_hosts(port) == ("::1",)
+        assert browser.dock_cdp_attach_target(port) == f"http://[::1]:{port}"
+        assert browser.dock_cdp_attach_target(9222) == "9222"
+
+        monkeypatch.setattr(runtime, "published_env", lambda: {"DISPLAY": ":37"})
+        monkeypatch.setattr(session._cloud, "_get_browser_engine", lambda: "auto")
+        monkeypatch.setattr(session._cloud, "_is_headed_mode", lambda: False)
+        monkeypatch.setattr(session, "_agent_browser_argv", lambda cmd: [cmd])
+        argvs: list = []
+
+        def spawn(task_id, session_info, cmd_parts, *rest):
+            argvs.append(cmd_parts)
+            return {"success": True}
+
+        monkeypatch.setattr(session, "_spawn_and_collect", spawn)
+        monkeypatch.setattr(session._lp, "_lightpanda_fallback_reason", lambda *a: None)
+        info = {"session_name": "h_abc", "cdp_url": None, "features": {"local": True}}
+        session._run_browser_command_unfenced(
+            "t", "open", ["https://x"], 10, None, "agent-browser", info,
+        )
+        assert argvs[-1][:5] == [
+            "agent-browser", "--session", "h_abc", "--cdp", f"http://[::1]:{port}",
+        ]
+        assert argvs[-1][4] != str(port)
+        assert "127.0.0.1" not in argvs[-1][4]
+    finally:
+        v6.close()
+        v4.close()
 
 
 def _ipv6_only_dock(tmp_path, monkeypatch):

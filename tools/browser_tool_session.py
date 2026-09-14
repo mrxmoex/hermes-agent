@@ -5246,7 +5246,10 @@ def _run_browser_command_unfenced(task_id: str, command: str, args: List[str], t
             # Browser first): a launch would be forwarded into it by Chromium's singleton and die without
             # a DevTools endpoint, so the session's daemon attaches to the port it advertises instead.
             # Same daemon (keyed by --session) either way, so snapshot refs stay valid across commands.
-            backend_args += ["--cdp", str(bd_port)]
+            # Persist is a port. ``--cdp <port>`` is unknown-family and races
+            # to a sibling squat on the other loopback (finding 167).
+            from tools.bot_desktop import browser as _bd_browser
+            backend_args += ["--cdp", _bd_browser.dock_cdp_attach_target(bd_port)]
         if _cloud._is_headed_mode():
             backend_args.append("--headed")
         if engine != "auto" and not _bt._is_camofox_mode():
