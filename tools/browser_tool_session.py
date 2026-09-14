@@ -5312,7 +5312,11 @@ def _remembered_dock_attach_port(*, exclude_session: Optional[str] = None) -> Op
     ``DevToolsActivePort`` is Chromium's current advertisement —
     prefer it when it differs, unless the lock pid still lists
     persist and not the file (file is then the inherited leftover
-    listen; persist is current chrome). Finding 178: a poisoned
+    listen; persist is current chrome). Finding 183: lock inherited
+    leftover DevTools fd so it lists persist chrome and the leftover
+    file. Persist unique + named several is leftover hiding chrome
+    — keep persist. Unique+unique and persist several stay 172.
+    Finding 178: a poisoned
     persist *file* (leftover helpers, not on the lock) must not
     hide lock-listed memory. ``remember_dock_cdp_port`` writes the
     file only, so pre-177 persist_live left ``dock-cdp-port`` on
@@ -5356,6 +5360,21 @@ def _remembered_dock_attach_port(*, exclude_session: Optional[str] = None) -> Op
                     lock_ports = _bd_browser._loopback_listen_ports_for_pid(pid)
                     if persist_first in lock_ports and named not in lock_ports:
                         prefer_named = False
+                    elif (
+                        persist_first in lock_ports
+                        and named in lock_ports
+                        and _bd_browser.leftover_helpers_hide_persist_chrome(
+                            persist_first, named, user_data_dir,
+                        )
+                    ):
+                        # Finding 183: lock inherited leftover
+                        # DevTools fd, so it lists persist chrome
+                        # and the leftover file. Finding 172 would
+                        # prefer the file (chrome-switch). Persist
+                        # unique + named several is leftover hiding
+                        # chrome — keep persist. Unique+unique and
+                        # persist several stay finding 172.
+                        prefer_named = False
                 elif listed == persist_first and listed != named:
                     # Finding 179: no this-jar lock pid. Finding 172
                     # would prefer leftover file-named helpers over
@@ -5366,8 +5385,10 @@ def _remembered_dock_attach_port(*, exclude_session: Optional[str] = None) -> Op
                     # then leftover DevTools. Prefer that persist.
                     # Finding 182: running_instance is the other
                     # live-stamp door and syncs the same way.
-                    # A different file-named live listen with
-                    # empty / leftover memory is still finding 172.
+                    # Finding 183: lock inherited leftover
+                    # DevTools fd is handled above. A different
+                    # file-named live listen with empty / leftover
+                    # memory is still finding 172.
                     try:
                         persist_file = _bd_browser.last_known_dock_cdp_port()
                     except Exception:

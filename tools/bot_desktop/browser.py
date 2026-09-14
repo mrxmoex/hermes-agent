@@ -808,16 +808,37 @@ def lock_listed_persist_port(user_data_dir: Optional[str] = None) -> Optional[in
                     named = int(port_line)
             except OSError:
                 named = None
-            if named is None or named == persist:
-                return None
-            try:
-                persist_n = len(_this_jar_listen_holders(persist, user_data_dir))
-                named_n = len(_this_jar_listen_holders(named, user_data_dir))
-            except Exception:
-                return None
-            if persist_n == 1 and named_n > 1:
+            if leftover_helpers_hide_persist_chrome(
+                persist, named, user_data_dir,
+            ):
                 return persist
     return None
+
+
+def leftover_helpers_hide_persist_chrome(
+    persist: Optional[int],
+    named: Optional[int],
+    user_data_dir: Optional[str] = None,
+) -> bool:
+    """True when persist is unique chrome and *named* is leftover helpers.
+
+    Finding 181 / 183: leftover ``DevToolsActivePort`` helpers (several
+    this-jar holders) must not hide persist chrome (unique holder).
+    Finding 172 chrome-switch is persist several + named unique.
+    Unique+unique is not a guess among ports. No HTTP.
+    """
+    if user_data_dir is None:
+        user_data_dir = str(profile_dir())
+    if not isinstance(persist, int) or not (1 <= persist <= 65535):
+        return False
+    if not isinstance(named, int) or not (1 <= named <= 65535) or named == persist:
+        return False
+    try:
+        persist_n = len(_this_jar_listen_holders(persist, user_data_dir))
+        named_n = len(_this_jar_listen_holders(named, user_data_dir))
+    except Exception:
+        return False
+    return persist_n == 1 and named_n > 1
 
 
 def running_instance_cdp_port(user_data_dir: str, *, exclude_session: Optional[str] = None) -> Optional[int]:
@@ -847,11 +868,18 @@ def running_instance_cdp_port(user_data_dir: str, *, exclude_session: Optional[s
     Finding 179: that persist may still be this-jar inode-listed
     after Take over unlinks ``SingletonLock``. Do not let 164
     overwrite that stamp with a stale ``DevToolsActivePort``
-    helpers still hold. Finding 182: ``remember_dock_cdp_port``
+    helpers still hold.     Finding 182: ``remember_dock_cdp_port``
     writes the file only. Agent attach calls this function
     without ``persist_live`` (180). Sync in-process memory on a
     live stamp so a later unlink cannot treat leftover memory
-    as lock-listed chrome.
+    as lock-listed chrome. Finding 183: lock inherited leftover
+    DevTools fd so the file port is also listed. File TCP then
+    stamped helpers over persist chrome (unique holder, several
+    leftover holders). Finding 172 chrome-switch (persist
+    several / named unique) still keeps the file. When file
+    TCP misses because leftover already holds that socket
+    (166), still try persist chrome — do not skip 174 just
+    because the lock also lists the leftover file.
     An instance
     agent-browser launched for ``exclude_session`` itself is reported as ``None``:
     its daemon already owns that browser, and handing it ``--cdp`` would make it
@@ -899,19 +927,30 @@ def running_instance_cdp_port(user_data_dir: str, *, exclude_session: Optional[s
             return None
         port = None
         lock_still_lists_file_port = False
-        if port_line.isdigit():
-            candidate = int(port_line)
+        file_port = int(port_line) if port_line.isdigit() else None
+        if file_port is not None:
             # File has no address and outlives a port switch. Trust it only
             # when this pid still holds that listen — otherwise a sibling
             # on the stale number is stamped as the dock (finding 144).
-            if candidate in _loopback_listen_ports_for_pid(pid):
+            if file_port in _loopback_listen_ports_for_pid(pid):
                 lock_still_lists_file_port = True
-                hosts = _listen_connect_hosts(pid, candidate)
-                if hosts and _cdp_port_reachable(candidate, hosts):
-                    port = candidate
+                hosts = _listen_connect_hosts(pid, file_port)
+                if hosts and _cdp_port_reachable(file_port, hosts):
+                    port = file_port
         lock_ports = _loopback_listen_ports_for_pid(pid)
         persist = lock_listed_persist_port(user_data_dir)
         persist_on_lock = persist is not None
+        file_hides_chrome = persist_on_lock and leftover_helpers_hide_persist_chrome(
+            persist, file_port, user_data_dir,
+        )
+        if port is not None and file_hides_chrome and persist != port:
+            # Finding 183: lock inherited leftover DevTools fd, so
+            # file TCP succeeds on helpers chrome still lists.
+            # Persist unique + named several is leftover hiding
+            # chrome — do not overwrite dock-cdp-port. Finding 172
+            # chrome-switch (persist several / named unique) keeps
+            # the file stamp.
+            port = None
         if port is None:
             recovered = _recover_cdp_port_from_singleton(user_data_dir, pid)
             if (
@@ -924,7 +963,7 @@ def running_instance_cdp_port(user_data_dir: str, *, exclude_session: Optional[s
         if (
             port is None
             and persist_on_lock
-            and not lock_still_lists_file_port
+            and (not lock_still_lists_file_port or file_hides_chrome)
         ):
             # Finding 174: unique-listen recover stays unknown when
             # Chromium has several specific loopbacks (finding 85).
@@ -934,8 +973,9 @@ def running_instance_cdp_port(user_data_dir: str, *, exclude_session: Optional[s
             # overwrote ``dock-cdp-port``. Finding 172's attach
             # tie-break never ran because recover / 164 succeeded.
             # Lock listing persist and the file is finding 172 (file
-            # TCP already tried). Do not shop helpers on the file
-            # while persist is still on this pid.
+            # TCP already tried) unless leftover helpers hide
+            # persist chrome (finding 183). Do not shop helpers on
+            # the file while persist is still on this pid.
             hosts = _listen_connect_hosts(pid, persist)
             if hosts and _cdp_port_reachable(persist, hosts):
                 port = persist
@@ -1135,6 +1175,10 @@ def persist_live_dock_cdp_port() -> Optional[int]:
     stamp succeeds. Finding 182: ``running_instance_cdp_port``
     is the other live-stamp door (agent attach) and syncs
     itself. A miss must not clobber chrome memory.
+    Finding 183: lock inherited leftover DevTools fd so
+    file TCP can succeed on helpers chrome still lists.
+    persist_live must not stamp those helpers over unique
+    persist chrome. Finding 172 chrome-switch stays.
     """
     try:
         port = running_instance_cdp_port(str(profile_dir()))
