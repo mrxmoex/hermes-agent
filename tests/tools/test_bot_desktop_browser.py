@@ -51041,6 +51041,1082 @@ def test_leftover_supervisor_parent_gggggggggggggggggggggggggggggggggggggggggggg
     assert _remembered_dock_attach_port() == 40141
 
 
+def test_leftover_supervisor_parent_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat_devtools_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_grandchild_persist_does_not_hide_sibling_chrome(
+    tmp_path, monkeypatch,
+):
+    """Finding 273: leftover supervisor leftover parent leftover parent leftover parent leftover supervisor hid sibling chrome.
+
+    leftover supervisor leftover parent leftover supervisor leftover
+    parent leftover supervisor leftover parent leftover supervisor
+    names this jar and leftover supervisor leftover parent leftover
+    supervisor leftover parent leftover supervisor leftover DevTools.
+    leftover daemon, leftover fill, leftover CRI, leftover supervisor,
+    leftover supervisor leftover parent leftover supervisor leftover
+    DevTools, and leftover supervisor leftover parent leftover
+    supervisor leftover parent leftover supervisor leftover DevTools.
+    leftover-outside leftover supervisor leftover parent leftover
+    parent leftover parent. leftover unique leftover parent leftover
+    children leftover children leftover children leftover children is
+    leftover supervisor leftover children leftover supervisor leftover
+    children leftover supervisor leftover children leftover daemon,
+    missed leftover daemon leftover children (chrome). Leftover python
+    leftover CRI's leftover child inherited leftover persist with
+    chrome. Persist / attach / skip-kill / Take over followed leftover
+    DevTools; chrome pid became None (``owner`` None) so Take over
+    tree-killed the Browser a human is typing into. One hop of leftover
+    unique leftover parent's leftover children leftover children leftover
+    children leftover children leftover children is leftover daemon
+    leftover children, not a leftover-holder leftover grandparent walk
+    of leftover fill. Leftover supervisor leftover parent leftover
+    parent leftover parent that does not name this jar stays 272.
+    Leftover python that inherited both leftover persist and chrome's
+    CDP stays 85. Leftover-only leftover supervisor leftover parent
+    leftover parent leftover supervisor plus leftover supervisor leftover
+    parent leftover supervisor plus leftover supervisor plus leftover
+    daemon plus leftover fill plus leftover CRI leftover DevTools plus
+    leftover python leftover persist leftover-shared stays 86. Leftover
+    fill great-grandchild leftover persist leftover-shared stays 86.
+    Cousin chrome under leftover CRI stays 86. Attach must not stamp
+    persist. ``remember()`` still does not update memory (finding 178).
+    Identity candidate order stays file-then-memory (finding 169).
+    """
+    from hermes_constants import hermes_home_key
+    from tools.browser_tool_session import (
+        _last_dock_cdp_port,
+        _remembered_dock_attach_port,
+        _reset_dock_port_memory_for_tests,
+    )
+
+    leftover_fill = 4242
+    leftover_cri = 4244
+    leftover_py = 4246
+    leftover_sup = 4290
+    leftover_root = 4280
+    leftover_parent = 4270
+    leftover_grand = 4260
+    leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat = 3610
+    leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat = 3620
+    leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat = 3630
+    leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat = 3640
+    leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat = 3650
+    leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat = 3660
+    leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat = 3670
+    leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat = 3680
+    leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat = 3690
+    leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggreat = 3700
+    leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggreat = 3710
+    leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggreat = 3720
+    leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggreat = 3730
+    leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggreat = 3740
+    leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggreat = 3750
+    leftover_gggggggggggggggggggggggggggggggggggggggggggggggggreat = 3760
+    leftover_ggggggggggggggggggggggggggggggggggggggggggggggggreat = 3770
+    leftover_gggggggggggggggggggggggggggggggggggggggggggggggreat = 3780
+    leftover_ggggggggggggggggggggggggggggggggggggggggggggggreat = 3790
+    leftover_gggggggggggggggggggggggggggggggggggggggggggggreat = 3800
+    leftover_ggggggggggggggggggggggggggggggggggggggggggggreat = 3810
+    leftover_gggggggggggggggggggggggggggggggggggggggggggreat = 3820
+    leftover_ggggggggggggggggggggggggggggggggggggggggggreat = 3830
+    leftover_gggggggggggggggggggggggggggggggggggggggggreat = 3840
+    leftover_ggggggggggggggggggggggggggggggggggggggggreat = 3850
+    leftover_gggggggggggggggggggggggggggggggggggggggreat = 3860
+    leftover_ggggggggggggggggggggggggggggggggggggggreat = 3870
+    leftover_gggggggggggggggggggggggggggggggggggggreat = 3880
+    leftover_ggggggggggggggggggggggggggggggggggggreat = 3890
+    leftover_gggggggggggggggggggggggggggggggggggreat = 3900
+    leftover_ggggggggggggggggggggggggggggggggggreat = 3910
+    leftover_gggggggggggggggggggggggggggggggggreat = 3920
+    leftover_ggggggggggggggggggggggggggggggggreat = 3930
+    leftover_gggggggggggggggggggggggggggggggreat = 3940
+    leftover_ggggggggggggggggggggggggggggggreat = 3950
+    leftover_gggggggggggggggggggggggggggggreat = 3960
+    leftover_ggggggggggggggggggggggggggggreat = 3970
+    leftover_gggggggggggggggggggggggggggreat = 3980
+    leftover_ggggggggggggggggggggggggggreat = 3990
+    leftover_gggggggggggggggggggggggggreat = 4000
+    leftover_ggggggggggggggggggggggggreat = 4010
+    leftover_gggggggggggggggggggggggreat = 4020
+    leftover_ggggggggggggggggggggggreat = 4030
+    leftover_gggggggggggggggggggggreat = 4040
+    leftover_ggggggggggggggggggggreat = 4050
+    leftover_gggggggggggggggggggreat = 4060
+    leftover_ggggggggggggggggggreat = 4070
+    leftover_gggggggggggggggggreat = 4080
+    leftover_ggggggggggggggggreat = 4090
+    leftover_gggggggggggggggreat = 4100
+    leftover_ggggggggggggggreat = 4110
+    leftover_gggggggggggggreat = 4120
+    leftover_ggggggggggggreat = 4130
+    leftover_gggggggggggreat = 4140
+    leftover_ggggggggggreat = 4150
+    leftover_gggggggggreat = 4160
+    leftover_ggggggggreat = 4170
+    leftover_gggggggreat = 4180
+    leftover_ggggggreat = 4190
+    leftover_gggggreat = 4200
+    leftover_ggggreat = 4210
+    leftover_gggreat = 4220
+    leftover_ggreat = 4230
+    leftover_great = 4250
+
+    monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path)
+    monkeypatch.setattr(browser, "profile_dir", lambda: tmp_path)
+    monkeypatch.setattr(browser, "_lock_pid", lambda d: None)
+    monkeypatch.setattr(
+        browser,
+        "_chromium_cmdline_tokens",
+        lambda pid: (
+            ["chrome", "--type=zygote", f"--user-data-dir={tmp_path}"]
+            if pid == 4241 else
+            ["chrome", "--type=utility", f"--user-data-dir={tmp_path}"]
+            if pid == 4245 else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_great else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_grand else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_parent else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_root else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_sup else
+            ["agent-browser", "daemon", f"--user-data-dir={tmp_path}"]
+            if pid == 4300 else
+            ["agent-browser", "fill", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_fill else
+            ["agent-browser", "cri", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_cri else
+            ["agent-browser", "python", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_py else
+            ["chrome", f"--user-data-dir={tmp_path}"]
+        ),
+    )
+    monkeypatch.setattr(
+        browser,
+        "_proc_ppid",
+        lambda pid: {
+            4240: 4300, 4241: 4240, 4245: 4241,
+            leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_ggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggreat: leftover_ggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggreat: leftover_ggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggreat: leftover_ggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggreat: leftover_ggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggreat: leftover_ggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggreat: leftover_ggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggreat: leftover_ggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggreat: leftover_ggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggreat: leftover_ggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggreat: leftover_ggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggreat: leftover_ggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggreat: leftover_ggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggreat, leftover_gggggggggggggggggggggreat: leftover_ggggggggggggggggggggggreat, leftover_ggggggggggggggggggggreat: leftover_gggggggggggggggggggggreat, leftover_gggggggggggggggggggreat: leftover_ggggggggggggggggggggreat, leftover_ggggggggggggggggggreat: leftover_gggggggggggggggggggreat, leftover_gggggggggggggggggreat: leftover_ggggggggggggggggggreat, leftover_ggggggggggggggggreat: leftover_gggggggggggggggggreat, leftover_gggggggggggggggreat: leftover_ggggggggggggggggreat, leftover_ggggggggggggggreat: leftover_gggggggggggggggreat, leftover_gggggggggggggreat: leftover_ggggggggggggggreat, leftover_ggggggggggggreat: leftover_gggggggggggggreat, leftover_gggggggggggreat: leftover_ggggggggggggreat, leftover_ggggggggggreat: leftover_gggggggggggreat, leftover_gggggggggreat: leftover_ggggggggggreat, leftover_ggggggggreat: leftover_gggggggggreat, leftover_gggggggreat: leftover_ggggggggreat, leftover_ggggggreat: leftover_gggggggreat, leftover_gggggreat: leftover_ggggggreat, leftover_ggggreat: leftover_gggggreat, leftover_gggreat: leftover_ggggreat, leftover_ggreat: leftover_gggreat, leftover_great: leftover_ggreat, leftover_grand: leftover_great, leftover_parent: leftover_grand, leftover_root: leftover_parent, leftover_sup: leftover_root, 4300: leftover_sup,
+            leftover_fill: 4300, leftover_cri: leftover_fill, leftover_py: leftover_cri,
+        }.get(pid),
+    )
+    monkeypatch.setattr(
+        browser,
+        "_launched_by_session",
+        lambda pid: "h_review" if pid == 4240 else None,
+    )
+    monkeypatch.setattr(browser, "_recover_cdp_port_from_singleton", lambda *a, **k: None)
+    monkeypatch.setattr(
+        browser, "_this_jar_children",
+        lambda parent, user_data_dir: (
+            {leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggreat} if parent == leftover_ggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggreat} if parent == leftover_gggggggggggggggggreat else (
+            {leftover_gggggggggggggggreat} if parent == leftover_ggggggggggggggggreat else (
+            {leftover_ggggggggggggggreat} if parent == leftover_gggggggggggggggreat else (
+            {leftover_gggggggggggggreat} if parent == leftover_ggggggggggggggreat else (
+            {leftover_ggggggggggggreat} if parent == leftover_gggggggggggggreat else (
+            {leftover_gggggggggggreat} if parent == leftover_ggggggggggggreat else (
+            {leftover_ggggggggggreat} if parent == leftover_gggggggggggreat else (
+            {leftover_gggggggggreat} if parent == leftover_ggggggggggreat else (
+            {leftover_ggggggggreat} if parent == leftover_gggggggggreat else (
+            {leftover_gggggggreat} if parent == leftover_ggggggggreat else (
+            {leftover_ggggggreat} if parent == leftover_gggggggreat else (
+            {leftover_gggggreat} if parent == leftover_ggggggreat else (
+            {leftover_ggggreat} if parent == leftover_gggggreat else (
+            {leftover_gggreat} if parent == leftover_ggggreat else (
+            {leftover_ggreat} if parent == leftover_gggreat else (
+            {leftover_great} if parent == leftover_ggreat else (
+            {leftover_grand} if parent == leftover_great else (
+            {leftover_parent} if parent == leftover_grand else (
+            {leftover_root} if parent == leftover_parent else (
+                {leftover_sup} if parent == leftover_root else (
+                    {4300} if parent == leftover_sup else (
+                        {4240, leftover_fill} if parent == 4300 else (
+                            {leftover_cri} if parent == leftover_fill else (
+                                {leftover_py} if parent == leftover_cri else set()
+                            )
+                            )
+                        )
+                    )
+                )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+        ),
+    )
+
+    def _inodes(port):
+        if port == 40141:
+            return {7: {"::1"}}
+        if port == 9333:
+            return {8: {"::1"}}
+        if port == 18888:
+            return {9: {"::1"}}
+        return {}
+
+    def _holders(want):
+        out = {}
+        if 7 in want:
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggreat] = {7}
+            out[leftover_ggggggggggggreat] = {7}
+            out[leftover_gggggggggggreat] = {7}
+            out[leftover_ggggggggggreat] = {7}
+            out[leftover_gggggggggreat] = {7}
+            out[leftover_ggggggggreat] = {7}
+            out[leftover_gggggggreat] = {7}
+            out[leftover_ggggggreat] = {7}
+            out[leftover_gggggreat] = {7}
+            out[leftover_ggggreat] = {7}
+            out[leftover_gggreat] = {7}
+            out[leftover_ggreat] = {7}
+            out[leftover_great] = {7}
+            out[leftover_grand] = {7}
+            out[leftover_parent] = {7}
+            out[leftover_root] = {7}
+            out[leftover_sup] = {7}
+            out[4300] = {7}
+            out[leftover_fill] = {7}
+            out[leftover_cri] = {7}
+        if 8 in want:
+            out[4240] = {8}
+            out[4241] = {8}
+            out[4245] = {8}
+        if 9 in want:
+            out[leftover_py] = {9}
+            out[4240] = out.get(4240, set()) | {9}
+        return out
+
+    monkeypatch.setattr(browser, "_loopback_listen_inodes_for_port", _inodes)
+    monkeypatch.setattr(browser, "_pids_holding_socket_inodes", _holders)
+    monkeypatch.setattr(
+        browser, "_loopback_listen_ports_for_pid",
+        lambda pid: {40141} if pid in {leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggreat, leftover_gggggggggggggggggggggreat, leftover_ggggggggggggggggggggreat, leftover_gggggggggggggggggggreat, leftover_ggggggggggggggggggreat, leftover_gggggggggggggggggreat, leftover_ggggggggggggggggreat, leftover_gggggggggggggggreat, leftover_ggggggggggggggreat, leftover_gggggggggggggreat, leftover_ggggggggggggreat, leftover_gggggggggggreat, leftover_ggggggggggreat, leftover_gggggggggreat, leftover_ggggggggreat, leftover_gggggggreat, leftover_ggggggreat, leftover_gggggreat, leftover_ggggreat, leftover_gggreat, leftover_ggreat, leftover_great, leftover_grand, leftover_parent, leftover_root, leftover_sup, 4300, leftover_fill, leftover_cri} else (
+            {18888} if pid == leftover_py else (
+                {9333, 18888} if pid == 4240 else (
+                    {9333} if pid in {4241, 4245} else set()
+                )
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        browser, "_loopback_listen_targets_for_pid",
+        lambda pid: {("::1", 40141)} if pid in {leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggreat, leftover_gggggggggggggggggggggreat, leftover_ggggggggggggggggggggreat, leftover_gggggggggggggggggggreat, leftover_ggggggggggggggggggreat, leftover_gggggggggggggggggreat, leftover_ggggggggggggggggreat, leftover_gggggggggggggggreat, leftover_ggggggggggggggreat, leftover_gggggggggggggreat, leftover_ggggggggggggreat, leftover_gggggggggggreat, leftover_ggggggggggreat, leftover_gggggggggreat, leftover_ggggggggreat, leftover_gggggggreat, leftover_ggggggreat, leftover_gggggreat, leftover_ggggreat, leftover_gggreat, leftover_ggreat, leftover_great, leftover_grand, leftover_parent, leftover_root, leftover_sup, 4300, leftover_fill, leftover_cri} else (
+            {("::1", 18888)} if pid == leftover_py else (
+                {("::1", 9333), ("::1", 18888)} if pid == 4240 else (
+                    {("::1", 9333)} if pid in {4241, 4245} else set()
+                )
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        browser,
+        "_cdp_port_reachable",
+        lambda port, hosts: port in (9333, 40141, 18888) and "::1" in hosts,
+    )
+    monkeypatch.setattr(browser, "_configured_cdp_override_url", lambda: "")
+    (tmp_path / "DevToolsActivePort").write_text(
+        "40141\n/devtools/browser/abc\n", encoding="utf-8",
+    )
+
+    _reset_dock_port_memory_for_tests()
+    (tmp_path / "dock-cdp-port").write_text("18888\n", encoding="utf-8")
+    assert browser._this_jar_holder_pids(40141, str(tmp_path)) == {
+        leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggreat, leftover_gggggggggggggggggggggreat, leftover_ggggggggggggggggggggreat, leftover_gggggggggggggggggggreat, leftover_ggggggggggggggggggreat, leftover_gggggggggggggggggreat, leftover_ggggggggggggggggreat, leftover_gggggggggggggggreat, leftover_ggggggggggggggreat, leftover_gggggggggggggreat, leftover_ggggggggggggreat, leftover_gggggggggggreat, leftover_ggggggggggreat, leftover_gggggggggreat, leftover_ggggggggreat, leftover_gggggggreat, leftover_ggggggreat, leftover_gggggreat, leftover_ggggreat, leftover_gggreat, leftover_ggreat, leftover_great, leftover_grand, leftover_parent, leftover_root, leftover_sup, 4300, leftover_fill, leftover_cri,
+    }
+    assert browser._this_jar_holder_pids(18888, str(tmp_path)) == {leftover_py, 4240}
+    assert browser._this_jar_holder_pids(9333, str(tmp_path)) == {4240, 4241, 4245}
+    assert browser._pid_is_chromium_browser(leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat) is False
+    assert browser._pid_is_chromium_browser(leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat) is False
+    assert browser._pid_is_chromium_browser(leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat) is False
+    assert browser._pid_is_chromium_browser(leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat) is False
+    assert browser._pid_is_chromium_browser(leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat) is False
+    assert browser._pid_is_chromium_browser(leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat) is False
+    assert browser._pid_is_chromium_browser(leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat) is False
+    assert browser._pid_is_chromium_browser(leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat) is False
+    assert browser._pid_is_chromium_browser(leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat) is False
+    assert browser._pid_is_chromium_browser(leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggreat) is False
+    assert browser._pid_is_chromium_browser(leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggreat) is False
+    assert browser._pid_is_chromium_browser(leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggreat) is False
+    assert browser._pid_is_chromium_browser(leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggreat) is False
+    assert browser._pid_is_chromium_browser(leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggreat) is False
+    assert browser._pid_is_chromium_browser(leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggreat) is False
+    assert browser._pid_is_chromium_browser(leftover_gggggggggggggggggggggggggggggggggggggggggggggggggreat) is False
+    assert browser._pid_is_chromium_browser(leftover_ggggggggggggggggggggggggggggggggggggggggggggggggreat) is False
+    assert browser._pid_is_chromium_browser(leftover_gggggggggggggggggggggggggggggggggggggggggggggggreat) is False
+    assert browser._pid_is_chromium_browser(leftover_ggggggggggggggggggggggggggggggggggggggggggggggreat) is False
+    assert browser._pid_is_chromium_browser(leftover_gggggggggggggggggggggggggggggggggggggggggggggreat) is False
+    assert browser._pid_is_chromium_browser(leftover_ggggggggggggggggggggggggggggggggggggggggggggreat) is False
+    assert browser._pid_is_chromium_browser(leftover_gggggggggggggggggggggggggggggggggggggggggggreat) is False
+    assert browser._pid_is_chromium_browser(leftover_ggggggggggggggggggggggggggggggggggggggggggreat) is False
+    assert browser._pid_is_chromium_browser(leftover_gggggggggggggggggggggggggggggggggggggggggreat) is False
+    assert browser._pid_is_chromium_browser(leftover_ggggggggggggggggggggggggggggggggggggggggreat) is False
+    assert browser._pid_is_chromium_browser(leftover_gggggggggggggggggggggggggggggggggggggggreat) is False
+    assert browser._pid_is_chromium_browser(leftover_ggggggggggggggggggggggggggggggggggggggreat) is False
+    assert browser._pid_is_chromium_browser(leftover_gggggggggggggggggggggggggggggggggggggreat) is False
+    assert browser._pid_is_chromium_browser(leftover_ggggggggggggggggggggggggggggggggggggreat) is False
+    assert browser._pid_is_chromium_browser(leftover_gggggggggggggggggggggggggggggggggggreat) is False
+    assert browser._pid_is_chromium_browser(leftover_ggggggggggggggggggggggggggggggggggreat) is False
+    assert browser._pid_is_chromium_browser(leftover_gggggggggggggggggggggggggggggggggreat) is False
+    assert browser._pid_is_chromium_browser(leftover_ggggggggggggggggggggggggggggggggreat) is False
+    assert browser._pid_is_chromium_browser(leftover_gggggggggggggggggggggggggggggggreat) is False
+    assert browser._pid_is_chromium_browser(leftover_ggggggggggggggggggggggggggggggreat) is False
+    assert browser._pid_is_chromium_browser(leftover_gggggggggggggggggggggggggggggreat) is False
+    assert browser._pid_is_chromium_browser(leftover_ggggggggggggggggggggggggggggreat) is False
+    assert browser._pid_is_chromium_browser(leftover_gggggggggggggggggggggggggggreat) is False
+    assert browser._pid_is_chromium_browser(leftover_ggggggggggggggggggggggggggreat) is False
+    assert browser._pid_is_chromium_browser(leftover_gggggggggggggggggggggggggreat) is False
+    assert browser._pid_is_chromium_browser(leftover_ggggggggggggggggggggggggreat) is False
+    assert browser._pid_is_chromium_browser(leftover_gggggggggggggggggggggggreat) is False
+    assert browser._pid_is_chromium_browser(leftover_ggggggggggggggggggggggreat) is False
+    assert browser._pid_is_chromium_browser(leftover_gggggggggggggggggggggreat) is False
+    assert browser._pid_is_chromium_browser(leftover_ggggggggggggggggggggreat) is False
+    assert browser._pid_is_chromium_browser(leftover_gggggggggggggggggggreat) is False
+    assert browser._pid_is_chromium_browser(leftover_ggggggggggggggggggreat) is False
+    assert browser._pid_is_chromium_browser(leftover_gggggggggggggggggreat) is False
+    assert browser._pid_is_chromium_browser(leftover_ggggggggggggggggreat) is False
+    assert browser._pid_is_chromium_browser(leftover_gggggggggggggggreat) is False
+    assert browser._pid_is_chromium_browser(leftover_ggggggggggggggreat) is False
+    assert browser._pid_is_chromium_browser(leftover_gggggggggggggreat) is False
+    assert browser._pid_is_chromium_browser(leftover_ggggggggggggreat) is False
+    assert browser._pid_is_chromium_browser(leftover_gggggggggggreat) is False
+    assert browser._pid_is_chromium_browser(leftover_ggggggggggreat) is False
+    assert browser._pid_is_chromium_browser(leftover_gggggggggreat) is False
+    assert browser._pid_is_chromium_browser(leftover_ggggggggreat) is False
+    assert browser._pid_is_chromium_browser(leftover_gggggggreat) is False
+    assert browser._pid_is_chromium_browser(leftover_ggggggreat) is False
+    assert browser._pid_is_chromium_browser(leftover_gggggreat) is False
+    assert browser._pid_is_chromium_browser(leftover_ggggreat) is False
+    assert browser._pid_is_chromium_browser(leftover_gggreat) is False
+    assert browser._pid_is_chromium_browser(leftover_ggreat) is False
+    assert browser._pid_is_chromium_browser(leftover_great) is False
+    assert browser._pid_is_chromium_browser(leftover_grand) is False
+    assert browser._pid_is_chromium_browser(leftover_parent) is False
+    assert browser._pid_is_chromium_browser(leftover_root) is False
+    assert browser._pid_is_chromium_browser(leftover_sup) is False
+    assert browser._pid_is_chromium_browser(4300) is False
+    assert browser._proc_ppid(leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat) == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat
+    assert browser._proc_ppid(leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat) == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat
+    assert browser._proc_ppid(leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat) == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat
+    assert browser._proc_ppid(leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat) == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat
+    assert browser._proc_ppid(leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat) == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat
+    assert browser._proc_ppid(leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat) == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat
+    assert browser._proc_ppid(leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat) == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat
+    assert browser._proc_ppid(leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat) == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat
+    assert browser._proc_ppid(leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggreat) == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat
+    assert browser._proc_ppid(leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggreat) == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggreat
+    assert browser._proc_ppid(leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggreat) == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggreat
+    assert browser._proc_ppid(leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggreat) == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggreat
+    assert browser._proc_ppid(leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggreat) == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggreat
+    assert browser._proc_ppid(leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggreat) == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggreat
+    assert browser._proc_ppid(leftover_gggggggggggggggggggggggggggggggggggggggggggggggggreat) == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggreat
+    assert browser._proc_ppid(leftover_ggggggggggggggggggggggggggggggggggggggggggggggggreat) == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggreat
+    assert browser._proc_ppid(leftover_gggggggggggggggggggggggggggggggggggggggggggggggreat) == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggreat
+    assert browser._proc_ppid(leftover_ggggggggggggggggggggggggggggggggggggggggggggggreat) == leftover_gggggggggggggggggggggggggggggggggggggggggggggggreat
+    assert browser._proc_ppid(leftover_gggggggggggggggggggggggggggggggggggggggggggggreat) == leftover_ggggggggggggggggggggggggggggggggggggggggggggggreat
+    assert browser._proc_ppid(leftover_ggggggggggggggggggggggggggggggggggggggggggggreat) == leftover_gggggggggggggggggggggggggggggggggggggggggggggreat
+    assert browser._proc_ppid(leftover_gggggggggggggggggggggggggggggggggggggggggggreat) == leftover_ggggggggggggggggggggggggggggggggggggggggggggreat
+    assert browser._proc_ppid(leftover_ggggggggggggggggggggggggggggggggggggggggggreat) == leftover_gggggggggggggggggggggggggggggggggggggggggggreat
+    assert browser._proc_ppid(leftover_gggggggggggggggggggggggggggggggggggggggggreat) == leftover_ggggggggggggggggggggggggggggggggggggggggggreat
+    assert browser._proc_ppid(leftover_ggggggggggggggggggggggggggggggggggggggggreat) == leftover_gggggggggggggggggggggggggggggggggggggggggreat
+    assert browser._proc_ppid(leftover_gggggggggggggggggggggggggggggggggggggggreat) == leftover_ggggggggggggggggggggggggggggggggggggggggreat
+    assert browser._proc_ppid(leftover_ggggggggggggggggggggggggggggggggggggggreat) == leftover_gggggggggggggggggggggggggggggggggggggggreat
+    assert browser._proc_ppid(leftover_gggggggggggggggggggggggggggggggggggggreat) == leftover_ggggggggggggggggggggggggggggggggggggggreat
+    assert browser._proc_ppid(leftover_ggggggggggggggggggggggggggggggggggggreat) == leftover_gggggggggggggggggggggggggggggggggggggreat
+    assert browser._proc_ppid(leftover_gggggggggggggggggggggggggggggggggggreat) == leftover_ggggggggggggggggggggggggggggggggggggreat
+    assert browser._proc_ppid(leftover_ggggggggggggggggggggggggggggggggggreat) == leftover_gggggggggggggggggggggggggggggggggggreat
+    assert browser._proc_ppid(leftover_gggggggggggggggggggggggggggggggggreat) == leftover_ggggggggggggggggggggggggggggggggggreat
+    assert browser._proc_ppid(leftover_ggggggggggggggggggggggggggggggggreat) == leftover_gggggggggggggggggggggggggggggggggreat
+    assert browser._proc_ppid(leftover_gggggggggggggggggggggggggggggggreat) == leftover_ggggggggggggggggggggggggggggggggreat
+    assert browser._proc_ppid(leftover_ggggggggggggggggggggggggggggggreat) == leftover_gggggggggggggggggggggggggggggggreat
+    assert browser._proc_ppid(leftover_gggggggggggggggggggggggggggggreat) == leftover_ggggggggggggggggggggggggggggggreat
+    assert browser._proc_ppid(leftover_ggggggggggggggggggggggggggggreat) == leftover_gggggggggggggggggggggggggggggreat
+    assert browser._proc_ppid(leftover_gggggggggggggggggggggggggggreat) == leftover_ggggggggggggggggggggggggggggreat
+    assert browser._proc_ppid(leftover_ggggggggggggggggggggggggggreat) == leftover_gggggggggggggggggggggggggggreat
+    assert browser._proc_ppid(leftover_gggggggggggggggggggggggggreat) == leftover_ggggggggggggggggggggggggggreat
+    assert browser._proc_ppid(leftover_ggggggggggggggggggggggggreat) == leftover_gggggggggggggggggggggggggreat
+    assert browser._proc_ppid(leftover_gggggggggggggggggggggggreat) == leftover_ggggggggggggggggggggggggreat
+    assert browser._proc_ppid(leftover_ggggggggggggggggggggggreat) == leftover_gggggggggggggggggggggggreat
+    assert browser._proc_ppid(leftover_gggggggggggggggggggggreat) == leftover_ggggggggggggggggggggggreat
+    assert browser._proc_ppid(leftover_ggggggggggggggggggggreat) == leftover_gggggggggggggggggggggreat
+    assert browser._proc_ppid(leftover_gggggggggggggggggggreat) == leftover_ggggggggggggggggggggreat
+    assert browser._proc_ppid(leftover_ggggggggggggggggggreat) == leftover_gggggggggggggggggggreat
+    assert browser._proc_ppid(leftover_gggggggggggggggggreat) == leftover_ggggggggggggggggggreat
+    assert browser._proc_ppid(leftover_ggggggggggggggggreat) == leftover_gggggggggggggggggreat
+    assert browser._proc_ppid(leftover_gggggggggggggggreat) == leftover_ggggggggggggggggreat
+    assert browser._proc_ppid(leftover_ggggggggggggggreat) == leftover_gggggggggggggggreat
+    assert browser._proc_ppid(leftover_gggggggggggggreat) == leftover_ggggggggggggggreat
+    assert browser._proc_ppid(leftover_ggggggggggggreat) == leftover_gggggggggggggreat
+    assert browser._proc_ppid(leftover_gggggggggggreat) == leftover_ggggggggggggreat
+    assert browser._proc_ppid(leftover_ggggggggggreat) == leftover_gggggggggggreat
+    assert browser._proc_ppid(leftover_gggggggggreat) == leftover_ggggggggggreat
+    assert browser._proc_ppid(leftover_ggggggggreat) == leftover_gggggggggreat
+    assert browser._proc_ppid(leftover_gggggggreat) == leftover_ggggggggreat
+    assert browser._proc_ppid(leftover_ggggggreat) == leftover_gggggggreat
+    assert browser._proc_ppid(leftover_gggggreat) == leftover_ggggggreat
+    assert browser._proc_ppid(leftover_ggggreat) == leftover_gggggreat
+    assert browser._proc_ppid(leftover_gggreat) == leftover_ggggreat
+    assert browser._proc_ppid(leftover_ggreat) == leftover_gggreat
+    assert browser._proc_ppid(leftover_great) == leftover_ggreat
+    assert browser._proc_ppid(leftover_grand) == leftover_great
+    assert browser._proc_ppid(leftover_parent) == leftover_grand
+    assert browser._proc_ppid(leftover_root) == leftover_parent
+    assert browser._proc_ppid(leftover_sup) == leftover_root
+    assert browser._proc_ppid(4300) == leftover_sup
+    assert browser._unique_this_jar_parent(
+        {leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggreat, leftover_gggggggggggggggggggggreat, leftover_ggggggggggggggggggggreat, leftover_gggggggggggggggggggreat, leftover_ggggggggggggggggggreat, leftover_gggggggggggggggggreat, leftover_ggggggggggggggggreat, leftover_gggggggggggggggreat, leftover_ggggggggggggggreat, leftover_gggggggggggggreat, leftover_ggggggggggggreat, leftover_gggggggggggreat, leftover_ggggggggggreat, leftover_gggggggggreat, leftover_ggggggggreat, leftover_gggggggreat, leftover_ggggggreat, leftover_gggggreat, leftover_ggggreat, leftover_gggreat, leftover_ggreat, leftover_great, leftover_grand, leftover_parent, leftover_root, leftover_sup, 4300, leftover_fill, leftover_cri}, str(tmp_path),
+    ) == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat
+    assert browser.unique_lock_chrome_hidden_by_leftover_file(
+        40141, str(tmp_path),
+    ) == 9333
+    assert browser.lock_listed_persist_port() == 9333
+    assert browser._this_jar_chromium_pid(str(tmp_path)) == 4240
+    assert browser.shared_chromium_owner_session() == "h_review"
+    assert _remembered_dock_attach_port() == 9333
+    assert (tmp_path / "dock-cdp-port").read_text(encoding="utf-8").strip() == "18888"
+    assert browser.running_instance_cdp_port(str(tmp_path)) == 9333
+    assert _remembered_dock_attach_port() == 9333
+    assert browser.persist_live_dock_cdp_port() == 9333
+    assert (tmp_path / "dock-cdp-port").read_text(encoding="utf-8") == "9333"
+    assert _last_dock_cdp_port.get(hermes_home_key()) == 9333
+
+    def _both(want):
+        out = {}
+        if 7 in want:
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggreat] = {7}
+            out[leftover_ggggggggggggreat] = {7}
+            out[leftover_gggggggggggreat] = {7}
+            out[leftover_ggggggggggreat] = {7}
+            out[leftover_gggggggggreat] = {7}
+            out[leftover_ggggggggreat] = {7}
+            out[leftover_gggggggreat] = {7}
+            out[leftover_ggggggreat] = {7}
+            out[leftover_gggggreat] = {7}
+            out[leftover_ggggreat] = {7}
+            out[leftover_gggreat] = {7}
+            out[leftover_ggreat] = {7}
+            out[leftover_great] = {7}
+            out[leftover_grand] = {7}
+            out[leftover_parent] = {7}
+            out[leftover_root] = {7}
+            out[leftover_sup] = {7}
+            out[4300] = {7}
+            out[leftover_fill] = {7}
+            out[leftover_cri] = {7}
+        if 8 in want:
+            out[4240] = {8}
+            out[4241] = {8}
+            out[4245] = {8}
+            out[leftover_py] = {8}
+        if 9 in want:
+            out[leftover_py] = out.get(leftover_py, set()) | {9}
+            out[4240] = out.get(4240, set()) | {9}
+        return out
+
+    monkeypatch.setattr(browser, "_pids_holding_socket_inodes", _both)
+    monkeypatch.setattr(
+        browser, "_loopback_listen_ports_for_pid",
+        lambda pid: {40141} if pid in {leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggreat, leftover_gggggggggggggggggggggreat, leftover_ggggggggggggggggggggreat, leftover_gggggggggggggggggggreat, leftover_ggggggggggggggggggreat, leftover_gggggggggggggggggreat, leftover_ggggggggggggggggreat, leftover_gggggggggggggggreat, leftover_ggggggggggggggreat, leftover_gggggggggggggreat, leftover_ggggggggggggreat, leftover_gggggggggggreat, leftover_ggggggggggreat, leftover_gggggggggreat, leftover_ggggggggreat, leftover_gggggggreat, leftover_ggggggreat, leftover_gggggreat, leftover_ggggreat, leftover_gggreat, leftover_ggreat, leftover_great, leftover_grand, leftover_parent, leftover_root, leftover_sup, 4300, leftover_fill, leftover_cri} else (
+            {9333, 18888} if pid == leftover_py else (
+                {9333, 18888} if pid == 4240 else (
+                    {9333} if pid in {4241, 4245} else set()
+                )
+            )
+        ),
+    )
+    _reset_dock_port_memory_for_tests()
+    (tmp_path / "dock-cdp-port").write_text("18888\n", encoding="utf-8")
+    assert browser.unique_lock_chrome_hidden_by_leftover_file(
+        40141, str(tmp_path),
+    ) is None
+    assert browser.lock_listed_persist_port() is None
+    assert browser._this_jar_chromium_pid(str(tmp_path)) is None
+
+    def _leftover_only(want):
+        out = {}
+        if 7 in want:
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggreat] = {7}
+            out[leftover_ggggggggggggreat] = {7}
+            out[leftover_gggggggggggreat] = {7}
+            out[leftover_ggggggggggreat] = {7}
+            out[leftover_gggggggggreat] = {7}
+            out[leftover_ggggggggreat] = {7}
+            out[leftover_gggggggreat] = {7}
+            out[leftover_ggggggreat] = {7}
+            out[leftover_gggggreat] = {7}
+            out[leftover_ggggreat] = {7}
+            out[leftover_gggreat] = {7}
+            out[leftover_ggreat] = {7}
+            out[leftover_great] = {7}
+            out[leftover_grand] = {7}
+            out[leftover_parent] = {7}
+            out[leftover_root] = {7}
+            out[leftover_sup] = {7}
+            out[4300] = {7}
+            out[leftover_fill] = {7}
+            out[leftover_cri] = {7}
+        if 9 in want:
+            out[leftover_py] = {9}
+            out[leftover_cri] = out.get(leftover_cri, set()) | {9}
+        return out
+
+    monkeypatch.setattr(browser, "_pids_holding_socket_inodes", _leftover_only)
+    monkeypatch.setattr(
+        browser, "_this_jar_children",
+        lambda parent, user_data_dir: (
+            {leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggreat} if parent == leftover_ggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggreat} if parent == leftover_gggggggggggggggggreat else (
+            {leftover_gggggggggggggggreat} if parent == leftover_ggggggggggggggggreat else (
+            {leftover_ggggggggggggggreat} if parent == leftover_gggggggggggggggreat else (
+            {leftover_gggggggggggggreat} if parent == leftover_ggggggggggggggreat else (
+            {leftover_ggggggggggggreat} if parent == leftover_gggggggggggggreat else (
+            {leftover_gggggggggggreat} if parent == leftover_ggggggggggggreat else (
+            {leftover_ggggggggggreat} if parent == leftover_gggggggggggreat else (
+            {leftover_gggggggggreat} if parent == leftover_ggggggggggreat else (
+            {leftover_ggggggggreat} if parent == leftover_gggggggggreat else (
+            {leftover_gggggggreat} if parent == leftover_ggggggggreat else (
+            {leftover_ggggggreat} if parent == leftover_gggggggreat else (
+            {leftover_gggggreat} if parent == leftover_ggggggreat else (
+            {leftover_ggggreat} if parent == leftover_gggggreat else (
+            {leftover_gggreat} if parent == leftover_ggggreat else (
+            {leftover_ggreat} if parent == leftover_gggreat else (
+            {leftover_great} if parent == leftover_ggreat else (
+            {leftover_grand} if parent == leftover_great else (
+            {leftover_parent} if parent == leftover_grand else (
+            {leftover_root} if parent == leftover_parent else (
+                {leftover_sup} if parent == leftover_root else (
+                    {4300} if parent == leftover_sup else (
+                        {leftover_fill} if parent == 4300 else (
+                            {leftover_cri} if parent == leftover_fill else (
+                                {leftover_py} if parent == leftover_cri else set()
+                            )
+                            )
+                        )
+                    )
+                )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        browser, "_loopback_listen_ports_for_pid",
+        lambda pid: {40141, 18888} if pid == leftover_cri else (
+            {40141} if pid in {leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggreat, leftover_gggggggggggggggggggggreat, leftover_ggggggggggggggggggggreat, leftover_gggggggggggggggggggreat, leftover_ggggggggggggggggggreat, leftover_gggggggggggggggggreat, leftover_ggggggggggggggggreat, leftover_gggggggggggggggreat, leftover_ggggggggggggggreat, leftover_gggggggggggggreat, leftover_ggggggggggggreat, leftover_gggggggggggreat, leftover_ggggggggggreat, leftover_gggggggggreat, leftover_ggggggggreat, leftover_gggggggreat, leftover_ggggggreat, leftover_gggggreat, leftover_ggggreat, leftover_gggreat, leftover_ggreat, leftover_great, leftover_grand, leftover_parent, leftover_root, leftover_sup, 4300, leftover_fill} else (
+                {18888} if pid == leftover_py else set()
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        browser,
+        "_cdp_port_reachable",
+        lambda port, hosts: port in (40141, 18888) and "::1" in hosts,
+    )
+    _reset_dock_port_memory_for_tests()
+    (tmp_path / "dock-cdp-port").write_text("18888\n", encoding="utf-8")
+    assert browser._unique_this_jar_parent(
+        {leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggreat, leftover_gggggggggggggggggggggreat, leftover_ggggggggggggggggggggreat, leftover_gggggggggggggggggggreat, leftover_ggggggggggggggggggreat, leftover_gggggggggggggggggreat, leftover_ggggggggggggggggreat, leftover_gggggggggggggggreat, leftover_ggggggggggggggreat, leftover_gggggggggggggreat, leftover_ggggggggggggreat, leftover_gggggggggggreat, leftover_ggggggggggreat, leftover_gggggggggreat, leftover_ggggggggreat, leftover_gggggggreat, leftover_ggggggreat, leftover_gggggreat, leftover_ggggreat, leftover_gggreat, leftover_ggreat, leftover_great, leftover_grand, leftover_parent, leftover_root, leftover_sup, 4300, leftover_fill, leftover_cri}, str(tmp_path),
+    ) == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat
+    assert browser.unique_lock_chrome_hidden_by_leftover_file(
+        40141, str(tmp_path),
+    ) is None
+    assert browser.lock_listed_persist_port() is None
+    assert browser._this_jar_chromium_pid(str(tmp_path)) is None
+    assert browser.running_instance_cdp_port(str(tmp_path)) == 40141
+    assert _remembered_dock_attach_port() == 40141
+
+
 def test_lock_pid_dead_family_does_not_shop_holder_squat(tmp_path, monkeypatch):
     """Finding 165: lock pid still lists the file port; its family is dead.
 
