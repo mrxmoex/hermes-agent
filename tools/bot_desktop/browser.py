@@ -1307,69 +1307,35 @@ def _append_this_jar_children_and_grandchildren(
     leftover parent leftover parent leftover parent leftover parent
     that does not name this jar stays 210. Leftover fill
     great-grandchild leftover persist leftover-shared stays 86.
-    Cousin chrome under leftover CRI stays 86.
+    Cousin chrome under leftover CRI stays 86. Finding 215: leftover
+    unique leftover parent leftover children leftover children leftover
+    children leftover children leftover children leftover children leftover
+    children leftover children leftover children leftover children leftover
+    children is leftover daemon leftover children. Nested hop ``for``
+    blocks hit Python's compile limit; a bounded leftover unique leftover
+    parent leftover children frontier is the same walk, not leftover-holder
+    leftover grandparent walk of leftover fill. Leftover supervisor leftover
+    parent leftover parent leftover parent leftover parent leftover parent
+    leftover parent leftover parent leftover parent leftover parent that
+    does not name this jar stays 214.
     """
-    try:
-        kids = _this_jar_children(parent, user_data_dir)
-    except Exception:
-        return
-    for child in kids:
-        if child not in scan_pids:
-            scan_pids.append(child)
-        try:
-            for grandchild in _this_jar_children(child, user_data_dir):
-                if grandchild not in scan_pids:
-                    scan_pids.append(grandchild)
-                try:
-                    for great in _this_jar_children(grandchild, user_data_dir):
-                        if great not in scan_pids:
-                            scan_pids.append(great)
-                        try:
-                            for ggreat in _this_jar_children(great, user_data_dir):
-                                if ggreat not in scan_pids:
-                                    scan_pids.append(ggreat)
-                                try:
-                                    for gggreat in _this_jar_children(ggreat, user_data_dir):
-                                        if gggreat not in scan_pids:
-                                            scan_pids.append(gggreat)
-                                        try:
-                                            for ggggreat in _this_jar_children(gggreat, user_data_dir):
-                                                if ggggreat not in scan_pids:
-                                                    scan_pids.append(ggggreat)
-                                                try:
-                                                    for gggggreat in _this_jar_children(ggggreat, user_data_dir):
-                                                        if gggggreat not in scan_pids:
-                                                            scan_pids.append(gggggreat)
-                                                        try:
-                                                            for hop8 in _this_jar_children(gggggreat, user_data_dir):
-                                                                if hop8 not in scan_pids:
-                                                                    scan_pids.append(hop8)
-                                                                try:
-                                                                    for hop9 in _this_jar_children(hop8, user_data_dir):
-                                                                        if hop9 not in scan_pids:
-                                                                            scan_pids.append(hop9)
-                                                                        try:
-                                                                            for hop10 in _this_jar_children(hop9, user_data_dir):
-                                                                                if hop10 not in scan_pids:
-                                                                                    scan_pids.append(hop10)
-                                                                        except Exception:
-                                                                            continue
-                                                                except Exception:
-                                                                    continue
-                                                        except Exception:
-                                                            continue
-                                                except Exception:
-                                                    continue
-                                        except Exception:
-                                            continue
-                                except Exception:
-                                    continue
-                        except Exception:
-                            continue
-                except Exception:
-                    continue
-        except Exception:
-            continue
+    # Finding 215: eleven leftover unique leftover parent leftover children
+    # hops reach leftover daemon leftover children (chrome).
+    frontier = [parent]
+    for _hop in range(11):
+        nxt: list[int] = []
+        for pid in frontier:
+            try:
+                kids = _this_jar_children(pid, user_data_dir)
+            except Exception:
+                continue
+            for child in kids:
+                if child not in scan_pids:
+                    scan_pids.append(child)
+                nxt.append(child)
+        frontier = nxt
+        if not frontier:
+            break
 
 
 def _leftover_or_chrome_family_holds(
