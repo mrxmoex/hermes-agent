@@ -1311,18 +1311,22 @@ def _append_this_jar_children_and_grandchildren(
     unique leftover parent leftover children leftover children leftover
     children leftover children leftover children leftover children leftover
     children leftover children leftover children leftover children leftover
-    children is leftover daemon leftover children. Nested hop ``for``
-    blocks hit Python's compile limit; a bounded leftover unique leftover
-    parent leftover children frontier is the same walk, not leftover-holder
-    leftover grandparent walk of leftover fill. Leftover supervisor leftover
+    children is leftover daemon leftover children. Finding 216: leftover
+    unique leftover parent leftover children leftover children leftover
+    children leftover children leftover children leftover children leftover
+    children leftover children leftover children leftover children leftover
+    children leftover children is leftover daemon leftover children. Nested
+    hop ``for`` blocks hit Python's compile limit; a bounded leftover unique
+    leftover parent leftover children frontier is the same walk, not
+    leftover-holder leftover grandparent walk of leftover fill. Leftover
+    supervisor leftover parent leftover parent leftover parent leftover
     parent leftover parent leftover parent leftover parent leftover parent
-    leftover parent leftover parent leftover parent leftover parent that
-    does not name this jar stays 214.
+    leftover parent leftover parent that does not name this jar stays 215.
     """
-    # Finding 215: eleven leftover unique leftover parent leftover children
+    # Finding 216: twelve leftover unique leftover parent leftover children
     # hops reach leftover daemon leftover children (chrome).
     frontier = [parent]
-    for _hop in range(11):
+    for _hop in range(12):
         nxt: list[int] = []
         for pid in frontier:
             try:
