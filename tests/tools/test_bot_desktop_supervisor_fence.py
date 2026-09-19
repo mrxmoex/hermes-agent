@@ -12357,6 +12357,375 @@ def test_stop_reserved_does_not_kill_owner_when_leftover_supervisor_parent_ggggg
         bt._active_sessions.clear()
         bt._active_sessions.update(saved)
 
+def test_stop_reserved_does_not_kill_owner_when_leftover_supervisor_parent_gggggggggggggggggggggggggggggggreat_devtools_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_grandchild_persist(
+    monkeypatch, tmp_path,
+):
+    """Finding 240: leftover supervisor leftover parent leftover parent leftover parent leftover supervisor hid sibling chrome.
+
+    leftover supervisor leftover parent leftover supervisor leftover
+    parent leftover supervisor names this jar. leftover daemon,
+    leftover fill, leftover CRI, leftover supervisor, and leftover
+    supervisor leftover parent leftover supervisor leftover DevTools.
+    leftover-outside leftover supervisor leftover parent leftover
+    parent. leftover unique leftover parent leftover children leftover
+    children leftover children is leftover supervisor leftover children
+    leftover supervisor leftover children leftover daemon, missed
+    leftover daemon leftover children (chrome). Leftover python
+    leftover CRI's leftover child inherited leftover persist with
+    chrome. Take over treated chrome pid None as leftover and
+    tree-killed the Browser a human is typing into. Sibling chrome
+    keeps that daemon reserved.
+    """
+    import tools.bot_desktop.browser as bdb
+    from hermes_constants import hermes_home_key
+    from tools import browser_tool as bt
+    from tools.browser_tool_session import _last_dock_cdp_port
+    from tools.browser_tool_supervisor_lease import stop_reserved_supervisors
+
+    leftover_fill = 4242
+    leftover_cri = 4244
+    leftover_py = 4246
+    leftover_sup = 4290
+    leftover_root = 4280
+    leftover_parent = 4270
+    leftover_grand = 4260
+    leftover_gggggggggggggggggggggggggggggggreat = 3940
+    leftover_ggggggggggggggggggggggggggggggreat = 3950
+    leftover_gggggggggggggggggggggggggggggreat = 3960
+    leftover_ggggggggggggggggggggggggggggreat = 3970
+    leftover_gggggggggggggggggggggggggggreat = 3980
+    leftover_ggggggggggggggggggggggggggreat = 3990
+    leftover_gggggggggggggggggggggggggreat = 4000
+    leftover_ggggggggggggggggggggggggreat = 4010
+    leftover_gggggggggggggggggggggggreat = 4020
+    leftover_ggggggggggggggggggggggreat = 4030
+    leftover_gggggggggggggggggggggreat = 4040
+    leftover_ggggggggggggggggggggreat = 4050
+    leftover_gggggggggggggggggggreat = 4060
+    leftover_ggggggggggggggggggreat = 4070
+    leftover_gggggggggggggggggreat = 4080
+    leftover_ggggggggggggggggreat = 4090
+    leftover_gggggggggggggggreat = 4100
+    leftover_ggggggggggggggreat = 4110
+    leftover_gggggggggggggreat = 4120
+    leftover_ggggggggggggreat = 4130
+    leftover_gggggggggggreat = 4140
+    leftover_ggggggggggreat = 4150
+    leftover_gggggggggreat = 4160
+    leftover_ggggggggreat = 4170
+    leftover_gggggggreat = 4180
+    leftover_ggggggreat = 4190
+    leftover_gggggreat = 4200
+    leftover_ggggreat = 4210
+    leftover_gggreat = 4220
+    leftover_ggreat = 4230
+    leftover_great = 4250
+
+    monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path)
+    monkeypatch.setattr(bdb, "profile_dir", lambda: tmp_path)
+    monkeypatch.setattr(bdb, "_lock_pid", lambda d: None)
+    monkeypatch.setattr(
+        bdb,
+        "_chromium_cmdline_tokens",
+        lambda pid: (
+            ["chrome", "--type=zygote", f"--user-data-dir={tmp_path}"]
+            if pid == 4241 else
+            ["chrome", "--type=utility", f"--user-data-dir={tmp_path}"]
+            if pid == 4245 else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_great else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_grand else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_parent else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_root else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_sup else
+            ["agent-browser", "daemon", f"--user-data-dir={tmp_path}"]
+            if pid == 4300 else
+            ["agent-browser", "fill", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_fill else
+            ["agent-browser", "cri", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_cri else
+            ["agent-browser", "python", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_py else
+            ["chrome", f"--user-data-dir={tmp_path}"]
+        ),
+    )
+    monkeypatch.setattr(
+        bdb,
+        "_proc_ppid",
+        lambda pid: {
+            4240: 4300, 4241: 4240, 4245: 4241,
+            leftover_ggggggggggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggreat: leftover_ggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggreat: leftover_ggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggreat: leftover_ggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggreat: leftover_ggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggreat, leftover_gggggggggggggggggggggreat: leftover_ggggggggggggggggggggggreat, leftover_ggggggggggggggggggggreat: leftover_gggggggggggggggggggggreat, leftover_gggggggggggggggggggreat: leftover_ggggggggggggggggggggreat, leftover_ggggggggggggggggggreat: leftover_gggggggggggggggggggreat, leftover_gggggggggggggggggreat: leftover_ggggggggggggggggggreat, leftover_ggggggggggggggggreat: leftover_gggggggggggggggggreat, leftover_gggggggggggggggreat: leftover_ggggggggggggggggreat, leftover_ggggggggggggggreat: leftover_gggggggggggggggreat, leftover_gggggggggggggreat: leftover_ggggggggggggggreat, leftover_ggggggggggggreat: leftover_gggggggggggggreat, leftover_gggggggggggreat: leftover_ggggggggggggreat, leftover_ggggggggggreat: leftover_gggggggggggreat, leftover_gggggggggreat: leftover_ggggggggggreat, leftover_ggggggggreat: leftover_gggggggggreat, leftover_gggggggreat: leftover_ggggggggreat, leftover_ggggggreat: leftover_gggggggreat, leftover_gggggreat: leftover_ggggggreat, leftover_ggggreat: leftover_gggggreat, leftover_gggreat: leftover_ggggreat, leftover_ggreat: leftover_gggreat, leftover_great: leftover_ggreat, leftover_grand: leftover_great, leftover_parent: leftover_grand, leftover_root: leftover_parent, leftover_sup: leftover_root, 4300: leftover_sup,
+            leftover_fill: 4300, leftover_cri: leftover_fill, leftover_py: leftover_cri,
+        }.get(pid),
+    )
+    monkeypatch.setattr(
+        bdb,
+        "_launched_by_session",
+        lambda pid: "h_review" if pid == 4240 else None,
+    )
+    monkeypatch.setattr(bdb, "_recover_cdp_port_from_singleton", lambda *a, **k: None)
+    monkeypatch.setattr(
+        bdb, "_this_jar_children",
+        lambda parent, user_data_dir: (
+            {leftover_ggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggreat} if parent == leftover_ggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggreat} if parent == leftover_gggggggggggggggggreat else (
+            {leftover_gggggggggggggggreat} if parent == leftover_ggggggggggggggggreat else (
+            {leftover_ggggggggggggggreat} if parent == leftover_gggggggggggggggreat else (
+            {leftover_gggggggggggggreat} if parent == leftover_ggggggggggggggreat else (
+            {leftover_ggggggggggggreat} if parent == leftover_gggggggggggggreat else (
+            {leftover_gggggggggggreat} if parent == leftover_ggggggggggggreat else (
+            {leftover_ggggggggggreat} if parent == leftover_gggggggggggreat else (
+            {leftover_gggggggggreat} if parent == leftover_ggggggggggreat else (
+            {leftover_ggggggggreat} if parent == leftover_gggggggggreat else (
+            {leftover_gggggggreat} if parent == leftover_ggggggggreat else (
+            {leftover_ggggggreat} if parent == leftover_gggggggreat else (
+            {leftover_gggggreat} if parent == leftover_ggggggreat else (
+            {leftover_ggggreat} if parent == leftover_gggggreat else (
+            {leftover_gggreat} if parent == leftover_ggggreat else (
+            {leftover_ggreat} if parent == leftover_gggreat else (
+            {leftover_great} if parent == leftover_ggreat else (
+            {leftover_grand} if parent == leftover_great else (
+            {leftover_parent} if parent == leftover_grand else (
+            {leftover_root} if parent == leftover_parent else (
+                {leftover_sup} if parent == leftover_root else (
+                    {4300} if parent == leftover_sup else (
+                        {4240, leftover_fill} if parent == 4300 else (
+                            {leftover_cri} if parent == leftover_fill else (
+                                {leftover_py} if parent == leftover_cri else set()
+                            )
+                            )
+                        )
+                    )
+                )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+        ),
+    )
+
+    def _inodes(port):
+        if port == 40141:
+            return {7: {"::1"}}
+        if port == 9333:
+            return {8: {"::1"}}
+        if port == 18888:
+            return {9: {"::1"}}
+        return {}
+
+    def _holders(want):
+        out = {}
+        if 7 in want:
+            out[leftover_ggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggreat] = {7}
+            out[leftover_ggggggggggggreat] = {7}
+            out[leftover_gggggggggggreat] = {7}
+            out[leftover_ggggggggggreat] = {7}
+            out[leftover_gggggggggreat] = {7}
+            out[leftover_ggggggggreat] = {7}
+            out[leftover_gggggggreat] = {7}
+            out[leftover_ggggggreat] = {7}
+            out[leftover_gggggreat] = {7}
+            out[leftover_ggggreat] = {7}
+            out[leftover_gggreat] = {7}
+            out[leftover_ggreat] = {7}
+            out[leftover_great] = {7}
+            out[leftover_grand] = {7}
+            out[leftover_parent] = {7}
+            out[leftover_root] = {7}
+            out[leftover_sup] = {7}
+            out[4300] = {7}
+            out[leftover_fill] = {7}
+            out[leftover_cri] = {7}
+        if 8 in want:
+            out[4240] = {8}
+            out[4241] = {8}
+            out[4245] = {8}
+        if 9 in want:
+            out[leftover_py] = {9}
+            out[4240] = out.get(4240, set()) | {9}
+        return out
+
+    monkeypatch.setattr(bdb, "_loopback_listen_inodes_for_port", _inodes)
+    monkeypatch.setattr(bdb, "_pids_holding_socket_inodes", _holders)
+    monkeypatch.setattr(
+        bdb, "_loopback_listen_ports_for_pid",
+        lambda pid: {40141} if pid in {leftover_ggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggreat, leftover_gggggggggggggggggggggreat, leftover_ggggggggggggggggggggreat, leftover_gggggggggggggggggggreat, leftover_ggggggggggggggggggreat, leftover_gggggggggggggggggreat, leftover_ggggggggggggggggreat, leftover_gggggggggggggggreat, leftover_ggggggggggggggreat, leftover_gggggggggggggreat, leftover_ggggggggggggreat, leftover_gggggggggggreat, leftover_ggggggggggreat, leftover_gggggggggreat, leftover_ggggggggreat, leftover_gggggggreat, leftover_ggggggreat, leftover_gggggreat, leftover_ggggreat, leftover_gggreat, leftover_ggreat, leftover_great, leftover_grand, leftover_parent, leftover_root, leftover_sup, 4300, leftover_fill, leftover_cri} else (
+            {18888} if pid == leftover_py else (
+                {9333, 18888} if pid == 4240 else (
+                    {9333} if pid in {4241, 4245} else set()
+                )
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        bdb, "_loopback_listen_targets_for_pid",
+        lambda pid: {("::1", 40141)} if pid in {leftover_ggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggreat, leftover_gggggggggggggggggggggreat, leftover_ggggggggggggggggggggreat, leftover_gggggggggggggggggggreat, leftover_ggggggggggggggggggreat, leftover_gggggggggggggggggreat, leftover_ggggggggggggggggreat, leftover_gggggggggggggggreat, leftover_ggggggggggggggreat, leftover_gggggggggggggreat, leftover_ggggggggggggreat, leftover_gggggggggggreat, leftover_ggggggggggreat, leftover_gggggggggreat, leftover_ggggggggreat, leftover_gggggggreat, leftover_ggggggreat, leftover_gggggreat, leftover_ggggreat, leftover_gggreat, leftover_ggreat, leftover_great, leftover_grand, leftover_parent, leftover_root, leftover_sup, 4300, leftover_fill, leftover_cri} else (
+            {("::1", 18888)} if pid == leftover_py else (
+                {("::1", 9333), ("::1", 18888)} if pid == 4240 else (
+                    {("::1", 9333)} if pid in {4241, 4245} else set()
+                )
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        bdb,
+        "_cdp_port_reachable",
+        lambda port, hosts: port in (9333, 40141, 18888) and "::1" in hosts,
+    )
+    monkeypatch.setattr(bdb, "_configured_cdp_override_url", lambda: "")
+    (tmp_path / "DevToolsActivePort").write_text(
+        "40141\n/devtools/browser/abc\n", encoding="utf-8",
+    )
+    (tmp_path / "dock-cdp-port").write_text("18888\n", encoding="utf-8")
+    assert bdb._unique_this_jar_parent(
+        {leftover_ggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggreat, leftover_gggggggggggggggggggggreat, leftover_ggggggggggggggggggggreat, leftover_gggggggggggggggggggreat, leftover_ggggggggggggggggggreat, leftover_gggggggggggggggggreat, leftover_ggggggggggggggggreat, leftover_gggggggggggggggreat, leftover_ggggggggggggggreat, leftover_gggggggggggggreat, leftover_ggggggggggggreat, leftover_gggggggggggreat, leftover_ggggggggggreat, leftover_gggggggggreat, leftover_ggggggggreat, leftover_gggggggreat, leftover_ggggggreat, leftover_gggggreat, leftover_ggggreat, leftover_gggreat, leftover_ggreat, leftover_great, leftover_grand, leftover_parent, leftover_root, leftover_sup, 4300, leftover_fill, leftover_cri}, str(tmp_path),
+    ) == leftover_gggggggggggggggggggggggggggggggreat
+    assert bdb.lock_listed_persist_port() == 9333
+    assert bdb._this_jar_chromium_pid(str(tmp_path)) == 4240
+    assert bdb.shared_chromium_owner_session() == "h_review"
+    assert _last_dock_cdp_port.get(hermes_home_key()) is None
+
+    killed = []
+    monkeypatch.setattr(
+        "tools.browser_tool_lifecycle._kill_verified_daemon",
+        lambda socket_dir, name: killed.append(name) or True,
+    )
+    saved = bt._active_sessions.copy()
+    try:
+        bt._active_sessions.clear()
+        bt._active_sessions["review"] = {
+            "session_name": "h_review", "features": {"local": True},
+        }
+        lease.acquire("human-viewer")
+        stop_reserved_supervisors()
+        assert killed == []
+        assert "review" in bt._active_sessions
+    finally:
+        bt._active_sessions.clear()
+        bt._active_sessions.update(saved)
+
 def test_stop_reserved_does_not_kill_daemon_that_spawned_dock_chromium(monkeypatch):
     """Tree-killing the parent daemon would kill the Browser the human is using."""
     import tools.bot_desktop.browser as bdb
