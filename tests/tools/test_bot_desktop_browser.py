@@ -11431,7 +11431,7 @@ def test_leftover_supervisor_parent_gggggggggggreat_devtools_great_great_great_g
     _reset_dock_port_memory_for_tests()
     (tmp_path / "dock-cdp-port").write_text("18888\n", encoding="utf-8")
     assert browser._this_jar_holder_pids(40141, str(tmp_path)) == {
-        leftover_gggggggggreat, leftover_ggggggggreat, leftover_gggggggreat, leftover_ggggggreat, leftover_gggggreat, leftover_ggggreat, leftover_gggreat, leftover_ggreat, leftover_great, leftover_grand, leftover_parent, leftover_root, leftover_sup, 4300, leftover_fill, leftover_cri,
+        leftover_ggggggggggreat, leftover_gggggggggreat, leftover_ggggggggreat, leftover_gggggggreat, leftover_ggggggreat, leftover_gggggreat, leftover_ggggreat, leftover_gggreat, leftover_ggreat, leftover_great, leftover_grand, leftover_parent, leftover_root, leftover_sup, 4300, leftover_fill, leftover_cri,
     }
     assert browser._this_jar_holder_pids(18888, str(tmp_path)) == {leftover_py, 4240}
     assert browser._this_jar_holder_pids(9333, str(tmp_path)) == {4240, 4241, 4245}
