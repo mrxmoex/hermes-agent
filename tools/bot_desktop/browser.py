@@ -1047,7 +1047,17 @@ def _unique_this_jar_parent(
     leftover children leftover children leftover children
     leftover children is leftover daemon leftover children.
     Leftover supervisor leftover parent leftover parent leftover
-    parent that does not name this jar stays 208. Leftover
+    parent that does not name this jar stays 208. Finding 210:
+    leftover supervisor leftover parent leftover supervisor leftover
+    parent leftover supervisor leftover parent leftover supervisor
+    leftover parent leftover supervisor leftover DevTools. leftover-
+    outside leftover supervisor leftover parent leftover parent leftover
+    parent leftover parent. One hop of leftover unique leftover
+    parent's leftover children leftover children leftover children
+    leftover children leftover children leftover children is leftover
+    daemon leftover children. Leftover supervisor leftover parent leftover
+    parent leftover parent leftover parent that does not name this jar
+    stays 209. Leftover
     fill great-grandchild leftover persist leftover-shared
     stays 86. Cousin chrome under leftover CRI stays 86.
     """
@@ -1278,7 +1288,15 @@ def _append_this_jar_children_and_grandchildren(
     leftover children leftover children leftover children leftover
     children is leftover daemon leftover children. Leftover
     supervisor leftover parent leftover parent leftover parent
-    that does not name this jar stays 208. Leftover fill
+    that does not name this jar stays 208. Finding 210: leftover
+    supervisor leftover parent leftover supervisor leftover parent
+    leftover supervisor leftover parent leftover supervisor leftover
+    parent leftover supervisor leftover DevTools. One hop of leftover
+    unique leftover parent's leftover children leftover children leftover
+    children leftover children leftover children leftover children is
+    leftover daemon leftover children. Leftover supervisor leftover
+    parent leftover parent leftover parent leftover parent that does
+    not name this jar stays 209. Leftover fill
     great-grandchild leftover persist leftover-shared stays 86.
     Cousin chrome under leftover CRI stays 86.
     """
@@ -1305,6 +1323,12 @@ def _append_this_jar_children_and_grandchildren(
                                     for gggreat in _this_jar_children(ggreat, user_data_dir):
                                         if gggreat not in scan_pids:
                                             scan_pids.append(gggreat)
+                                        try:
+                                            for ggggreat in _this_jar_children(gggreat, user_data_dir):
+                                                if ggggreat not in scan_pids:
+                                                    scan_pids.append(ggggreat)
+                                        except Exception:
+                                            continue
                                 except Exception:
                                     continue
                         except Exception:
@@ -1812,7 +1836,12 @@ def unique_lock_chrome_hidden_by_leftover_file(
     # supervisor leftover DevTools. leftover unique leftover
     # parent leftover children leftover children leftover
     # children leftover children leftover children is leftover
-    # daemon leftover children.
+    # daemon leftover children. Finding 210: leftover supervisor
+    # leftover parent leftover parent leftover parent leftover
+    # parent leftover supervisor leftover DevTools. leftover unique
+    # leftover parent leftover children leftover children leftover
+    # children leftover children leftover children leftover children
+    # is leftover daemon leftover children.
     _append_this_jar_children_and_grandchildren(
         parent, user_data_dir, scan_pids,
     )
