@@ -1340,7 +1340,7 @@ def _append_this_jar_children_and_grandchildren(
     leftover parent
     leftover parent
     leftover parent
-    that does not name this jar stays 338.
+    that does not name this jar stays 339.
     Finding 226: leftover unique leftover parent leftover children leftover
     children leftover children leftover children leftover children leftover
     children leftover children leftover children leftover children leftover
@@ -1498,11 +1498,12 @@ def _append_this_jar_children_and_grandchildren(
     Finding 337: leftover unique leftover parent leftover children hops reach leftover daemon leftover children.
     Finding 338: leftover unique leftover parent leftover children hops reach leftover daemon leftover children.
     Finding 339: leftover unique leftover parent leftover children hops reach leftover daemon leftover children.
+    Finding 340: leftover unique leftover parent leftover children hops reach leftover daemon leftover children.
     """
-    # Finding 339: one-hundred-thirty-five leftover unique leftover parent leftover children
+    # Finding 340: one-hundred-thirty-six leftover unique leftover parent leftover children
     # hops reach leftover daemon leftover children (chrome).
     frontier = [parent]
-    for _hop in range(135):
+    for _hop in range(136):
         nxt: list[int] = []
         for pid in frontier:
             try:
