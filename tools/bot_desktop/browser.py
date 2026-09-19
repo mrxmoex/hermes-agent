@@ -1018,9 +1018,22 @@ def _unique_this_jar_parent(
     leftover children leftover children leftover children is
     leftover daemon leftover children. Leftover supervisor
     leftover parent that does not name this jar stays 206.
-    Leftover fill great-grandchild leftover persist leftover-
-    shared stays 86. Cousin chrome under leftover CRI stays
-    86.
+    Finding 208: leftover supervisor leftover parent leftover
+    supervisor leftover parent leftover supervisor names this
+    jar and leftover supervisor leftover parent leftover
+    supervisor leftover DevTools. leftover-outside leftover
+    supervisor leftover parent leftover parent. leftover
+    unique leftover parent leftover children leftover children
+    leftover children is leftover supervisor leftover children
+    leftover supervisor leftover children leftover daemon,
+    missed leftover daemon leftover children (chrome). One hop
+    of leftover unique leftover parent's leftover children
+    leftover children leftover children leftover children is
+    leftover daemon leftover children. Leftover supervisor
+    leftover parent leftover parent that does not name this
+    jar stays 207. Leftover fill great-grandchild leftover
+    persist leftover-shared stays 86. Cousin chrome under
+    leftover CRI stays 86.
     """
     parents: list[int] = []
     for holder_pid in holder_pids:
@@ -1229,7 +1242,20 @@ def _append_this_jar_children_and_grandchildren(
     One hop of leftover unique leftover parent's leftover children
     leftover children leftover children is leftover daemon leftover
     children. Leftover supervisor leftover parent that does not
-    name this jar stays 206. Leftover fill great-grandchild
+    name this jar stays 206. Finding 208: leftover supervisor
+    leftover parent leftover supervisor leftover parent leftover
+    supervisor names this jar and leftover supervisor leftover
+    parent leftover supervisor leftover DevTools. leftover-
+    outside leftover supervisor leftover parent leftover parent.
+    leftover unique leftover parent leftover children leftover
+    children leftover children is leftover supervisor leftover
+    children leftover supervisor leftover children leftover
+    daemon, missed leftover daemon leftover children (chrome).
+    One hop of leftover unique leftover parent's leftover
+    children leftover children leftover children leftover
+    children is leftover daemon leftover children. Leftover
+    supervisor leftover parent leftover parent that does not
+    name this jar stays 207. Leftover fill great-grandchild
     leftover persist leftover-shared stays 86. Cousin chrome
     under leftover CRI stays 86.
     """
@@ -1248,6 +1274,12 @@ def _append_this_jar_children_and_grandchildren(
                     for great in _this_jar_children(grandchild, user_data_dir):
                         if great not in scan_pids:
                             scan_pids.append(great)
+                        try:
+                            for ggreat in _this_jar_children(great, user_data_dir):
+                                if ggreat not in scan_pids:
+                                    scan_pids.append(ggreat)
+                        except Exception:
+                            continue
                 except Exception:
                     continue
         except Exception:
@@ -1552,7 +1584,13 @@ def unique_lock_chrome_hidden_by_leftover_file(
     leftover children leftover children leftover children is
     leftover daemon leftover children. Leftover supervisor
     leftover parent that does not name this jar stays 206.
-    Leftover CRI that does not name this
+    Finding 208: leftover supervisor leftover parent leftover
+    supervisor leftover parent leftover supervisor leftover
+    DevTools. leftover unique leftover parent leftover children
+    leftover children leftover children leftover children is
+    leftover daemon leftover children. Leftover supervisor
+    leftover parent leftover parent that does not name this
+    jar stays 207. Leftover CRI that does not name this
     jar stays 86. Leftover CRI inherited chrome CDP plus
     leftover python leftover persist stays 85.
     Finding 185: when the lock is gone,
