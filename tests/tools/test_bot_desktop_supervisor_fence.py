@@ -49581,6 +49581,771 @@ def test_stop_reserved_does_not_kill_owner_when_leftover_supervisor_parent_ggggg
         bt._active_sessions.clear()
         bt._active_sessions.update(saved)
 
+def test_stop_reserved_does_not_kill_owner_when_leftover_supervisor_parent_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat_devtools_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_grandchild_persist(
+    monkeypatch, tmp_path,
+):
+    """Finding 306: leftover supervisor leftover parent leftover parent leftover parent leftover supervisor hid sibling chrome.
+
+    leftover supervisor leftover parent leftover supervisor leftover
+    parent leftover supervisor names this jar. leftover daemon,
+    leftover fill, leftover CRI, leftover supervisor, and leftover
+    supervisor leftover parent leftover supervisor leftover DevTools.
+    leftover-outside leftover supervisor leftover parent leftover
+    parent. leftover unique leftover parent leftover children leftover
+    children leftover children is leftover supervisor leftover children
+    leftover supervisor leftover children leftover daemon, missed
+    leftover daemon leftover children (chrome). Leftover python
+    leftover CRI's leftover child inherited leftover persist with
+    chrome. Take over treated chrome pid None as leftover and
+    tree-killed the Browser a human is typing into. Sibling chrome
+    keeps that daemon reserved.
+    """
+    import tools.bot_desktop.browser as bdb
+    from hermes_constants import hermes_home_key
+    from tools import browser_tool as bt
+    from tools.browser_tool_session import _last_dock_cdp_port
+    from tools.browser_tool_supervisor_lease import stop_reserved_supervisors
+
+    leftover_fill = 4242
+    leftover_cri = 4244
+    leftover_py = 4246
+    leftover_sup = 4290
+    leftover_root = 4280
+    leftover_parent = 4270
+    leftover_grand = 4260
+    leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat = 3280
+    leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat = 3290
+    leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat = 3300
+    leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat = 3310
+    leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat = 3320
+    leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat = 3330
+    leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat = 3340
+    leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat = 3350
+    leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat = 3360
+    leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat = 3370
+    leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat = 3380
+    leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat = 3390
+    leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat = 3400
+    leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat = 3410
+    leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat = 3420
+    leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat = 3430
+    leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat = 3440
+    leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat = 3450
+    leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat = 3460
+    leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat = 3470
+    leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat = 3480
+    leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat = 3490
+    leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat = 3500
+    leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat = 3510
+    leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat = 3520
+    leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat = 3530
+    leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat = 3540
+    leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat = 3550
+    leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat = 3560
+    leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat = 3570
+    leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat = 3580
+    leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat = 3590
+    leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat = 3600
+    leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat = 3610
+    leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat = 3620
+    leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat = 3630
+    leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat = 3640
+    leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat = 3650
+    leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat = 3660
+    leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat = 3670
+    leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat = 3680
+    leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat = 3690
+    leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggreat = 3700
+    leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggreat = 3710
+    leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggreat = 3720
+    leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggreat = 3730
+    leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggreat = 3740
+    leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggreat = 3750
+    leftover_gggggggggggggggggggggggggggggggggggggggggggggggggreat = 3760
+    leftover_ggggggggggggggggggggggggggggggggggggggggggggggggreat = 3770
+    leftover_gggggggggggggggggggggggggggggggggggggggggggggggreat = 3780
+    leftover_ggggggggggggggggggggggggggggggggggggggggggggggreat = 3790
+    leftover_gggggggggggggggggggggggggggggggggggggggggggggreat = 3800
+    leftover_ggggggggggggggggggggggggggggggggggggggggggggreat = 3810
+    leftover_gggggggggggggggggggggggggggggggggggggggggggreat = 3820
+    leftover_ggggggggggggggggggggggggggggggggggggggggggreat = 3830
+    leftover_gggggggggggggggggggggggggggggggggggggggggreat = 3840
+    leftover_ggggggggggggggggggggggggggggggggggggggggreat = 3850
+    leftover_gggggggggggggggggggggggggggggggggggggggreat = 3860
+    leftover_ggggggggggggggggggggggggggggggggggggggreat = 3870
+    leftover_gggggggggggggggggggggggggggggggggggggreat = 3880
+    leftover_ggggggggggggggggggggggggggggggggggggreat = 3890
+    leftover_gggggggggggggggggggggggggggggggggggreat = 3900
+    leftover_ggggggggggggggggggggggggggggggggggreat = 3910
+    leftover_gggggggggggggggggggggggggggggggggreat = 3920
+    leftover_ggggggggggggggggggggggggggggggggreat = 3930
+    leftover_gggggggggggggggggggggggggggggggreat = 3940
+    leftover_ggggggggggggggggggggggggggggggreat = 3950
+    leftover_gggggggggggggggggggggggggggggreat = 3960
+    leftover_ggggggggggggggggggggggggggggreat = 3970
+    leftover_gggggggggggggggggggggggggggreat = 3980
+    leftover_ggggggggggggggggggggggggggreat = 3990
+    leftover_gggggggggggggggggggggggggreat = 4000
+    leftover_ggggggggggggggggggggggggreat = 4010
+    leftover_gggggggggggggggggggggggreat = 4020
+    leftover_ggggggggggggggggggggggreat = 4030
+    leftover_gggggggggggggggggggggreat = 4040
+    leftover_ggggggggggggggggggggreat = 4050
+    leftover_gggggggggggggggggggreat = 4060
+    leftover_ggggggggggggggggggreat = 4070
+    leftover_gggggggggggggggggreat = 4080
+    leftover_ggggggggggggggggreat = 4090
+    leftover_gggggggggggggggreat = 4100
+    leftover_ggggggggggggggreat = 4110
+    leftover_gggggggggggggreat = 4120
+    leftover_ggggggggggggreat = 4130
+    leftover_gggggggggggreat = 4140
+    leftover_ggggggggggreat = 4150
+    leftover_gggggggggreat = 4160
+    leftover_ggggggggreat = 4170
+    leftover_gggggggreat = 4180
+    leftover_ggggggreat = 4190
+    leftover_gggggreat = 4200
+    leftover_ggggreat = 4210
+    leftover_gggreat = 4220
+    leftover_ggreat = 4230
+    leftover_great = 4250
+
+    monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path)
+    monkeypatch.setattr(bdb, "profile_dir", lambda: tmp_path)
+    monkeypatch.setattr(bdb, "_lock_pid", lambda d: None)
+    monkeypatch.setattr(
+        bdb,
+        "_chromium_cmdline_tokens",
+        lambda pid: (
+            ["chrome", "--type=zygote", f"--user-data-dir={tmp_path}"]
+            if pid == 4241 else
+            ["chrome", "--type=utility", f"--user-data-dir={tmp_path}"]
+            if pid == 4245 else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_great else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_grand else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_parent else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_root else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_sup else
+            ["agent-browser", "daemon", f"--user-data-dir={tmp_path}"]
+            if pid == 4300 else
+            ["agent-browser", "fill", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_fill else
+            ["agent-browser", "cri", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_cri else
+            ["agent-browser", "python", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_py else
+            ["chrome", f"--user-data-dir={tmp_path}"]
+        ),
+    )
+    monkeypatch.setattr(
+        bdb,
+        "_proc_ppid",
+        lambda pid: {
+            4240: 4300, 4241: 4240, 4245: 4241,
+            leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_ggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggreat: leftover_ggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggreat: leftover_ggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggreat: leftover_ggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggreat: leftover_ggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggreat: leftover_ggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggreat: leftover_ggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggreat: leftover_ggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggreat: leftover_ggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggreat: leftover_ggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggreat: leftover_ggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggreat: leftover_ggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggreat: leftover_ggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggreat, leftover_gggggggggggggggggggggreat: leftover_ggggggggggggggggggggggreat, leftover_ggggggggggggggggggggreat: leftover_gggggggggggggggggggggreat, leftover_gggggggggggggggggggreat: leftover_ggggggggggggggggggggreat, leftover_ggggggggggggggggggreat: leftover_gggggggggggggggggggreat, leftover_gggggggggggggggggreat: leftover_ggggggggggggggggggreat, leftover_ggggggggggggggggreat: leftover_gggggggggggggggggreat, leftover_gggggggggggggggreat: leftover_ggggggggggggggggreat, leftover_ggggggggggggggreat: leftover_gggggggggggggggreat, leftover_gggggggggggggreat: leftover_ggggggggggggggreat, leftover_ggggggggggggreat: leftover_gggggggggggggreat, leftover_gggggggggggreat: leftover_ggggggggggggreat, leftover_ggggggggggreat: leftover_gggggggggggreat, leftover_gggggggggreat: leftover_ggggggggggreat, leftover_ggggggggreat: leftover_gggggggggreat, leftover_gggggggreat: leftover_ggggggggreat, leftover_ggggggreat: leftover_gggggggreat, leftover_gggggreat: leftover_ggggggreat, leftover_ggggreat: leftover_gggggreat, leftover_gggreat: leftover_ggggreat, leftover_ggreat: leftover_gggreat, leftover_great: leftover_ggreat, leftover_grand: leftover_great, leftover_parent: leftover_grand, leftover_root: leftover_parent, leftover_sup: leftover_root, 4300: leftover_sup,
+            leftover_fill: 4300, leftover_cri: leftover_fill, leftover_py: leftover_cri,
+        }.get(pid),
+    )
+    monkeypatch.setattr(
+        bdb,
+        "_launched_by_session",
+        lambda pid: "h_review" if pid == 4240 else None,
+    )
+    monkeypatch.setattr(bdb, "_recover_cdp_port_from_singleton", lambda *a, **k: None)
+    monkeypatch.setattr(
+        bdb, "_this_jar_children",
+        lambda parent, user_data_dir: (
+            {leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggreat} if parent == leftover_ggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggreat} if parent == leftover_gggggggggggggggggreat else (
+            {leftover_gggggggggggggggreat} if parent == leftover_ggggggggggggggggreat else (
+            {leftover_ggggggggggggggreat} if parent == leftover_gggggggggggggggreat else (
+            {leftover_gggggggggggggreat} if parent == leftover_ggggggggggggggreat else (
+            {leftover_ggggggggggggreat} if parent == leftover_gggggggggggggreat else (
+            {leftover_gggggggggggreat} if parent == leftover_ggggggggggggreat else (
+            {leftover_ggggggggggreat} if parent == leftover_gggggggggggreat else (
+            {leftover_gggggggggreat} if parent == leftover_ggggggggggreat else (
+            {leftover_ggggggggreat} if parent == leftover_gggggggggreat else (
+            {leftover_gggggggreat} if parent == leftover_ggggggggreat else (
+            {leftover_ggggggreat} if parent == leftover_gggggggreat else (
+            {leftover_gggggreat} if parent == leftover_ggggggreat else (
+            {leftover_ggggreat} if parent == leftover_gggggreat else (
+            {leftover_gggreat} if parent == leftover_ggggreat else (
+            {leftover_ggreat} if parent == leftover_gggreat else (
+            {leftover_great} if parent == leftover_ggreat else (
+            {leftover_grand} if parent == leftover_great else (
+            {leftover_parent} if parent == leftover_grand else (
+            {leftover_root} if parent == leftover_parent else (
+                {leftover_sup} if parent == leftover_root else (
+                    {4300} if parent == leftover_sup else (
+                        {4240, leftover_fill} if parent == 4300 else (
+                            {leftover_cri} if parent == leftover_fill else (
+                                {leftover_py} if parent == leftover_cri else set()
+                            )
+                            )
+                        )
+                    )
+                )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+        ),
+    )
+
+    def _inodes(port):
+        if port == 40141:
+            return {7: {"::1"}}
+        if port == 9333:
+            return {8: {"::1"}}
+        if port == 18888:
+            return {9: {"::1"}}
+        return {}
+
+    def _holders(want):
+        out = {}
+        if 7 in want:
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggreat] = {7}
+            out[leftover_ggggggggggggreat] = {7}
+            out[leftover_gggggggggggreat] = {7}
+            out[leftover_ggggggggggreat] = {7}
+            out[leftover_gggggggggreat] = {7}
+            out[leftover_ggggggggreat] = {7}
+            out[leftover_gggggggreat] = {7}
+            out[leftover_ggggggreat] = {7}
+            out[leftover_gggggreat] = {7}
+            out[leftover_ggggreat] = {7}
+            out[leftover_gggreat] = {7}
+            out[leftover_ggreat] = {7}
+            out[leftover_great] = {7}
+            out[leftover_grand] = {7}
+            out[leftover_parent] = {7}
+            out[leftover_root] = {7}
+            out[leftover_sup] = {7}
+            out[4300] = {7}
+            out[leftover_fill] = {7}
+            out[leftover_cri] = {7}
+        if 8 in want:
+            out[4240] = {8}
+            out[4241] = {8}
+            out[4245] = {8}
+        if 9 in want:
+            out[leftover_py] = {9}
+            out[4240] = out.get(4240, set()) | {9}
+        return out
+
+    monkeypatch.setattr(bdb, "_loopback_listen_inodes_for_port", _inodes)
+    monkeypatch.setattr(bdb, "_pids_holding_socket_inodes", _holders)
+    monkeypatch.setattr(
+        bdb, "_loopback_listen_ports_for_pid",
+        lambda pid: {40141} if pid in {leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggreat, leftover_gggggggggggggggggggggreat, leftover_ggggggggggggggggggggreat, leftover_gggggggggggggggggggreat, leftover_ggggggggggggggggggreat, leftover_gggggggggggggggggreat, leftover_ggggggggggggggggreat, leftover_gggggggggggggggreat, leftover_ggggggggggggggreat, leftover_gggggggggggggreat, leftover_ggggggggggggreat, leftover_gggggggggggreat, leftover_ggggggggggreat, leftover_gggggggggreat, leftover_ggggggggreat, leftover_gggggggreat, leftover_ggggggreat, leftover_gggggreat, leftover_ggggreat, leftover_gggreat, leftover_ggreat, leftover_great, leftover_grand, leftover_parent, leftover_root, leftover_sup, 4300, leftover_fill, leftover_cri} else (
+            {18888} if pid == leftover_py else (
+                {9333, 18888} if pid == 4240 else (
+                    {9333} if pid in {4241, 4245} else set()
+                )
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        bdb, "_loopback_listen_targets_for_pid",
+        lambda pid: {("::1", 40141)} if pid in {leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggreat, leftover_gggggggggggggggggggggreat, leftover_ggggggggggggggggggggreat, leftover_gggggggggggggggggggreat, leftover_ggggggggggggggggggreat, leftover_gggggggggggggggggreat, leftover_ggggggggggggggggreat, leftover_gggggggggggggggreat, leftover_ggggggggggggggreat, leftover_gggggggggggggreat, leftover_ggggggggggggreat, leftover_gggggggggggreat, leftover_ggggggggggreat, leftover_gggggggggreat, leftover_ggggggggreat, leftover_gggggggreat, leftover_ggggggreat, leftover_gggggreat, leftover_ggggreat, leftover_gggreat, leftover_ggreat, leftover_great, leftover_grand, leftover_parent, leftover_root, leftover_sup, 4300, leftover_fill, leftover_cri} else (
+            {("::1", 18888)} if pid == leftover_py else (
+                {("::1", 9333), ("::1", 18888)} if pid == 4240 else (
+                    {("::1", 9333)} if pid in {4241, 4245} else set()
+                )
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        bdb,
+        "_cdp_port_reachable",
+        lambda port, hosts: port in (9333, 40141, 18888) and "::1" in hosts,
+    )
+    monkeypatch.setattr(bdb, "_configured_cdp_override_url", lambda: "")
+    (tmp_path / "DevToolsActivePort").write_text(
+        "40141\n/devtools/browser/abc\n", encoding="utf-8",
+    )
+    (tmp_path / "dock-cdp-port").write_text("18888\n", encoding="utf-8")
+    assert bdb._unique_this_jar_parent(
+        {leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggggreat, leftover_gggggggggggggggggggggggreat, leftover_ggggggggggggggggggggggreat, leftover_gggggggggggggggggggggreat, leftover_ggggggggggggggggggggreat, leftover_gggggggggggggggggggreat, leftover_ggggggggggggggggggreat, leftover_gggggggggggggggggreat, leftover_ggggggggggggggggreat, leftover_gggggggggggggggreat, leftover_ggggggggggggggreat, leftover_gggggggggggggreat, leftover_ggggggggggggreat, leftover_gggggggggggreat, leftover_ggggggggggreat, leftover_gggggggggreat, leftover_ggggggggreat, leftover_gggggggreat, leftover_ggggggreat, leftover_gggggreat, leftover_ggggreat, leftover_gggreat, leftover_ggreat, leftover_great, leftover_grand, leftover_parent, leftover_root, leftover_sup, 4300, leftover_fill, leftover_cri}, str(tmp_path),
+    ) == leftover_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggreat
+    assert bdb.lock_listed_persist_port() == 9333
+    assert bdb._this_jar_chromium_pid(str(tmp_path)) == 4240
+    assert bdb.shared_chromium_owner_session() == "h_review"
+    assert _last_dock_cdp_port.get(hermes_home_key()) is None
+
+    killed = []
+    monkeypatch.setattr(
+        "tools.browser_tool_lifecycle._kill_verified_daemon",
+        lambda socket_dir, name: killed.append(name) or True,
+    )
+    saved = bt._active_sessions.copy()
+    try:
+        bt._active_sessions.clear()
+        bt._active_sessions["review"] = {
+            "session_name": "h_review", "features": {"local": True},
+        }
+        lease.acquire("human-viewer")
+        stop_reserved_supervisors()
+        assert killed == []
+        assert "review" in bt._active_sessions
+    finally:
+        bt._active_sessions.clear()
+        bt._active_sessions.update(saved)
+
 def test_stop_reserved_does_not_kill_daemon_that_spawned_dock_chromium(monkeypatch):
     """Tree-killing the parent daemon would kill the Browser the human is using."""
     import tools.bot_desktop.browser as bdb
