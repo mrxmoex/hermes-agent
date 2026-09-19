@@ -12747,6 +12747,341 @@ def test_leftover_supervisor_parent_ggggggggggggggggggggggreat_devtools_great_gr
     assert _remembered_dock_attach_port() == 9333
 
 
+def test_leftover_supervisor_parent_gggggggggggggggggggggggreat_devtools_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_great_grandchild_persist_does_not_hide_sibling_chrome(
+    monkeypatch, tmp_path,
+):
+    """Finding 232: leftover supervisor leftover parent leftover parent leftover parent leftover supervisor hid sibling chrome.
+
+    leftover supervisor leftover parent leftover supervisor leftover
+    parent leftover supervisor names this jar. leftover daemon,
+    leftover fill, leftover CRI, leftover supervisor, and leftover
+    supervisor leftover parent leftover supervisor leftover DevTools.
+    leftover-outside leftover supervisor leftover parent leftover
+    parent. leftover unique leftover parent leftover children leftover
+    children leftover children is leftover supervisor leftover children
+    leftover supervisor leftover children leftover daemon, missed
+    leftover daemon leftover children (chrome). Identify leftover on
+    leftover DevTools and leftover persist; attach chrome. 9222 and
+    the other family stay unknown. Attach must not stamp persist.
+    """
+    import tools.bot_desktop.browser as bdb
+    from hermes_constants import hermes_home_key
+    from tools.browser_tool_session import (
+        _cdp_url_is_bot_desktop_browser,
+        _last_dock_cdp_port,
+        _leftover_cdp_aims_at_dock,
+        _leftover_host_port_aims_at_dock,
+        _remembered_dock_attach_port,
+        _reset_dock_port_memory_for_tests,
+        _singleton_lock_pid,
+        _unregistered_cli_aims_at_dock,
+    )
+
+    leftover_fill = 4242
+    leftover_cri = 4244
+    leftover_py = 4246
+    leftover_sup = 4290
+    leftover_root = 4280
+    leftover_parent = 4270
+    leftover_grand = 4260
+    leftover_gggggggggggggggggggggggreat = 4020
+    leftover_ggggggggggggggggggggggreat = 4030
+    leftover_gggggggggggggggggggggreat = 4040
+    leftover_ggggggggggggggggggggreat = 4050
+    leftover_gggggggggggggggggggreat = 4060
+    leftover_ggggggggggggggggggreat = 4070
+    leftover_gggggggggggggggggreat = 4080
+    leftover_ggggggggggggggggreat = 4090
+    leftover_gggggggggggggggreat = 4100
+    leftover_ggggggggggggggreat = 4110
+    leftover_gggggggggggggreat = 4120
+    leftover_ggggggggggggreat = 4130
+    leftover_gggggggggggreat = 4140
+    leftover_ggggggggggreat = 4150
+    leftover_gggggggggreat = 4160
+    leftover_ggggggggreat = 4170
+    leftover_gggggggreat = 4180
+    leftover_ggggggreat = 4190
+    leftover_gggggreat = 4200
+    leftover_ggggreat = 4210
+    leftover_gggreat = 4220
+    leftover_ggreat = 4230
+    leftover_great = 4250
+
+    monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path)
+    monkeypatch.setattr(bdb, "profile_dir", lambda: tmp_path)
+    monkeypatch.setattr(bdb, "_lock_pid", lambda d: None)
+    monkeypatch.setattr(
+        bdb,
+        "_chromium_cmdline_tokens",
+        lambda pid: (
+            ["chrome", "--type=zygote", f"--user-data-dir={tmp_path}"]
+            if pid == 4241 else
+            ["chrome", "--type=utility", f"--user-data-dir={tmp_path}"]
+            if pid == 4245 else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_gggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_ggreat else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_great else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_grand else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_parent else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_root else
+            ["agent-browser", "supervisor", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_sup else
+            ["agent-browser", "daemon", f"--user-data-dir={tmp_path}"]
+            if pid == 4300 else
+            ["agent-browser", "fill", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_fill else
+            ["agent-browser", "cri", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_cri else
+            ["agent-browser", "python", f"--user-data-dir={tmp_path}"]
+            if pid == leftover_py else
+            ["chrome", f"--user-data-dir={tmp_path}"]
+        ),
+    )
+    monkeypatch.setattr(
+        bdb,
+        "_proc_ppid",
+        lambda pid: {
+            4240: 4300, 4241: 4240, 4245: 4241,
+            leftover_ggggggggggggggggggggggreat: leftover_gggggggggggggggggggggggreat, leftover_gggggggggggggggggggggreat: leftover_ggggggggggggggggggggggreat, leftover_ggggggggggggggggggggreat: leftover_gggggggggggggggggggggreat, leftover_gggggggggggggggggggreat: leftover_ggggggggggggggggggggreat, leftover_ggggggggggggggggggreat: leftover_gggggggggggggggggggreat, leftover_gggggggggggggggggreat: leftover_ggggggggggggggggggreat, leftover_ggggggggggggggggreat: leftover_gggggggggggggggggreat, leftover_gggggggggggggggreat: leftover_ggggggggggggggggreat, leftover_ggggggggggggggreat: leftover_gggggggggggggggreat, leftover_gggggggggggggreat: leftover_ggggggggggggggreat, leftover_ggggggggggggreat: leftover_gggggggggggggreat, leftover_gggggggggggreat: leftover_ggggggggggggreat, leftover_ggggggggggreat: leftover_gggggggggggreat, leftover_gggggggggreat: leftover_ggggggggggreat, leftover_ggggggggreat: leftover_gggggggggreat, leftover_gggggggreat: leftover_ggggggggreat, leftover_ggggggreat: leftover_gggggggreat, leftover_gggggreat: leftover_ggggggreat, leftover_ggggreat: leftover_gggggreat, leftover_gggreat: leftover_ggggreat, leftover_ggreat: leftover_gggreat, leftover_great: leftover_ggreat, leftover_grand: leftover_great, leftover_parent: leftover_grand, leftover_root: leftover_parent, leftover_sup: leftover_root, 4300: leftover_sup,
+            leftover_fill: 4300, leftover_cri: leftover_fill, leftover_py: leftover_cri,
+        }.get(pid),
+    )
+    monkeypatch.setattr(
+        bdb,
+        "_launched_by_session",
+        lambda pid: "h_review" if pid == 4240 else None,
+    )
+    monkeypatch.setattr(bdb, "_recover_cdp_port_from_singleton", lambda *a, **k: None)
+    monkeypatch.setattr(
+        bdb, "_this_jar_children",
+        lambda parent, user_data_dir: (
+            {leftover_ggggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggggreat} if parent == leftover_ggggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggggreat} if parent == leftover_gggggggggggggggggggreat else (
+            {leftover_gggggggggggggggggreat} if parent == leftover_ggggggggggggggggggreat else (
+            {leftover_ggggggggggggggggreat} if parent == leftover_gggggggggggggggggreat else (
+            {leftover_gggggggggggggggreat} if parent == leftover_ggggggggggggggggreat else (
+            {leftover_ggggggggggggggreat} if parent == leftover_gggggggggggggggreat else (
+            {leftover_gggggggggggggreat} if parent == leftover_ggggggggggggggreat else (
+            {leftover_ggggggggggggreat} if parent == leftover_gggggggggggggreat else (
+            {leftover_gggggggggggreat} if parent == leftover_ggggggggggggreat else (
+            {leftover_ggggggggggreat} if parent == leftover_gggggggggggreat else (
+            {leftover_gggggggggreat} if parent == leftover_ggggggggggreat else (
+            {leftover_ggggggggreat} if parent == leftover_gggggggggreat else (
+            {leftover_gggggggreat} if parent == leftover_ggggggggreat else (
+            {leftover_ggggggreat} if parent == leftover_gggggggreat else (
+            {leftover_gggggreat} if parent == leftover_ggggggreat else (
+            {leftover_ggggreat} if parent == leftover_gggggreat else (
+            {leftover_gggreat} if parent == leftover_ggggreat else (
+            {leftover_ggreat} if parent == leftover_gggreat else (
+            {leftover_great} if parent == leftover_ggreat else (
+            {leftover_grand} if parent == leftover_great else (
+            {leftover_parent} if parent == leftover_grand else (
+            {leftover_root} if parent == leftover_parent else (
+                {leftover_sup} if parent == leftover_root else (
+                    {4300} if parent == leftover_sup else (
+                        {4240, leftover_fill} if parent == 4300 else (
+                            {leftover_cri} if parent == leftover_fill else (
+                                {leftover_py} if parent == leftover_cri else set()
+                            )
+                            )
+                        )
+                    )
+                )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+            )
+        ),
+    )
+
+    def _inodes(port):
+        if port == 40141:
+            return {7: {"::1"}}
+        if port == 9333:
+            return {8: {"::1"}}
+        if port == 18888:
+            return {9: {"::1"}}
+        return {}
+
+    def _holders(want):
+        out = {}
+        if 7 in want:
+            out[leftover_ggggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggggreat] = {7}
+            out[leftover_ggggggggggggggreat] = {7}
+            out[leftover_gggggggggggggreat] = {7}
+            out[leftover_ggggggggggggreat] = {7}
+            out[leftover_gggggggggggreat] = {7}
+            out[leftover_ggggggggggreat] = {7}
+            out[leftover_gggggggggreat] = {7}
+            out[leftover_ggggggggreat] = {7}
+            out[leftover_gggggggreat] = {7}
+            out[leftover_ggggggreat] = {7}
+            out[leftover_gggggreat] = {7}
+            out[leftover_ggggreat] = {7}
+            out[leftover_gggreat] = {7}
+            out[leftover_ggreat] = {7}
+            out[leftover_great] = {7}
+            out[leftover_grand] = {7}
+            out[leftover_parent] = {7}
+            out[leftover_root] = {7}
+            out[leftover_sup] = {7}
+            out[4300] = {7}
+            out[leftover_fill] = {7}
+            out[leftover_cri] = {7}
+        if 8 in want:
+            out[4240] = {8}
+            out[4241] = {8}
+            out[4245] = {8}
+        if 9 in want:
+            out[leftover_py] = {9}
+            out[4240] = out.get(4240, set()) | {9}
+        return out
+
+    monkeypatch.setattr(bdb, "_loopback_listen_inodes_for_port", _inodes)
+    monkeypatch.setattr(bdb, "_pids_holding_socket_inodes", _holders)
+    monkeypatch.setattr(
+        bdb, "_loopback_listen_ports_for_pid",
+        lambda pid: {40141} if pid in {leftover_ggggggggggggggggggggggreat, leftover_gggggggggggggggggggggreat, leftover_ggggggggggggggggggggreat, leftover_gggggggggggggggggggreat, leftover_ggggggggggggggggggreat, leftover_gggggggggggggggggreat, leftover_ggggggggggggggggreat, leftover_gggggggggggggggreat, leftover_ggggggggggggggreat, leftover_gggggggggggggreat, leftover_ggggggggggggreat, leftover_gggggggggggreat, leftover_ggggggggggreat, leftover_gggggggggreat, leftover_ggggggggreat, leftover_gggggggreat, leftover_ggggggreat, leftover_gggggreat, leftover_ggggreat, leftover_gggreat, leftover_ggreat, leftover_great, leftover_grand, leftover_parent, leftover_root, leftover_sup, 4300, leftover_fill, leftover_cri} else (
+            {18888} if pid == leftover_py else (
+                {9333, 18888} if pid == 4240 else (
+                    {9333} if pid in {4241, 4245} else set()
+                )
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        bdb, "_loopback_listen_targets_for_pid",
+        lambda pid: {("::1", 40141)} if pid in {leftover_ggggggggggggggggggggggreat, leftover_gggggggggggggggggggggreat, leftover_ggggggggggggggggggggreat, leftover_gggggggggggggggggggreat, leftover_ggggggggggggggggggreat, leftover_gggggggggggggggggreat, leftover_ggggggggggggggggreat, leftover_gggggggggggggggreat, leftover_ggggggggggggggreat, leftover_gggggggggggggreat, leftover_ggggggggggggreat, leftover_gggggggggggreat, leftover_ggggggggggreat, leftover_gggggggggreat, leftover_ggggggggreat, leftover_gggggggreat, leftover_ggggggreat, leftover_gggggreat, leftover_ggggreat, leftover_gggreat, leftover_ggreat, leftover_great, leftover_grand, leftover_parent, leftover_root, leftover_sup, 4300, leftover_fill, leftover_cri} else (
+            {("::1", 18888)} if pid == leftover_py else (
+                {("::1", 9333), ("::1", 18888)} if pid == 4240 else (
+                    {("::1", 9333)} if pid in {4241, 4245} else set()
+                )
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        bdb,
+        "_cdp_port_reachable",
+        lambda port, hosts: port in (40141, 18888) and "::1" in hosts,
+    )
+    monkeypatch.setattr(bdb, "_configured_cdp_override_url", lambda: "")
+    (tmp_path / "DevToolsActivePort").write_text(
+        "40141\n/devtools/browser/abc\n", encoding="utf-8",
+    )
+    _reset_dock_port_memory_for_tests()
+    (tmp_path / "dock-cdp-port").write_text("18888\n", encoding="utf-8")
+    assert bdb._unique_this_jar_parent(
+        {leftover_ggggggggggggggggggggggreat, leftover_gggggggggggggggggggggreat, leftover_ggggggggggggggggggggreat, leftover_gggggggggggggggggggreat, leftover_ggggggggggggggggggreat, leftover_gggggggggggggggggreat, leftover_ggggggggggggggggreat, leftover_gggggggggggggggreat, leftover_ggggggggggggggreat, leftover_gggggggggggggreat, leftover_ggggggggggggreat, leftover_gggggggggggreat, leftover_ggggggggggreat, leftover_gggggggggreat, leftover_ggggggggreat, leftover_gggggggreat, leftover_ggggggreat, leftover_gggggreat, leftover_ggggreat, leftover_gggreat, leftover_ggreat, leftover_great, leftover_grand, leftover_parent, leftover_root, leftover_sup, 4300, leftover_fill, leftover_cri}, str(tmp_path),
+    ) == leftover_gggggggggggggggggggggggreat
+    assert bdb.lock_listed_persist_port() == 9333
+    assert bdb._this_jar_chromium_pid(str(tmp_path)) == 4240
+    assert bdb.shared_chromium_owner_session() == "h_review"
+    assert _singleton_lock_pid(str(tmp_path)) == 4240
+    assert bdb.running_instance_cdp_port(str(tmp_path)) is None
+    assert _remembered_dock_attach_port() == 9333
+    assert (tmp_path / "dock-cdp-port").read_text(encoding="utf-8").strip() == "18888"
+    assert _last_dock_cdp_port.get(hermes_home_key()) is None
+    assert _cdp_url_is_bot_desktop_browser("http://[::1]:40141") is True
+    assert _cdp_url_is_bot_desktop_browser("http://[::1]:18888") is True
+    assert _cdp_url_is_bot_desktop_browser("http://[::1]:9333") is True
+    assert _cdp_url_is_bot_desktop_browser("9222") is False
+    assert _leftover_cdp_aims_at_dock("http://[::1]:40141", 9333) is True
+    assert _leftover_cdp_aims_at_dock("http://[::1]:18888", 9333) is True
+    assert _leftover_host_port_aims_at_dock("::1", 40141, 9333) is True
+    assert _leftover_host_port_aims_at_dock("::1", 18888, 9333) is True
+    assert _leftover_host_port_aims_at_dock("127.0.0.1", 40141, 9333) is False
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "lighthouse", "https://example.com", "--port", "40141"],
+        {}, tmp_path, 9333,
+    ) is True
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "chrome-remote-interface", "--port", "18888", "inspect"],
+        {}, tmp_path, 9333,
+    ) is True
+    assert _unregistered_cli_aims_at_dock(
+        ["npx", "lighthouse", "--port", "9222", "https://example.com"],
+        {}, tmp_path, 9333,
+    ) is False
+    assert _remembered_dock_attach_port() == 9333
+
+
 def test_stale_lock_pid_is_not_this_jar_chromium(monkeypatch, tmp_path):
     """Finding 157: a leftover pid on SingletonLock is not the dock.
 
