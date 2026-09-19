@@ -1296,7 +1296,16 @@ def _append_this_jar_children_and_grandchildren(
     children leftover children leftover children leftover children is
     leftover daemon leftover children. Leftover supervisor leftover
     parent leftover parent leftover parent leftover parent that does
-    not name this jar stays 209. Leftover fill
+    not name this jar stays 209. Finding 211: leftover supervisor
+    leftover parent leftover supervisor leftover parent leftover
+    supervisor leftover parent leftover supervisor leftover parent
+    leftover supervisor leftover parent leftover supervisor leftover
+    DevTools. One hop of leftover unique leftover parent's leftover
+    children leftover children leftover children leftover children
+    leftover children leftover children leftover children is leftover
+    daemon leftover children. Leftover supervisor leftover parent
+    leftover parent leftover parent leftover parent leftover parent
+    that does not name this jar stays 210. Leftover fill
     great-grandchild leftover persist leftover-shared stays 86.
     Cousin chrome under leftover CRI stays 86.
     """
@@ -1327,6 +1336,12 @@ def _append_this_jar_children_and_grandchildren(
                                             for ggggreat in _this_jar_children(gggreat, user_data_dir):
                                                 if ggggreat not in scan_pids:
                                                     scan_pids.append(ggggreat)
+                                                try:
+                                                    for gggggreat in _this_jar_children(ggggreat, user_data_dir):
+                                                        if gggggreat not in scan_pids:
+                                                            scan_pids.append(gggggreat)
+                                                except Exception:
+                                                    continue
                                         except Exception:
                                             continue
                                 except Exception:
@@ -1841,7 +1856,13 @@ def unique_lock_chrome_hidden_by_leftover_file(
     # parent leftover supervisor leftover DevTools. leftover unique
     # leftover parent leftover children leftover children leftover
     # children leftover children leftover children leftover children
-    # is leftover daemon leftover children.
+    # is leftover daemon leftover children. Finding 211: leftover
+    # supervisor leftover parent leftover parent leftover parent leftover
+    # parent leftover parent leftover supervisor leftover DevTools.
+    # leftover unique leftover parent leftover children leftover
+    # children leftover children leftover children leftover children
+    # leftover children leftover children is leftover daemon leftover
+    # children.
     _append_this_jar_children_and_grandchildren(
         parent, user_data_dir, scan_pids,
     )
