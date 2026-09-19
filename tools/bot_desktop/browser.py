@@ -1001,7 +1001,16 @@ def _unique_this_jar_parent(
     jar stays 86. Leftover CRI inherited chrome CDP plus
     leftover python leftover persist stays 85. Leftover
     fill great-grandchild leftover persist leftover-
-    shared stays 85.
+    shared stays 85. Finding 206: leftover daemon leftover
+    parent leftover supervisor names this jar. leftover-
+    outside leftover supervisor. leftover-inherited leftover
+    supervisor leftover children leftover daemon missed
+    leftover daemon leftover children (chrome). One hop of
+    leftover unique leftover parent's leftover children
+    leftover children is leftover daemon leftover children.
+    Leftover fill great-grandchild leftover persist leftover-
+    shared stays 86. Cousin chrome under leftover CRI stays
+    86.
     """
     parents: list[int] = []
     for holder_pid in holder_pids:
@@ -1188,6 +1197,35 @@ def _this_jar_children(parent: int, user_data_dir: str) -> Set[int]:
         if _pid_names_this_jar(pid, user_data_dir):
             kids.add(pid)
     return kids
+
+
+def _append_this_jar_children_and_grandchildren(
+    parent: int, user_data_dir: str, scan_pids: list[int],
+) -> None:
+    """Finding 206: leftover unique leftover parent leftover children leftover children.
+
+    leftover daemon leftover parent leftover supervisor names this
+    jar. leftover-inherited leftover supervisor leftover children
+    leftover daemon missed leftover daemon leftover children
+    (chrome). One hop of leftover unique leftover parent's leftover
+    children leftover children is leftover daemon leftover children,
+    not leftover-holder leftover grandparent walk of leftover fill.
+    Leftover fill great-grandchild leftover persist leftover-shared
+    stays 86. Cousin chrome under leftover CRI stays 86.
+    """
+    try:
+        kids = _this_jar_children(parent, user_data_dir)
+    except Exception:
+        return
+    for child in kids:
+        if child not in scan_pids:
+            scan_pids.append(child)
+        try:
+            for grandchild in _this_jar_children(child, user_data_dir):
+                if grandchild not in scan_pids:
+                    scan_pids.append(grandchild)
+        except Exception:
+            continue
 
 
 def _leftover_or_chrome_family_holds(
@@ -1465,13 +1503,20 @@ def unique_lock_chrome_hidden_by_leftover_file(
     leftover-file parent was several and leftover-inherited
     never ran. Unique leftover parent among leftover holders'
     leftover parents that are not leftover file holders is
-    leftover daemon. Finding 205: leftover daemon also
+    leftover daemon.     Finding 205: leftover daemon also
     holds leftover DevTools, so leftover fill's leftover
     parent leftover daemon is leftover file holder and
     leftover-outside is empty. Unique leftover parent
     among leftover holders' leftover parents whose leftover
     parent is not a leftover file holder is leftover
-    daemon. Leftover CRI that does not name this
+    daemon. Finding 206: leftover daemon leftover parent
+    leftover supervisor names this jar. leftover-outside
+    leftover supervisor. leftover-inherited leftover
+    supervisor leftover children leftover daemon missed
+    leftover daemon leftover children (chrome). One hop
+    of leftover unique leftover parent's leftover children
+    leftover children is leftover daemon leftover children.
+    Leftover CRI that does not name this
     jar stays 86. Leftover CRI inherited chrome CDP plus
     leftover python leftover persist stays 85.
     Finding 185: when the lock is gone,
@@ -1544,12 +1589,9 @@ def unique_lock_chrome_hidden_by_leftover_file(
         scan_pids = [parent]
         if holder not in scan_pids:
             scan_pids.append(holder)
-        try:
-            for child in _this_jar_children(parent, user_data_dir):
-                if child not in scan_pids:
-                    scan_pids.append(child)
-        except Exception:
-            pass
+        _append_this_jar_children_and_grandchildren(
+            parent, user_data_dir, scan_pids,
+        )
         chrome: list[int] = []
         seen: set[int] = set()
         for scan_pid in scan_pids:
@@ -1640,13 +1682,16 @@ def unique_lock_chrome_hidden_by_leftover_file(
     # Finding 191: leftover connect-only helpers do not list
     # chrome's listen. Chrome is a this-jar child of leftover
     # daemon (sibling of those helpers). Lock-present stays
-    # lock-ports only (184).
-    try:
-        for child in _this_jar_children(parent, user_data_dir):
-            if child not in scan_pids:
-                scan_pids.append(child)
-    except Exception:
-        pass
+    # lock-ports only (184). Finding 206: leftover daemon
+    # leftover parent leftover supervisor names this jar.
+    # leftover-inherited leftover supervisor leftover children
+    # leftover daemon missed leftover daemon leftover children
+    # (chrome). One hop of leftover unique leftover parent's
+    # leftover children leftover children is leftover daemon
+    # leftover children.
+    _append_this_jar_children_and_grandchildren(
+        parent, user_data_dir, scan_pids,
+    )
     return _leftover_inherited_chrome_listen(
         named, leftover_pids, parent, scan_pids, user_data_dir,
     )
