@@ -1008,6 +1008,16 @@ def _unique_this_jar_parent(
     leftover daemon leftover children (chrome). One hop of
     leftover unique leftover parent's leftover children
     leftover children is leftover daemon leftover children.
+    Finding 207: leftover supervisor leftover parent leftover
+    supervisor names this jar and leftover supervisor leftover
+    DevTools. leftover-outside leftover supervisor leftover
+    parent. leftover unique leftover parent leftover children
+    leftover children is leftover supervisor leftover children
+    leftover daemon, missed leftover daemon leftover children
+    (chrome). One hop of leftover unique leftover parent's
+    leftover children leftover children leftover children is
+    leftover daemon leftover children. Leftover supervisor
+    leftover parent that does not name this jar stays 206.
     Leftover fill great-grandchild leftover persist leftover-
     shared stays 86. Cousin chrome under leftover CRI stays
     86.
@@ -1210,8 +1220,18 @@ def _append_this_jar_children_and_grandchildren(
     (chrome). One hop of leftover unique leftover parent's leftover
     children leftover children is leftover daemon leftover children,
     not leftover-holder leftover grandparent walk of leftover fill.
-    Leftover fill great-grandchild leftover persist leftover-shared
-    stays 86. Cousin chrome under leftover CRI stays 86.
+    Finding 207: leftover supervisor leftover parent leftover
+    supervisor names this jar and leftover supervisor leftover
+    DevTools. leftover-outside leftover supervisor leftover parent.
+    leftover unique leftover parent leftover children leftover
+    children is leftover supervisor leftover children leftover
+    daemon, missed leftover daemon leftover children (chrome).
+    One hop of leftover unique leftover parent's leftover children
+    leftover children leftover children is leftover daemon leftover
+    children. Leftover supervisor leftover parent that does not
+    name this jar stays 206. Leftover fill great-grandchild
+    leftover persist leftover-shared stays 86. Cousin chrome
+    under leftover CRI stays 86.
     """
     try:
         kids = _this_jar_children(parent, user_data_dir)
@@ -1224,6 +1244,12 @@ def _append_this_jar_children_and_grandchildren(
             for grandchild in _this_jar_children(child, user_data_dir):
                 if grandchild not in scan_pids:
                     scan_pids.append(grandchild)
+                try:
+                    for great in _this_jar_children(grandchild, user_data_dir):
+                        if great not in scan_pids:
+                            scan_pids.append(great)
+                except Exception:
+                    continue
         except Exception:
             continue
 
@@ -1514,8 +1540,18 @@ def unique_lock_chrome_hidden_by_leftover_file(
     leftover supervisor. leftover-inherited leftover
     supervisor leftover children leftover daemon missed
     leftover daemon leftover children (chrome). One hop
-    of leftover unique leftover parent's leftover children
+    of     leftover unique leftover parent's leftover children
     leftover children is leftover daemon leftover children.
+    Finding 207: leftover supervisor leftover parent leftover
+    supervisor names this jar and leftover supervisor leftover
+    DevTools. leftover-outside leftover supervisor leftover
+    parent. leftover unique leftover parent leftover children
+    leftover children is leftover supervisor leftover children
+    leftover daemon, missed leftover daemon leftover children
+    (chrome). One hop of leftover unique leftover parent's
+    leftover children leftover children leftover children is
+    leftover daemon leftover children. Leftover supervisor
+    leftover parent that does not name this jar stays 206.
     Leftover CRI that does not name this
     jar stays 86. Leftover CRI inherited chrome CDP plus
     leftover python leftover persist stays 85.
@@ -1688,7 +1724,11 @@ def unique_lock_chrome_hidden_by_leftover_file(
     # leftover daemon missed leftover daemon leftover children
     # (chrome). One hop of leftover unique leftover parent's
     # leftover children leftover children is leftover daemon
-    # leftover children.
+    # leftover children. Finding 207: leftover supervisor
+    # leftover parent leftover supervisor leftover DevTools.
+    # leftover unique leftover parent leftover children leftover
+    # children leftover children is leftover daemon leftover
+    # children.
     _append_this_jar_children_and_grandchildren(
         parent, user_data_dir, scan_pids,
     )
