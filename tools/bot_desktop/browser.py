@@ -1340,6 +1340,12 @@ def _append_this_jar_children_and_grandchildren(
                                                     for gggggreat in _this_jar_children(ggggreat, user_data_dir):
                                                         if gggggreat not in scan_pids:
                                                             scan_pids.append(gggggreat)
+                                                        try:
+                                                            for hop8 in _this_jar_children(gggggreat, user_data_dir):
+                                                                if hop8 not in scan_pids:
+                                                                    scan_pids.append(hop8)
+                                                        except Exception:
+                                                            continue
                                                 except Exception:
                                                     continue
                                         except Exception:
