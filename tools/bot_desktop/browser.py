@@ -1348,6 +1348,12 @@ def _append_this_jar_children_and_grandchildren(
                                                                     for hop9 in _this_jar_children(hop8, user_data_dir):
                                                                         if hop9 not in scan_pids:
                                                                             scan_pids.append(hop9)
+                                                                        try:
+                                                                            for hop10 in _this_jar_children(hop9, user_data_dir):
+                                                                                if hop10 not in scan_pids:
+                                                                                    scan_pids.append(hop10)
+                                                                        except Exception:
+                                                                            continue
                                                                 except Exception:
                                                                     continue
                                                         except Exception:
