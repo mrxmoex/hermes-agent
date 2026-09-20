@@ -566,10 +566,13 @@ async def gateway_ws(ws: WebSocket) -> None:
 
     # The authenticated identity (ticket / internal credential) stamped by
     # _ws_auth_reason becomes the identity authority for privileged RPCs
-    # (browser.controller.register). None on the legacy token path.
+    # (browser.controller.register). None on the legacy token path — that path
+    # stamps ``_hermes_mint_identity`` instead so Bot Screen mints survive a
+    # socket replace without granting dashboard-controller identity.
     await handle_ws(
         ws,
         auth_identity=getattr(ws, "_hermes_auth_identity", None),
+        mint_identity=getattr(ws, "_hermes_mint_identity", None),
         subprotocol=getattr(ws, "_hermes_ws_subprotocol", None),
     )
 

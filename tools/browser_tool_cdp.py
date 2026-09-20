@@ -4,12 +4,35 @@ Split out of ``tools/browser_tool.py``. Facade-owned state is read through ``_bt
 
 import contextlib
 import os
-from typing import Tuple
+from typing import Optional, Tuple
 
 from tools.browser_tool_origin import origin_module as _origin
 
 
-def _resolve_cdp_override(cdp_url: str) -> str:
+def _dock_discovery_blocked_by_human(url: str, *, home: Optional[str] = None) -> bool:
+    """True when HTTP ``/json/version`` would observe the dock a human holds.
+
+    Callers used to admit *after* discovery. Tab list + debugger websocket
+    on that jar is leftover observation — the same class as leftover
+    ``ws.send``. Unrelated Chromes still resolve (admit is None). A lease
+    helper failure fail-closes: do not probe a jar a human may be using.
+
+    ``home`` re-enters the session owner after a multiplex turn. Ambient
+    launch ``lease.json`` (agent, missing file) used to let discovery HTTP
+    the sibling jar a human was typing into.
+    """
+    try:
+        from tools.bot_desktop.lease import HumanHasControl
+        from tools.browser_tool_session import _admit_shared_browser
+        _admit_shared_browser(cdp_url=url, home=home)
+        return False
+    except HumanHasControl:
+        return True
+    except Exception:
+        return True
+
+
+def _resolve_cdp_override(cdp_url: str, *, home: Optional[str] = None) -> str:
     """Normalize a user-supplied CDP endpoint into a concrete websocket URL.
 
     Full ``ws://.../devtools/browser/...`` endpoints pass through; HTTP discovery roots and bare ``ws://host:port``
@@ -30,6 +53,15 @@ def _resolve_cdp_override(cdp_url: str) -> str:
         discovery_url = ("http://" if lowered.startswith("ws://") else "https://") + raw.split("://", 1)[1]
     version_url = discovery_url if discovery_url.lower().endswith("/json/version") else discovery_url.rstrip("/") + "/json/version"
 
+    # Admit *before* HTTP. Vault ``get cdp-url``, ``browser_cdp`` discovery,
+    # and any future caller that skipped the raw-URL fence used to talk to
+    # the jar a human is typing into, then admit the resolved WS.
+    if (
+        _dock_discovery_blocked_by_human(raw, home=home)
+        or _dock_discovery_blocked_by_human(discovery_url, home=home)
+    ):
+        return raw
+
     san = _bt._sanitize_url_for_logs
     try:
         import requests  # lazy — shared module object, test patches still apply
@@ -47,15 +79,91 @@ def _resolve_cdp_override(cdp_url: str) -> str:
     return raw
 
 
+# ``/browser connect`` is process-wide env today; under multiplex one serve
+# hosts many profiles. Remember which home wrote the env so a sibling turn
+# does not inherit another bot's Chromium.
+_cdp_override_by_home: dict[str, str] = {}
+_cdp_override_env_home: Optional[str] = None
+
+
+_CDP_SWAP_BLOCKED = (
+    "A human holds the Bot Desktop. Hand back before connecting "
+    "or disconnecting another browser — the swap would force-kill "
+    "the Chromium they are using."
+)
+
+
+def cdp_swap_blocked_by_human() -> Optional[str]:
+    """Refuse ``/browser connect`` / disconnect while a human holds this screen.
+
+    TUI ``browser.manage`` already refused the swap. Interactive CLI
+    ``/browser connect`` wrote ``BROWSER_CDP_URL`` and minted a leftover
+    supervisor anyway. After a DevTools miss that leftover attach is
+    another Chrome (admit None) on the jar they are typing into.
+    """
+    try:
+        from tools.bot_desktop import lease as _bd_lease
+        if _bd_lease.human_holds():
+            return _CDP_SWAP_BLOCKED
+    except Exception:
+        return None
+    return None
+
+
+def set_process_cdp_override(url: str) -> None:
+    """Publish a live ``/browser connect`` URL for the current Hermes home only."""
+    from hermes_constants import hermes_home_key
+    global _cdp_override_env_home
+    key = hermes_home_key()
+    normalized = (url or "").strip()
+    _cdp_override_by_home[key] = normalized
+    _cdp_override_env_home = key
+    os.environ["BROWSER_CDP_URL"] = normalized
+    # Connect probed the dock over HTTP/TCP. Stamp the live port now —
+    # a later DevTools miss must not treat that jar as another Chrome.
+    # Persist failure must not fail the connect.
+    try:
+        from tools.bot_desktop.browser import persist_live_dock_cdp_port
+        persist_live_dock_cdp_port()
+    except Exception:
+        pass
+
+
+def clear_process_cdp_override() -> None:
+    """Drop this home's live connect; do not expose a sibling's leftover env."""
+    from hermes_constants import hermes_home_key
+    global _cdp_override_env_home
+    key = hermes_home_key()
+    _cdp_override_by_home.pop(key, None)
+    if _cdp_override_env_home == key:
+        os.environ.pop("BROWSER_CDP_URL", None)
+        _cdp_override_env_home = None
+
+
 def _get_cdp_override_raw() -> str:
     """Return the *configured* CDP override without any network I/O.
 
-    Precedence: ``BROWSER_CDP_URL`` env (live ``/browser connect``), then ``browser.cdp_url``. Is-it-configured
-    gates (check_fns, ``_is_local_mode`` / ``_is_local_backend``, ``hermes doctor``) MUST use this, not
-    :func:`_get_cdp_override`: its 10s HTTP discovery against a stale ``cdp_url`` would stall every startup's
-    schema build with no error.
+    Precedence: this home's live ``/browser connect``, then ``BROWSER_CDP_URL``
+    when it was not published by a sibling profile, then ``browser.cdp_url``.
+    Is-it-configured gates (check_fns, ``_is_local_mode`` / ``_is_local_backend``,
+    ``hermes doctor``) MUST use this, not :func:`_get_cdp_override`: its 10s HTTP
+    discovery against a stale ``cdp_url`` would stall every startup's schema
+    build with no error.
     """
+    from hermes_constants import hermes_home_key
+    global _cdp_override_env_home
+    key = hermes_home_key()
     env_override = os.environ.get("BROWSER_CDP_URL", "").strip()
+    # Tests (and an operator) may pop the env after connect; treat that as
+    # this home disconnecting so the per-home map cannot outlive the env.
+    if _cdp_override_env_home == key and not env_override:
+        _cdp_override_by_home.pop(key, None)
+        _cdp_override_env_home = None
+    mapped = _cdp_override_by_home.get(key)
+    if mapped:
+        return mapped
+    if env_override and _cdp_override_env_home is not None and _cdp_override_env_home != key:
+        env_override = ""
     return env_override or _origin()._browser_cfg("cdp_url", "", lambda v: str(v or "").strip(), "browser.cdp_url from config")
 
 
@@ -105,21 +213,78 @@ def _ensure_cdp_supervisor(task_id: str) -> None:
     every navigate / ``/browser connect``. URL precedence: the CDP override, then the session's own ``cdp_url``
     (cloud providers, e.g. Browserbase). Swallows all errors — a failed attach must not break the session;
     snapshots just lack ``pending_dialogs`` / ``frame_tree``.
+
+    Admit on the *raw* URL before HTTP ``/json/version``. Discovery talks to the
+    dock jar (tab list + debugger websocket); doing that while a human holds is
+    the leftover observation path ``_get_session_info`` already closed.
+
+    Re-enter the session owner's home. After a multiplex turn the process home
+    is the launch profile; ambient ``lease.json`` / ``BROWSER_CDP_URL`` then
+    belong to the launch bot and leftover attach talked to the sibling jar.
     """
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.browser_tool_session import _session_owner_home
+
+    owner = _session_owner_home(task_id)
+    token = set_hermes_home_override(owner) if owner else None
+    try:
+        _ensure_cdp_supervisor_unscoped(task_id, owner)
+    finally:
+        if token is not None:
+            reset_hermes_home_override(token)
+
+
+def _ensure_cdp_supervisor_unscoped(task_id: str, owner: Optional[str] = None) -> None:
     _bt = _origin()
-    cdp_url = _get_cdp_override()
+    raw = ""
+    try:
+        raw = (_get_cdp_override_raw() or "").strip()
+    except Exception:
+        raw = ""
+    with _bt._cleanup_lock:
+        session_info = _bt._active_sessions.get(task_id, {}) or {}
+    session_cdp = str(session_info.get("cdp_url") or "")
+    candidate = raw or session_cdp
+    if not candidate:
+        return
+    try:
+        from tools.bot_desktop.lease import HumanHasControl
+        from tools.browser_tool_session import _admit_shared_browser, _shares_bot_desktop_browser
+        from tools.browser_tool_supervisor_lease import install_supervisor_lease_hook, supervisor_may_touch_page
+        if session_info and _shares_bot_desktop_browser(session_info):
+            _admit_shared_browser(session_info, home=owner)
+        elif not supervisor_may_touch_page(candidate):
+            return
+        install_supervisor_lease_hook()
+    except HumanHasControl:
+        return
+    except Exception:
+        return
+    if raw:
+        cdp_url = _get_cdp_override() or ""
+    else:
+        cdp_url = _resolve_cdp_override(session_cdp) if session_cdp else ""
     if not cdp_url:
-        with _bt._cleanup_lock:
-            session_info = _bt._active_sessions.get(task_id, {})
-        maybe = str(session_info.get("cdp_url") or "")
-        if maybe:
-            cdp_url = _resolve_cdp_override(maybe)
-    if not cdp_url:
+        return
+    # Always re-admit the *resolved* URL. When the raw candidate was already
+    # a full ``ws://…/devtools/browser/…`` dock endpoint, ``cdp_url ==
+    # candidate`` used to skip the second check and ``get_or_start`` still
+    # minted a leftover supervisor after a mid-resolve Take over.
+    try:
+        from tools.browser_tool_session import _admit_resolved_cdp_for_attach
+        if not _admit_resolved_cdp_for_attach(cdp_url, home=owner, task_id=task_id):
+            return
+    except Exception:
         return
     try:
         from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
+        from tools.browser_tool_session import _shares_bot_desktop_browser
         policy, timeout_s = _get_dialog_policy_config()
-        SUPERVISOR_REGISTRY.get_or_start(task_id=task_id, cdp_url=cdp_url, dialog_policy=policy, dialog_timeout_s=timeout_s)
+        supervisor = SUPERVISOR_REGISTRY.get_or_start(
+            task_id=task_id, cdp_url=cdp_url, dialog_policy=policy, dialog_timeout_s=timeout_s,
+        )
+        if session_info and _shares_bot_desktop_browser(session_info):
+            supervisor.targets_bot_desktop = True
     except Exception as exc:
         _bt.logger.debug("CDP supervisor attach for task=%s failed (non-fatal): %s", task_id, exc)
 

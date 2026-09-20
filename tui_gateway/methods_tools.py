@@ -934,15 +934,7 @@ def _(rid, params: dict, session) -> dict:
 
 @method("browser.manage")
 def _(rid, params: dict) -> dict:
-    action = params.get("action", "status")
-    if action == "status":
-        url = _resolve_browser_cdp_url()
-        return _ok(rid, {"connected": bool(url), "url": url})
-    if action == "disconnect":
-        return _browser_disconnect(rid)
-    if action == "connect":
-        return _browser_connect(rid, params)
-    return _err(rid, 4015, f"unknown action: {action}")
+    return _browser_manage(rid, params)
 
 
 @_rpc("config.show", 5030)
@@ -1429,7 +1421,8 @@ def _(rid, params: dict) -> dict:
         is_hardline, hardline_desc = approval.detect_hardline_command(cmd)
         if is_hardline:
             return _err(rid, 4005, f"blocked (hardline): {hardline_desc}. Use the agent for dangerous commands.")
-        is_dangerous, _, desc = approval.detect_dangerous_command(cmd)
+        import os
+        is_dangerous, _, desc = approval.detect_dangerous_command(cmd, cwd=os.getcwd())
         if is_dangerous:
             return _err(rid, 4005, f"blocked: {desc}. Use the agent for dangerous commands.")
     except ImportError:

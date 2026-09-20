@@ -119,8 +119,47 @@ def _numstat(cwd: str, args: list[str]) -> dict[str, tuple[int, int]]:
     return counts
 
 
+def _is_sensitive_git_target(cwd: str, file_path: str | None) -> bool:
+    """True when ``file_path`` is a credential / Bot Screen store.
+
+    ``git diff --no-index`` dumps the whole file; ``_untracked_insertions``
+    ``read_bytes``'s it for a line count. Same always-on denylist as the
+    dashboard FS routes (finding 26) — ``bot-desktop/``, ``pairing/``,
+    ``.env``. Fail-closed on a path we cannot resolve.
+    """
+    if not file_path:
+        return False
+    from hermes_cli.web_routers.files import _is_sensitive_path
+    if _is_sensitive_path(Path(file_path)):
+        return True
+    try:
+        return _is_sensitive_path((Path(cwd) / file_path).resolve(strict=False))
+    except (OSError, RuntimeError, ValueError):
+        return True
+
+
+def _raise_if_sensitive_git_target(cwd: str, file_path: str | None) -> None:
+    if _is_sensitive_git_target(cwd, file_path):
+        raise RuntimeError("Access to sensitive files is not allowed")
+
+
+def _safe_status_paths(cwd: str) -> list[str]:
+    """Changed paths that are safe to stage / revert / diff."""
+    return [
+        path
+        for _tag, _xy, path in _walk_entries(_status_z(cwd)[1])
+        if not _is_sensitive_git_target(cwd, path)
+    ]
+
+
+def _drop_sensitive_git_files(cwd: str, files: list[dict]) -> list[dict]:
+    return [file for file in files if not _is_sensitive_git_target(cwd, file.get("path"))]
+
+
 def _untracked_insertions(cwd: str, rel: str) -> int:
     """Line count of an untracked file (+N for new files in the review tree). Binary/oversized → 0."""
+    if _is_sensitive_git_target(cwd, rel):
+        return 0
     try:
         target = Path(cwd) / rel
         if not os.path.isfile(target) or target.stat().st_size > _UNTRACKED_LINE_MAX_BYTES:
@@ -218,7 +257,9 @@ def repo_status(cwd: str) -> dict | None:
                 elif tok.startswith("-"):
                     behind = int(tok[1:] or 0)
 
-    files = [_classify(tag, xy, path) for tag, xy, path in _walk_entries(raw)]
+    files = _drop_sensitive_git_files(
+        cwd, [_classify(tag, xy, path) for tag, xy, path in _walk_entries(raw)]
+    )
     # +/- vs HEAD, then fold in untracked insertions (`git diff HEAD` ignores them, so a
     # new-file-only turn would read +0); bounded scan.
     counts = _numstat(cwd, ["HEAD"]).values()
@@ -237,6 +278,7 @@ def repo_status(cwd: str) -> dict | None:
 
 def _review_result(cwd: str, files: list[dict], base: str | None) -> dict:
     """Sorted rows; untracked rows with no counts get their insertion count filled in."""
+    files = _drop_sensitive_git_files(cwd, files)
     files.sort(key=lambda f: f["path"])
     for file in files:
         if file["status"] == "?" and file["added"] == 0 and file["removed"] == 0:
@@ -282,11 +324,13 @@ def review_list(cwd: str, scope: str, base_ref: str | None) -> dict:
 
 def _all_add_diff(cwd: str, file_path: str) -> str:
     """Synthesized all-add diff for an untracked file (``--no-index`` exits non-zero by design)."""
+    if _is_sensitive_git_target(cwd, file_path):
+        return ""
     return _git(cwd, ["diff", "--no-index", "--", os.devnull, file_path])[1]
 
 
 def review_diff(cwd: str, file_path: str, scope: str, base_ref: str | None, staged: bool) -> str:
-    if not _is_dir(cwd):
+    if not _is_dir(cwd) or _is_sensitive_git_target(cwd, file_path):
         return ""
     if scope == "branch":
         base = _branch_base(cwd)
@@ -302,7 +346,7 @@ def review_diff(cwd: str, file_path: str, scope: str, base_ref: str | None, stag
 def file_diff_vs_head(cwd: str, file_path: str) -> str:
     """Working-tree-vs-HEAD diff for one file (the preview's diff view). Unlike
     review_diff, never all-adds a clean tracked file; only a genuinely untracked one."""
-    if not _is_dir(cwd):
+    if not _is_dir(cwd) or _is_sensitive_git_target(cwd, file_path):
         return ""
     head = _git_out(cwd, ["diff", "HEAD", "--", file_path])
     if head.strip():
@@ -312,20 +356,35 @@ def file_diff_vs_head(cwd: str, file_path: str) -> str:
 
 
 def review_stage(cwd: str, file_path: str | None) -> dict:
-    _git_ok(cwd, ["add", "--", file_path] if file_path else ["add", "-A"])
+    if file_path:
+        _raise_if_sensitive_git_target(cwd, file_path)
+        _git_ok(cwd, ["add", "--", file_path])
+        return {"ok": True}
+    safe = _safe_status_paths(cwd)
+    if safe:
+        _git_ok(cwd, ["add", "--", *safe])
     return {"ok": True}
 
 
 def review_unstage(cwd: str, file_path: str | None) -> dict:
-    _git_ok(cwd, ["reset", "-q", "HEAD", *(["--", file_path] if file_path else [])])
+    if file_path:
+        _raise_if_sensitive_git_target(cwd, file_path)
+        _git_ok(cwd, ["reset", "-q", "HEAD", "--", file_path])
+        return {"ok": True}
+    _git_ok(cwd, ["reset", "-q", "HEAD"])
     return {"ok": True}
 
 
 def review_revert(cwd: str, file_path: str | None) -> dict:
     """Discard changes back to the committed state (restore tracked, remove untracked)."""
-    target = ["--", file_path or "."]
-    _git(cwd, ["checkout", "HEAD", *target])
-    _git(cwd, ["clean", "-fd", *target])
+    if file_path:
+        _raise_if_sensitive_git_target(cwd, file_path)
+        targets = [file_path]
+    else:
+        targets = _safe_status_paths(cwd)
+    for target in targets:
+        _git(cwd, ["checkout", "HEAD", "--", target])
+        _git(cwd, ["clean", "-fd", "--", target])
     return {"ok": True}
 
 
@@ -339,8 +398,13 @@ def _has_staged(raw: str) -> bool:
 
 def review_commit(cwd: str, message: str, push: bool) -> dict:
     """Commit the working tree; stage everything first when nothing is staged."""
+    for _tag, _xy, path in _walk_entries(_status_z(cwd)[1]):
+        if _is_sensitive_git_target(cwd, path):
+            _git(cwd, ["reset", "-q", "HEAD", "--", path])
     if not _has_staged(_status_z(cwd)[1]):
-        _git_ok(cwd, ["add", "-A"])
+        safe = _safe_status_paths(cwd)
+        if safe:
+            _git_ok(cwd, ["add", "--", *safe])
     _git_ok(cwd, ["commit", "-m", message])
     if push:
         _review_push(cwd)
@@ -366,8 +430,17 @@ def review_commit_context(cwd: str) -> dict:
     code, raw = _status_z(cwd) if _is_dir(cwd) else (1, "")
     if code != 0:
         return {"diff": "", "recent": ""}
-    entries = list(_walk_entries(raw))
-    diff = _git_out(cwd, ["diff", "--cached"] if _has_staged(raw) else ["diff", "HEAD"])
+    entries = [
+        (tag, xy, path)
+        for tag, xy, path in _walk_entries(raw)
+        if not _is_sensitive_git_target(cwd, path)
+    ]
+    safe_paths = [path for _tag, _xy, path in entries]
+    if _has_staged(raw):
+        staged_safe = [path for tag, xy, path in entries if _entry_staged(tag, xy)]
+        diff = _git_out(cwd, ["diff", "--cached", "--", *staged_safe]) if staged_safe else ""
+    else:
+        diff = _git_out(cwd, ["diff", "HEAD", "--", *safe_paths]) if safe_paths else ""
     if len(diff) > _COMMIT_CONTEXT_DIFF_MAX_CHARS:
         omitted = len(diff) - _COMMIT_CONTEXT_DIFF_MAX_CHARS
         diff = f"{diff[:_COMMIT_CONTEXT_DIFF_MAX_CHARS]}\n# diff truncated: {omitted} chars omitted\n"

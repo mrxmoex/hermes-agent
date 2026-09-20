@@ -139,6 +139,40 @@ def _forget_session_tracking(task_id: str, *, activity: bool = True, session: bo
         _bt._cleanup_failures.pop(task_id, None)
 
 
+def _stop_reserved_recordings() -> None:
+    """Cease opted-in WebMs as soon as a human holds, even if the session is not idle.
+
+    Take over from Desktop writes the lease in another turn; the agent may be
+    sitting in ``wait_for_human`` or idle. Waiting for the 120s inactivity
+    reap would keep capturing 2FA. Owner-scoped so multiplex homes don't
+    read the launch profile's lease.
+    """
+    _bt._install_recording_lease_hook()
+    with _bt._cleanup_lock:
+        ids = list(_bt._recording_sessions)
+    for task_id in ids:
+        try:
+            with _session_owner_scope(task_id):
+                with _bt._cleanup_lock:
+                    if task_id not in _bt._recording_sessions:
+                        continue
+                    session_info = _bt._active_sessions.get(task_id)
+                if session_info is not None and not _session._local_browser_reserved_by_human(session_info):
+                    continue
+                if session_info is None:
+                    from tools.bot_desktop import lease as _bd_lease
+                    if not _bd_lease.human_holds():
+                        continue
+                _bt._maybe_stop_recording(task_id)
+        except Exception:
+            _bt.logger.debug("reserved recording stop failed for %s", task_id, exc_info=True)
+    try:
+        from tools.browser_tool_supervisor_lease import stop_reserved_supervisors
+        stop_reserved_supervisors()
+    except Exception:
+        _bt.logger.debug("reserved supervisor sweep failed", exc_info=True)
+
+
 def _cleanup_inactive_browser_sessions():
     """Close sessions inactive longer than the timeout (cleanup thread).
 
@@ -154,11 +188,22 @@ def _cleanup_inactive_browser_sessions():
         sessions_to_cleanup = [task_id for task_id, last_time in list(_bt._session_last_activity.items())
                                if current_time - last_time > _bt.BROWSER_SESSION_INACTIVITY_TIMEOUT]
 
+    _stop_reserved_recordings()
     for task_id in sessions_to_cleanup:
         elapsed = int(current_time - _bt._session_last_activity.get(task_id, current_time))
         _bt.logger.info("Cleaning up inactive session for task: %s (inactive for %ss)", task_id, elapsed)
         try:
             with _session_owner_scope(task_id):
+                # Owner scope so human_holds() reads THIS profile's lease — the
+                # janitor thread is process-global and otherwise sees the launch home.
+                with _bt._cleanup_lock:
+                    session_info = _bt._active_sessions.get(task_id)
+                if session_info and _session._local_browser_reserved_by_human(session_info):
+                    _bt.logger.info(
+                        "Deferring inactivity cleanup for %s: a human holds the Bot Desktop lease",
+                        task_id,
+                    )
+                    continue
                 cleanup_browser(task_id)
             _forget_session_tracking(task_id)
         except Exception as e:
@@ -406,6 +451,10 @@ def _browser_cleanup_thread_worker():
         for _ in range(30):  # 1s granularity so stop is quick
             if not _bt._cleanup_running:
                 break
+            try:
+                _stop_reserved_recordings()
+            except Exception as e:
+                _bt.logger.debug("reserved recording scan failed: %s", e)
             time.sleep(1)
 
 
@@ -417,6 +466,7 @@ def _start_browser_cleanup_thread():
             _bt._cleanup_thread = threading.Thread(target=_browser_cleanup_thread_worker, daemon=True,
                                                    name="browser-cleanup")
             _bt._cleanup_thread.start()
+            _bt._install_recording_lease_hook()
             _bt.logger.info("Started inactivity cleanup thread (timeout: %ss)", _bt.BROWSER_SESSION_INACTIVITY_TIMEOUT)
 
 
@@ -552,9 +602,16 @@ def _drop_last_active_binding(task_id: str) -> None:
         _bt._last_active_session_key.pop(bare_task_id, None)
 
 
-def cleanup_browser(task_id: Optional[str] = None) -> None:
+def cleanup_browser(task_id: Optional[str] = None, *, force: bool = False) -> None:
     """Clean up browser session(s) for a task: a bare task id reaps BOTH the primary
-    session and any hybrid local sidecar; a ``::local`` key reaps only that one."""
+    session and any hybrid local sidecar; a ``::local`` key reaps only that one.
+
+    ``force`` is process-exit / connect-swap: it still must not tree-kill the
+    Chromium a human is typing into. ``_force_reap_browser_session`` already
+    defers that jar; ``cleanup_all_browsers`` used to pass ``force=True`` and
+    skip the guard, so ``/browser connect`` and gateway shutdown SIGTERM'd
+    the dock Browser mid-login.
+    """
     if task_id is None:
         task_id = "default"
 
@@ -564,7 +621,7 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
         if not _bt._is_local_sidecar_key(task_id) and sidecar_key in _bt._active_sessions:
             session_keys.append(sidecar_key)
     for session_key in session_keys:
-        _cleanup_single_browser_session(session_key)
+        _cleanup_single_browser_session(session_key, force=force)
     _drop_last_active_binding(task_id)
 
 
@@ -621,6 +678,19 @@ def _force_reap_browser_session(task_id: str) -> None:
 
     Janitor last resort after repeated cleanup failures (#100738).
     """
+    with _session_owner_scope(task_id):
+        _force_reap_browser_session_unscoped(task_id)
+
+
+def _force_reap_browser_session_unscoped(task_id: str) -> None:
+    with _bt._cleanup_lock:
+        session_info = _bt._active_sessions.get(task_id)
+    if session_info and _session._local_browser_reserved_by_human(session_info):
+        _bt.logger.info(
+            "Deferring force-reap for %s: a human holds the Bot Desktop lease", task_id,
+        )
+        _bt._maybe_stop_recording(task_id)
+        return
     _cdp._stop_cdp_supervisor(task_id)
     with _bt._cleanup_lock:
         session_info = _bt._active_sessions.get(task_id)
@@ -631,8 +701,36 @@ def _force_reap_browser_session(task_id: str) -> None:
     _drop_last_active_binding(task_id)
 
 
-def _cleanup_single_browser_session(task_id: str) -> None:
-    """Reap a single browser session by its exact session key."""
+def _cleanup_single_browser_session(task_id: str, *, force: bool = False) -> None:
+    """Reap a single browser session by its exact session key.
+
+    ``force`` skips the polite ``close`` on process-exit, but a human lease
+    still keeps the shared Chromium. The command fence already refuses
+    ``close``; without this guard the ``_release_session_resources`` tail
+    (and ``cleanup_all_browsers``'s unconditional ``force=True``) still
+    tree-killed the dock Browser.
+
+    Re-enter ``_session_owner_homes[task_id]`` before the reserved check.
+    ``cleanup_all_browsers`` (``/browser connect``, shutdown) walks every
+    session under whatever home the caller wrapped. After a multiplex turn
+    that is the launch bot: missing file fail-opens as agent, so force-reap
+    tree-killed the sibling jar a human held. Unrecorded owner stays ambient.
+    """
+    with _session_owner_scope(task_id):
+        _cleanup_single_browser_session_unscoped(task_id, force=force)
+
+
+def _cleanup_single_browser_session_unscoped(task_id: str, *, force: bool = False) -> None:
+    with _bt._cleanup_lock:
+        reserved = _bt._active_sessions.get(task_id)
+    if reserved and _session._local_browser_reserved_by_human(reserved):
+        _bt.logger.info(
+            "Deferring browser teardown for %s: a human holds the Bot Desktop lease",
+            task_id,
+        )
+        _bt._maybe_stop_recording(task_id)
+        return
+
     _cdp._stop_cdp_supervisor(task_id)  # close our WebSocket BEFORE the backend tears down the endpoint
 
     # Camofox: managed persistence keeps the profile (cookies) across tasks; skip the full
@@ -684,7 +782,7 @@ def cleanup_all_browsers() -> None:
     with _bt._cleanup_lock:
         task_ids = list(_bt._active_sessions.keys())
     for task_id in task_ids:
-        cleanup_browser(task_id)
+        cleanup_browser(task_id, force=True)
 
     try:  # tear down CDP supervisors so background threads exit
         from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]

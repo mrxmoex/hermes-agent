@@ -182,8 +182,9 @@ it('does not hand back while replacing a stream to reconnect the same viewer', a
   await act(async () => {})
   fireEvent.click(view.getByTitle('Reconnect'))
   await waitFor(() => expect(sockets).toHaveLength(2))
-  expect(sockets[0].closeCodes).toEqual([1005])
+  expect(sockets[0].closeCodes).toEqual([4002])
   expect(sockets[1].closed).toBe(false)
+  expect(vi.mocked(displayRequest)).toHaveBeenCalledWith(bot, 'display.observe', { viewer_id: 'this-viewer' })
   view.unmount()
 })
 

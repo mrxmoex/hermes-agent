@@ -483,10 +483,21 @@ def _db_unavailable_error(rid, *, code: int):
 # override) so config/skills/model/persistence resolve to it. Omitted/own profile → launch profile.
 def _profile_home(profile: str | None) -> Path | None:
     """Resolve a named profile's home on THIS host, or None for the launch profile."""
-    if not (name := _canonical_profile_request((profile or "").strip())):
+    raw = (profile or "").strip()
+    if not (name := _canonical_profile_request(raw)):
         return None
     from hermes_cli import profiles as profiles_mod
-    home = Path(profiles_mod.get_profile_dir(name))
+    try:
+        canon = profiles_mod.normalize_profile_name(name)
+    except ValueError as exc:
+        raise FileNotFoundError(f"invalid profile name: {raw!r}") from exc
+    # Path-safety only — reserved names like ``hermes`` can already exist on disk
+    # (``_canonical_profile_request`` keeps them when the directory is present).
+    # ``get_profile_dir`` joins onto the profiles root; an absolute or ``..``
+    # segment would escape and let display.start write bot-desktop/ there.
+    if canon != "default" and not profiles_mod._PROFILE_ID_RE.fullmatch(canon):
+        raise FileNotFoundError(f"invalid profile name: {raw!r}")
+    home = Path(profiles_mod.get_profile_dir(canon))
     if not home.is_dir():
         raise FileNotFoundError(f"Profile '{name}' does not exist.")
     if home.resolve() == Path(_hermes_home).resolve():

@@ -36,6 +36,8 @@ type ConnState = 'idle' | 'attaching' | 'live' | 'control-taken' | 'error'
 
 /** Bridge close code when another viewer took the lease (mirrors tui_gateway display bridge). */
 const CLOSE_CONTROL_TAKEN = 4000
+/** This window replaced its own RFB stream (Reconnect). Not a hand-back: the server must keep the lease. */
+const CLOSE_STREAM_REPLACE = 4002
 
 async function loadRfb(): Promise<new (target: HTMLElement, socket: WebSocket, options?: Record<string, unknown>) => RfbLike> {
   const mod = (await import('@novnc/novnc')) as unknown as { default: new (...args: never[]) => RfbLike }
@@ -64,6 +66,9 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
   const [error, setError] = useState<null | string>(null)
   const [busy, setBusy] = useState(false)
   const attachGeneration = useRef(0)
+  // Last id observe minted for THIS pane. Reconnect must present it so the
+  // server reuses the holder identity instead of minting a stranger.
+  const mintedViewerId = useRef<string | null>(null)
 
   const refresh = useCallback(async () => {
     try {
@@ -94,10 +99,14 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
   const detach = useCallback((handBack = false) => {
     attachGeneration.current += 1
 
-    // noVNC closes without a status. Intentional pane closure must send 1000
-    // first; reconnect teardown must keep the human lease instead.
+    // noVNC closes without a status (empty close frame → 1005). Intentional
+    // pane closure must send 1000 first; reconnect teardown sends 4002 so a
+    // Chromium/proxy that maps a code-less close to 1000 cannot hand the
+    // screen back to the agent mid-login.
     if (handBack) {
       socket.current?.close(1000)
+    } else {
+      socket.current?.close(CLOSE_STREAM_REPLACE)
     }
 
     rfb.current?.disconnect()
@@ -131,7 +140,12 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
       }
 
       retention.current = retain
-      const observe = await displayRequest<DisplayObserveResult>(bot, 'display.observe')
+      const observe = await displayRequest<DisplayObserveResult>(
+        bot,
+        'display.observe',
+        mintedViewerId.current ? { viewer_id: mintedViewerId.current } : {}
+      )
+      mintedViewerId.current = observe.viewer_id
       const minted = { id: observe.viewer_id, hash: await viewerHash(observe.viewer_id) }
       setScreenStatus(bot, observe)
       const url = await resolveScreenWsUrl(bot, observe.ticket)
@@ -231,10 +245,14 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
   }, [bot])
 
   const takeOver = useCallback(async () => {
+    if (!viewer?.id) {
+      return
+    }
+
     setBusy(true)
 
     try {
-      const result = await displayRequest<{ lease: DisplayLease }>(bot, 'display.lease.acquire', { viewer_id: viewer?.id })
+      const result = await displayRequest<{ lease: DisplayLease }>(bot, 'display.lease.acquire', { viewer_id: viewer.id })
       setScreenLease(bot, result.lease)
 
       if (conn !== 'live') {
@@ -332,7 +350,7 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
                 <Codicon name="debug-continue" /> {t.screen.handBackForce}
               </Button>
             ) : null}
-            <Button disabled={busy || conn === 'attaching'} onClick={() => void takeOver()} size="sm">
+            <Button disabled={busy || conn === 'attaching' || !viewer?.id} onClick={() => void takeOver()} size="sm">
               <Codicon name="record-keys" /> {t.screen.takeOver}
             </Button>
           </>

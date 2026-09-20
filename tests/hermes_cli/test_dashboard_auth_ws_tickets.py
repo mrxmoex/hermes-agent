@@ -64,6 +64,14 @@ class TestSingleUse:
         with pytest.raises(TicketInvalid, match="unknown"):
             consume_ticket("nope-never-minted")
 
+    def test_wrong_provider_leaves_ticket_redeemable(self):
+        """Display and gateway tickets share the store. A route that names
+        its provider must not pop a ticket minted for the other door."""
+        ticket = mint_ticket(user_id="u1", provider="nous")
+        with pytest.raises(TicketInvalid, match="not valid for this route"):
+            consume_ticket(ticket, provider="bot-desktop")
+        assert consume_ticket(ticket)["user_id"] == "u1"
+
 
 # ---------------------------------------------------------------------------
 # TTL

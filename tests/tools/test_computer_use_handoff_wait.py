@@ -36,3 +36,18 @@ def test_wait_for_human_returns_no_takeover_when_nobody_answers_but_waits_out_a_
     threading.Thread(target=_take_then_release, daemon=True).start()
     res = json.loads(handle_handoff("wait_for_human", {"seconds": 30, "grace": 0.3}))
     assert res["ok"] and res["state"]["holder"] == lease.AGENT
+    assert res["state"]["viewer_id"] is None
+    assert "viewer-1" not in json.dumps(res)
+
+
+def test_handoff_tool_results_never_disclose_the_raw_viewer_id():
+    """display.status hashes the holder id; wait_for_human used to return as_dict() and
+    leak the capability into conversation history while the human still held."""
+    lease.acquire("secret-viewer-id")
+    res = json.loads(handle_handoff("wait_for_human", {"seconds": 1, "grace": 0}))
+    dumped = json.dumps(res)
+    assert res["code"] == "still_waiting"
+    assert res["state"]["holder"] == lease.HUMAN
+    assert res["state"]["viewer_id"] is None
+    assert "secret-viewer-id" not in dumped
+    assert res["state"]["viewer_hash"] == lease.get().public_view()["viewer_hash"]

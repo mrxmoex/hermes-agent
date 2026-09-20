@@ -4,14 +4,21 @@
 Split out of ``tools/browser_tool.py``. Facade-owned state is read through ``_bt`` (``tools.browser_tool``, resolved per call) — no import cycle.
 """
 
+import contextlib
+import ipaddress
 import json
 import logging
 import os
+import re
+import shlex
 import shutil
+import signal
+import socket
 import subprocess
+import threading
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from hermes_cli._subprocess_compat import windows_hide_flags
 from tools.browser_tool_origin import origin as _bt
@@ -166,6 +173,7 @@ def _create_local_session(task_id: str, allow_real_profile: bool = True) -> Dict
     ``allow_real_profile=False``: the user's cookie jar must not reach an arbitrary
     internal host the model chose.
     """
+    _refuse_shared_session_while_human_holds()
     if allow_real_profile:
         cdp_url, err = _real_profile._real_profile_cdp()
         if err:
@@ -210,6 +218,7 @@ def _local_backend_process_dead(session_info: Dict[str, Any]) -> bool:
 
 def _create_cdp_session(task_id: str, cdp_url: str) -> Dict[str, str]:
     """Session connecting to a user-supplied CDP endpoint."""
+    _refuse_shared_session_while_human_holds(cdp_url=cdp_url)
     info = _session_record("cdp", cdp_url, {"cdp_override": True})
     _bt.logger.info("Created CDP browser session %s → %s for task %s",
                 info["session_name"], _bt._sanitize_url_for_logs(cdp_url), task_id)
@@ -228,11 +237,17 @@ def _create_cloud_session_or_fallback(task_id: str, provider) -> Dict[str, Any]:
             session_info["cdp_url"] = _cdp._resolve_cdp_override(str(session_info["cdp_url"]))
         return session_info
     except Exception as e:
+        from tools.bot_desktop.lease import HumanHasControl
+
+        if isinstance(e, HumanHasControl):
+            raise
         provider_name = type(provider).__name__
         _bt.logger.warning("Cloud provider %s failed (%s); attempting fallback to local Chromium for task %s",
                            provider_name, e, task_id, exc_info=True)
         try:
             session_info = _create_local_session(task_id)
+        except HumanHasControl:
+            raise
         except Exception as local_error:
             raise RuntimeError(f"Cloud provider {provider_name} failed ({e}) and local "
                                f"fallback also failed ({local_error})") from e
@@ -245,13 +260,23 @@ def _create_cloud_session_or_fallback(task_id: str, provider) -> Dict[str, Any]:
 def _create_session_for_key(task_id: str, force_local: bool) -> Dict[str, Any]:
     """Fresh session for ``task_id`` (runs OUTSIDE the lock: cloud mode makes a network call).
     Precedence: CDP override > hybrid local sidecar (never real-profile) > cloud > local."""
-    cdp_override = _cdp._get_cdp_override()
-    if cdp_override and not force_local:
-        return _create_cdp_session(task_id, cdp_override)
+    # Peek the raw override before the HTTP /json/version probe. A live
+    # dock Chromium is this profile's desktop jar; probing it while a
+    # human holds would still talk to the jar — including the hybrid
+    # ``::local`` sidecar, which used to skip the refuse and then probe.
+    raw_cdp = _cdp._get_cdp_override_raw()
+    if raw_cdp:
+        _refuse_shared_session_while_human_holds(cdp_url=raw_cdp)
     if force_local:
+        _refuse_shared_session_while_human_holds()
         return _create_local_session(task_id, allow_real_profile=False)
+    if raw_cdp:
+        cdp_override = _cdp._get_cdp_override()
+        if cdp_override:
+            return _create_cdp_session(task_id, cdp_override)
     provider = _cloud._get_cloud_provider()
     if provider is None:
+        _refuse_shared_session_while_human_holds()
         return _create_local_session(task_id)
     return _create_cloud_session_or_fallback(task_id, provider)
 
@@ -259,10 +284,19 @@ def _create_session_for_key(task_id: str, force_local: bool) -> Dict[str, Any]:
 def _get_session_info(task_id: Optional[str] = None) -> Dict[str, Any]:
     """Get or create session info for a session key (thread-safe); also starts the
     inactivity thread and touches activity. A ``::local`` key forces local Chromium
-    even with a cloud provider configured."""
+    even with a cloud provider configured.
+
+    Re-enter the session's owning HERMES_HOME first. After a multiplex turn
+    the process home is the launch profile; recycle / mint refuse must read
+    *this* session's ``lease.json``, not the launch bot's (finding 101).
+    """
     if task_id is None:
         task_id = "default"
+    with _lifecycle._session_owner_scope(task_id):
+        return _get_session_info_unscoped(task_id)
 
+
+def _get_session_info_unscoped(task_id: str) -> Dict[str, Any]:
     _lifecycle._start_browser_cleanup_thread()
     _lifecycle._update_session_activity(task_id)
 
@@ -278,6 +312,10 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, Any]:
         return replacement if replacement is not None and replacement is not existing_session else None
 
     if existing_session is not None:
+        # A human mid-login owns this Chromium. Recycle (suspect or expired)
+        # would kill the daemon after a fenced close — do not even start it.
+        if _local_browser_reserved_by_human(existing_session):
+            return existing_session
         # Suspect recycle: a command timeout marked this session; the expensive recycle
         # lives here at next use, not on the timeout path (mark must stay cheap).
         if not _bt._browser_session_backend(task_id).ensure_healthy():
@@ -295,7 +333,18 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, Any]:
                 return replacement
 
     force_local = _bt._is_local_sidecar_key(task_id)
-    session_info = _create_session_for_key(task_id, force_local)
+    try:
+        session_info = _create_session_for_key(task_id, force_local)
+    except Exception as exc:
+        from tools.bot_desktop.lease import HumanHasControl
+
+        if isinstance(exc, HumanHasControl):
+            # Create never wrote a row. Drop the activity touch so the
+            # janitor does not reap a session that was never minted.
+            with _bt._cleanup_lock:
+                _bt._session_last_activity.pop(task_id, None)
+            raise
+        raise
 
     with _bt._cleanup_lock:
         if task_id in _bt._active_sessions:  # created concurrently during the network call — don't leak ours
@@ -528,26 +577,34 @@ def _spawn_and_collect(
     stdout_path = os.path.join(task_socket_dir, f"_stdout_{command}")
     stderr_path = os.path.join(task_socket_dir, f"_stderr_{command}")
     proc = _popen_agent_browser(cmd_parts, browser_env, task_socket_dir, command)
+    dock_home = _dock_cli_home(task_id, session_info)
+    if dock_home:
+        # PID-only: this CLI shares Hermes' process group. Do not killpg.
+        register_inflight_dock_cli(proc, dock_home)
 
     try:
-        proc.wait(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait()
-        stdout, stderr = _read_command_output_files(stdout_path, stderr_path)
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            stdout, stderr = _read_command_output_files(stdout_path, stderr_path)
+            _unlink_command_output_files(stdout_path, stderr_path)
+            _handle_browser_command_timeout(task_id, session_info, task_socket_dir)
+            if stderr and stderr.strip():
+                _bt.logger.warning("browser '%s' stderr after timeout: %s", command, stderr.strip()[:500])
+            _bt.logger.warning("browser '%s' timed out after %ds (task=%s, socket_dir=%s)",
+                           command, timeout, task_id, task_socket_dir)
+            return {"success": False, "error": _format_browser_timeout_error(command, timeout, stdout, stderr)}
+        with open(stdout_path, "r", encoding="utf-8") as f:
+            stdout = f.read()
+        with open(stderr_path, "r", encoding="utf-8") as f:
+            stderr = f.read()
         _unlink_command_output_files(stdout_path, stderr_path)
-        _handle_browser_command_timeout(task_id, session_info, task_socket_dir)
-        if stderr and stderr.strip():
-            _bt.logger.warning("browser '%s' stderr after timeout: %s", command, stderr.strip()[:500])
-        _bt.logger.warning("browser '%s' timed out after %ds (task=%s, socket_dir=%s)",
-                       command, timeout, task_id, task_socket_dir)
-        return {"success": False, "error": _format_browser_timeout_error(command, timeout, stdout, stderr)}
-    with open(stdout_path, "r", encoding="utf-8") as f:
-        stdout = f.read()
-    with open(stderr_path, "r", encoding="utf-8") as f:
-        stderr = f.read()
-    _unlink_command_output_files(stdout_path, stderr_path)
-    return _interpret_browser_command_output(command, stdout, stderr, proc.returncode)
+        return _interpret_browser_command_output(command, stdout, stderr, proc.returncode)
+    finally:
+        if dock_home:
+            unregister_inflight_dock_cli(proc)
 
 
 def _run_browser_command(
@@ -569,9 +626,38 @@ def _run_browser_command(
         return preflight
     browser_cmd = preflight["browser_cmd"]
 
+    # Owner scope so admit / epoch / leftover identity read the session's
+    # lease after a multiplex turn resets the process home to launch
+    # (finding 101). ``record stop`` stays unfenced inside that home.
+    with _lifecycle._session_owner_scope(task_id):
+        return _run_browser_command_fenced(
+            task_id, command, args, timeout, _engine_override, browser_cmd,
+        )
+
+
+def _run_browser_command_fenced(
+    task_id: str,
+    command: str,
+    args: List[str],
+    timeout: int,
+    _engine_override: Optional[str],
+    browser_cmd,
+) -> Dict[str, Any]:
     try:
         session_info = _get_session_info(task_id)
     except Exception as e:
+        from tools.bot_desktop.lease import HumanHasControl
+
+        if isinstance(e, HumanHasControl):
+            # No session row exists to drive. ``record stop`` has nothing to
+            # cease — do not mint or attach to the dock just to no-op.
+            if command == "record" and args and str(args[0]).strip() == "stop":
+                return {"success": True, "data": {"stopped": False}}
+            try:
+                _bt._maybe_stop_recording(task_id)
+            except Exception:
+                pass
+            return {"success": False, "error": str(e), "code": "human_has_control"}
         _bt.logger.warning("Failed to create browser session for task=%s: %s", task_id, e)
         return {"success": False, "error": f"Failed to create browser session: {str(e)}"}
     # The bot's LOCAL browser lives on its Bot Desktop screen, in the same profile a human who took
@@ -581,27 +667,4797 @@ def _run_browser_command(
     if _shares_bot_desktop_browser(session_info):
         from tools.bot_desktop import lease as _bd_lease
         try:
-            admitted = _bd_lease.assert_agent_may_act()
+            admitted = _stamp_admitted(_bd_lease.assert_agent_may_act())
         except _bd_lease.HumanHasControl as e:
+            # ``record stop`` ceases observation — it must work while the human
+            # holds, or an opted-in WebM keeps capturing the credential they type.
+            # ``close`` stays refused: that tree-kills the shared Chromium.
+            if command == "record" and args and str(args[0]).strip() == "stop":
+                return _run_browser_command_unfenced(
+                    task_id, command, args, timeout, _engine_override, browser_cmd, session_info)
+            try:
+                _bt._maybe_stop_recording(task_id)
+            except Exception:
+                pass
             return {"success": False, "error": str(e), "code": "human_has_control"}
         result = _run_browser_command_unfenced(task_id, command, args, timeout, _engine_override, browser_cmd, session_info)
-        if _bd_lease.get().epoch != admitted.epoch:
-            return {"success": False, "code": "human_has_control",
-                    "error": "A human took over the bot's screen while this browser command ran; its result was "
-                             "discarded. Call computer_use action='wait_for_human' to block until they hand back."}
+        moved = _lease_moved_result(admitted)
+        if moved:
+            return moved
         return result
     return _run_browser_command_unfenced(task_id, command, args, timeout, _engine_override, browser_cmd, session_info)
+
+
+def _this_machine_cdp_hostnames() -> set[str]:
+    """Short + FQDN-looking names this process reports for itself.
+
+    Leftover identity must not call ``getfqdn()`` (DNS + rebinding).
+    ``os.uname().nodename`` can differ from ``gethostname()`` on the same box.
+    """
+    names: set[str] = set()
+    candidates: list[str] = []
+    try:
+        candidates.append(socket.gethostname())
+    except OSError:
+        pass
+    try:
+        nodename = os.uname().nodename
+        if nodename:
+            candidates.append(nodename)
+    except (AttributeError, OSError):
+        pass
+    for raw in candidates:
+        text = (raw or "").strip().lower().strip("[]").rstrip(".")
+        if not text:
+            continue
+        names.add(text)
+        short = text.split(".", 1)[0]
+        if short:
+            names.add(short)
+    return names
+
+
+def _is_this_machine_hostname(host: str) -> bool:
+    """True when ``host`` is this process's hostname (or its short name).
+
+    Chromium on Debian often advertises ``hostname`` / ``hostname.localdomain``
+    in ``webSocketDebuggerUrl``. An arbitrary other hostname with the same
+    port is another Chrome and must not be compared to this profile's dock.
+    """
+    text = (host or "").strip().lower().strip("[]").rstrip(".")
+    if not text:
+        return False
+    ours = _this_machine_cdp_hostnames()
+    if not ours:
+        return False
+    if text in ours:
+        return True
+    return text.split(".", 1)[0] in ours
+
+
+def _hosts_file_paths() -> list[str]:
+    """Local hosts files only. Do not resolve DNS."""
+    if os.name == "nt":
+        windir = os.environ.get("SystemRoot") or os.environ.get("WINDIR") or r"C:\Windows"
+        return [os.path.join(windir, "System32", "drivers", "etc", "hosts")]
+    return ["/etc/hosts"]
+
+
+def _ip_is_this_machine_loopback(addr) -> bool:
+    if addr.is_loopback or addr.is_unspecified:
+        return True
+    mapped = getattr(addr, "ipv4_mapped", None)
+    return bool(mapped and (mapped.is_loopback or mapped.is_unspecified))
+
+
+# Last-part width for 1..4 dotted decimal IPv4 pieces (WHATWG).
+_IPV4_LAST_PART_LIMIT = (0xFFFFFFFF, 0xFFFFFF, 0xFFFF, 0xFF)
+
+
+def _parse_decimal_ipv4(text: str):
+    """WHATWG decimal IPv4, including dotted shorthand. No octal / hex.
+
+    Chromium and leftover CLIs accept ``http://127.1:9333`` /
+    ``http://0:9333`` as 127.0.0.1 / 0.0.0.0. ``ipaddress`` does not, so
+    leftover identity treated those as another Chrome (admit None) on
+    the jar a human is typing into. LAN shorthand (``10.1``) stays LAN.
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    parts = raw.split(".")
+    n = len(parts)
+    if n < 1 or n > 4:
+        return None
+    values: list[int] = []
+    for i, part in enumerate(parts):
+        if not part or not part.isascii() or not part.isdigit():
+            return None
+        try:
+            value = int(part, 10)
+        except ValueError:
+            return None
+        limit = 0xFF if i < n - 1 else _IPV4_LAST_PART_LIMIT[n - 1]
+        if value > limit:
+            return None
+        values.append(value)
+    if n == 1:
+        packed = values[0]
+    elif n == 2:
+        packed = (values[0] << 24) | values[1]
+    elif n == 3:
+        packed = (values[0] << 24) | (values[1] << 16) | values[2]
+    else:
+        packed = (values[0] << 24) | (values[1] << 16) | (values[2] << 8) | values[3]
+    return ipaddress.IPv4Address(packed)
+
+
+def _parse_cdp_ip(text: str):
+    """Parse a CDP host as an IP, including WHATWG IPv4 shorthand.
+
+    ``ipaddress`` first (127/8, ``::1``, ``::ffff:127.0.0.1``). Then
+    dotted / 32-bit decimal shorthand and IPv4-mapped ``::ffff:127.1``.
+    Hostnames stay ``None`` — no DNS.
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    try:
+        return ipaddress.ip_address(raw)
+    except ValueError:
+        pass
+    mapped_prefix = "::ffff:"
+    if raw.lower().startswith(mapped_prefix):
+        v4 = _parse_decimal_ipv4(raw[len(mapped_prefix):])
+        if v4 is None:
+            return None
+        try:
+            return ipaddress.IPv6Address(f"::ffff:{v4}")
+        except ValueError:
+            return None
+    return _parse_decimal_ipv4(raw)
+
+
+def _parse_loopback_hosts_text(text: str) -> set[str]:
+    """Names whose hosts-file address is this machine's loopback.
+
+    LAN / remote mappings stay another browser. No DNS.
+    """
+    names: set[str] = set()
+    for raw_line in (text or "").splitlines():
+        line = raw_line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        try:
+            addr = ipaddress.ip_address(parts[0].strip().strip("[]"))
+        except ValueError:
+            continue
+        if not _ip_is_this_machine_loopback(addr):
+            continue
+        for raw_name in parts[1:]:
+            name = (raw_name or "").strip().lower().strip("[]").rstrip(".")
+            if not name:
+                continue
+            names.add(name)
+            short = name.split(".", 1)[0]
+            if short:
+                names.add(short)
+    return names
+
+
+_hosts_loopback_names_cache: Optional[tuple] = None
+
+
+def _reset_loopback_hosts_cache_for_tests() -> None:
+    global _hosts_loopback_names_cache
+    _hosts_loopback_names_cache = None
+
+
+def _loopback_hosts_file_names() -> set[str]:
+    """Loopback aliases from the local hosts file, cached by mtime/size."""
+    global _hosts_loopback_names_cache
+    paths = _hosts_file_paths()
+    stamp = []
+    for path in paths:
+        try:
+            st = os.stat(path)
+            stamp.append((path, st.st_mtime_ns, st.st_size))
+        except OSError:
+            stamp.append((path, None, None))
+    stamp_t = tuple(stamp)
+    cached = _hosts_loopback_names_cache
+    if cached and cached[0] == stamp_t:
+        return set(cached[1])
+    names: set[str] = set()
+    for path in paths:
+        try:
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                names.update(_parse_loopback_hosts_text(fh.read()))
+        except OSError:
+            continue
+    _hosts_loopback_names_cache = (stamp_t, frozenset(names))
+    return names
+
+
+def _is_loopback_hosts_alias(host: str) -> bool:
+    """True when ``host`` is a local hosts-file loopback alias.
+
+    ``/browser connect http://dock-chrome:9333`` is this machine when
+    ``/etc/hosts`` maps that name to 127/8 — not only when the name equals
+    ``gethostname()``. A hosts name mapped to a LAN IP is another Chrome.
+    """
+    text = (host or "").strip().lower().strip("[]").rstrip(".")
+    if not text:
+        return False
+    ours = _loopback_hosts_file_names()
+    if not ours:
+        return False
+    if text in ours:
+        return True
+    return text.split(".", 1)[0] in ours
+
+
+def _percent_decode_cdp_host(host: str) -> str:
+    """WHATWG percent-decode a CDP host once. No DNS.
+
+    Node leftover (chrome-devtools-mcp, playwright, lighthouse,
+    agent-browser) uses ``new URL()``, which turns
+    ``http://127%2e1:9333`` into 127.0.0.1. ``urllib.parse`` does not,
+    so persist could not match and leftover attach was another Chrome
+    (admit None) on the jar a human is typing into. Decode once only
+    — ``%2531`` stays ``%31``. LAN ``10%2e1`` stays LAN after decode.
+    """
+    from urllib.parse import unquote
+    return unquote(host or "")
+
+
+def _is_loopback_cdp_host(host: str) -> bool:
+    """True for this machine's CDP hosts, including 127/8, IPv4-mapped, and hostname.
+
+    A closed hostname set missed Debian's ``127.0.1.1``, ``::ffff:127.0.0.1``,
+    this process's own hostname, and extra ``/etc/hosts`` loopback aliases
+    (``127.0.0.1 dock-chrome``). WHATWG / Chromium dotted shorthand
+    (``127.1``, ``127.0.1``, ``0``, ``2130706433``) is the same miss:
+    leftover ``--cdp-url http://127.1:9333`` never extracted a port, so
+    persist could not match and attach was another Chrome (admit None)
+    on the jar a human is typing into. Percent-encoded dots / digits
+    (``127%2e1``, ``%31%32%37.0.0.1``) are the Node leftover twin —
+    ``new URL()`` decodes them, ``urllib.parse`` does not. Remote /
+    LAN / other hostnames stay another browser. Do not resolve DNS
+    here: leftover identity must stay a local parse.
+    """
+    text = _percent_decode_cdp_host(host).strip().lower().strip("[]").rstrip(".")
+    if not text:
+        return False
+    if (
+        text in {"localhost", "localhost.localdomain", "ip6-localhost", "ip6-loopback"}
+        or text.endswith(".localhost")
+    ):
+        return True
+    if _is_this_machine_hostname(text) or _is_loopback_hosts_alias(text):
+        return True
+    addr = _parse_cdp_ip(text)
+    if addr is None:
+        return False
+    return _ip_is_this_machine_loopback(addr)
+
+
+def _cdp_url_host_port(url: str) -> Tuple[str, Optional[int]]:
+    """Host + port from a CDP URL. Never raises on Chromium shorthand.
+
+    ``urllib.parse`` validates bracketed hosts with ``ipaddress``, so
+    ``ws://[::ffff:127.1]:9333`` — a mapped WHATWG form leftover CLIs
+    can pass through — aborted leftover interrupt instead of fencing.
+    """
+    text = (url or "").strip()
+    if not text:
+        return "", None
+    raw = text if "://" in text else f"http://{text}"
+    from urllib.parse import urlparse
+    try:
+        parsed = urlparse(raw)
+        return (parsed.hostname or "").lower(), parsed.port
+    except ValueError:
+        pass
+    rest = raw.split("://", 1)[-1]
+    netloc = rest.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
+    if netloc.startswith("["):
+        end = netloc.find("]")
+        if end < 0:
+            return "", None
+        host = netloc[1:end].lower()
+        tail = netloc[end + 1:]
+        if tail.startswith(":") and tail[1:].isdigit():
+            return host, int(tail[1:])
+        return host, None
+    if "@" in netloc:
+        netloc = netloc.rsplit("@", 1)[-1]
+    host, sep, port_text = netloc.rpartition(":")
+    if sep and port_text.isdigit() and host and ":" not in host:
+        return host.lower(), int(port_text)
+    return netloc.lower(), None
+
+
+def _loopback_cdp_port(url: str) -> Optional[int]:
+    """Port if ``url`` is this machine's CDP endpoint, else ``None``.
+
+    Remote / cloud / other-hostname CDP hosts are another browser and must
+    not be compared to this profile's dock Chromium.
+    """
+    text = (url or "").strip()
+    if not text:
+        return None
+    if text.isdigit():
+        port = int(text)
+        return port if 1 <= port <= 65535 else None
+    host, port = _cdp_url_host_port(text)
+    if not _is_loopback_cdp_host(host):
+        return None
+    return port if port is not None and 1 <= port <= 65535 else None
+
+
+def _dock_listen_connect_hosts(port: int) -> Tuple[str, ...]:
+    """This jar's connect hosts for *port*, or empty when unknown.
+
+    Finding 145 used the raw SingletonLock pid. A recycled lock pid
+    that does not name this jar still has listens — leftover
+    ``--cdp http://127.0.0.1:<persist>`` then looked like a sibling
+    squat when that pid was ``::1``-only (finding 159). Recover /
+    Take over already refuse that pid. Empty hosts stay port-only.
+
+    Finding 162: ``_this_jar_chromium_pid`` needs the lock or
+    ``DevToolsActivePort``. Named listen does not. Take over can
+    unlink both while Chromium still holds DevTools — leftover
+    IPv4 to a ``::1``-only jar then skipped the family check.
+    """
+    from tools.bot_desktop import browser as _bd_browser
+
+    try:
+        hosts = _bd_browser._this_jar_listen_connect_hosts(port)
+    except Exception:
+        hosts = ()
+    if hosts:
+        return hosts
+    try:
+        pid = _bd_browser._this_jar_chromium_pid()
+    except Exception:
+        return ()
+    if pid is None:
+        return ()
+    try:
+        return _bd_browser._listen_connect_hosts(pid, port)
+    except Exception:
+        return ()
+
+
+def _leftover_cdp_host_matches_this_jar(cdp_url: str, port: int) -> bool:
+    """True when leftover CDP host is this jar's listen family, or unknown.
+
+    Persist is family-correct (finding 144): a ::1-only dock plus a
+    sibling on ``127.0.0.1:same`` is not stamped. Leftover identity
+    still compared ports only, so ``--cdp http://127.0.0.1:<dock>``
+    aimed at the squat (finding 145).     Port-only / localhost / a
+    hostname stay unknown-family (official leftover resolves those
+    via getaddrinfo). No listen info (planted 9333, dead lock, or a
+    recycled lock pid that is not this jar) stays port-only — do
+    not fail-closed every fixture.
+    """
+    text = (cdp_url or "").strip()
+    if not text or text.isdigit():
+        return True
+    host, _ = _cdp_url_host_port(text)
+    if not host:
+        return True
+    decoded = _percent_decode_cdp_host(host).strip().lower().strip("[]").rstrip(".")
+    if not decoded:
+        return True
+    addr = _parse_cdp_ip(decoded)
+    if addr is None:
+        return True
+    hosts = _dock_listen_connect_hosts(port)
+    if not hosts:
+        return True
+    from tools.bot_desktop import browser as _bd_browser
+
+    leftover_hosts = set(_bd_browser._connect_hosts_for_listen_ip(str(addr)))
+    return bool(leftover_hosts and leftover_hosts.intersection(hosts))
+
+
+def _leftover_cdp_aims_at_dock(cdp: Optional[str], dock_port: Optional[int]) -> bool:
+    """True when leftover CDP URL / port is this profile's dock jar."""
+    text = (cdp or "").strip()
+    if not text:
+        return False
+    if _cdp_url_is_bot_desktop_browser(text):
+        return True
+    port = _loopback_cdp_port(text)
+    if dock_port is None or port != dock_port:
+        return False
+    return _leftover_cdp_host_matches_this_jar(text, port)
+
+
+def _leftover_host_port_aims_at_dock(
+    host: Optional[str],
+    port: int,
+    dock_port: Optional[int],
+) -> bool:
+    """True when leftover ``--host`` / ``--hostname`` + port is this jar.
+
+    Finding 155 identified leftover *URLs* when persist and the override
+    both miss. Official leftover lighthouse ``--port`` / CRI ``--port``
+    never build a URL — they required a stamped ``dock_port`` first, so
+    Take over left those writers typing into the jar a human holds.
+    A leftover that already named ``port`` is not a guess: consult the
+    same named-listen identity. A sibling on 9222, the other loopback
+    family, and LAN stay unknown.
+
+    Finding 171: a stale persist ``dock_port`` must not hide leftover
+    ``--port`` that already named the live listen. Finding 156 rejected
+    ``port != dock_port`` *before* identity, so lighthouse / CRI aimed
+    at the file-named jar survived Take over after leftover held CDP
+    and persist stayed at an older stamp. Same order as
+    ``_leftover_cdp_aims_at_dock`` — identity first. 9222, the other
+    family, and LAN stay unknown.
+    """
+    if not (1 <= port <= 65535):
+        return False
+    text = (host or "").strip()
+    if not text:
+        return _leftover_cdp_aims_at_dock(str(port), dock_port)
+    if ":" in text and not text.startswith("["):
+        url = f"http://[{text}]:{port}"
+    else:
+        url = f"http://{text}:{port}"
+    return _leftover_cdp_aims_at_dock(url, dock_port)
+
+
+# Last live dock DevTools port per profile. Take over can unlink
+# DevToolsActivePort / SingletonLock while Chromium is still the jar the
+# human is typing into; a live miss must not treat that remembered port as
+# "another browser". A different loopback port stays another Chrome.
+_last_dock_cdp_port: Dict[str, int] = {}
+
+
+def _reset_dock_port_memory_for_tests() -> None:
+    _last_dock_cdp_port.clear()
+    _reset_loopback_hosts_cache_for_tests()
+    _reset_inflight_dock_cli_for_tests()
+    _reset_reserved_dock_harness_for_tests()
+    try:
+        from tools.bot_desktop import browser as _bd_browser
+        _bd_browser._dock_port_path().unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _remembered_dock_port_candidates() -> list[int]:
+    """Persist file then in-process memory. Valid unique ports.
+
+    ``running_instance_cdp_port`` / ``remember_dock_cdp_port`` write the
+    file only. ``_last_dock_cdp_port`` is a leftover-identity cache and
+    can lag after Chromium's ephemeral port moves. Stale memory must
+    not hide persist (finding 169). Memory-only (persist unlinked)
+    stays a candidate. No HTTP.
+    """
+    from hermes_constants import hermes_home_key
+    from tools.bot_desktop import browser as _bd_browser
+
+    ports: list[int] = []
+    try:
+        persist = _bd_browser.last_known_dock_cdp_port()
+    except Exception:
+        persist = None
+    memory = _last_dock_cdp_port.get(hermes_home_key())
+    for port in (persist, memory):
+        if isinstance(port, int) and 1 <= port <= 65535 and port not in ports:
+            ports.append(port)
+    return ports
+
+
+_inflight_dock_cli_lock = threading.Lock()
+_inflight_dock_cli: list[dict] = []
+
+
+def _dock_cli_home(task_id: str, session_info: Dict[str, Any]) -> Optional[str]:
+    """HERMES_HOME of a leftover CLI aimed at this profile's dock Chromium, else None."""
+    if not _shares_bot_desktop_browser(session_info):
+        return None
+    owner = _bt._session_owner_homes.get(task_id)
+    if owner:
+        return str(owner)
+    from hermes_constants import get_hermes_home
+    return str(get_hermes_home())
+
+
+def register_inflight_dock_cli(
+    proc,
+    home: Optional[str] = None,
+    kill: Optional[Callable] = None,
+) -> None:
+    """Track a leftover writer so Take over can drop it without waiting it out.
+
+    Agent-browser CLI is in Hermes' process group — ``kill`` must be PID-only
+    (default ``Popen.kill``). browser_exec uses ``start_new_session`` so its
+    killer may ``killpg`` that group; dock Chromium is not in it.
+    """
+    from hermes_constants import hermes_home_key
+    from tools.browser_tool_supervisor_lease import install_supervisor_lease_hook
+
+    install_supervisor_lease_hook()
+    owner = str(home) if home else ""
+    with _inflight_dock_cli_lock:
+        _inflight_dock_cli.append({
+            "proc": proc,
+            "home": owner or None,
+            "home_key": hermes_home_key(owner or None),
+            "kill": kill,
+        })
+
+
+def unregister_inflight_dock_cli(proc) -> None:
+    with _inflight_dock_cli_lock:
+        _inflight_dock_cli[:] = [e for e in _inflight_dock_cli if e.get("proc") is not proc]
+
+
+def _reset_inflight_dock_cli_for_tests() -> None:
+    with _inflight_dock_cli_lock:
+        _inflight_dock_cli.clear()
+
+
+def interrupt_reserved_browser_cli(home: Optional[str] = None) -> None:
+    """Kill leftover agent-browser / browser_exec writers aimed at a human-held dock.
+
+    ``_run_browser_command`` and ``browser_exec`` only discard the result after
+    the CLI finishes — leftover ``fill`` / Playwright ``Input.dispatchKeyEvent``
+    still land in the field the human is typing into. Same class as leftover
+    CDP ``ws.send`` and leftover ``computer_use`` ``type_text``.
+    """
+    from hermes_constants import hermes_home_key, reset_hermes_home_override, set_hermes_home_override
+    from tools.bot_desktop import lease as _bd_lease
+
+    want = hermes_home_key(home) if home is not None else None
+    victims: list[dict] = []
+    with _inflight_dock_cli_lock:
+        kept: list[dict] = []
+        for entry in _inflight_dock_cli:
+            owner_key = entry.get("home_key") or hermes_home_key()
+            if want is not None and owner_key != want:
+                kept.append(entry)
+                continue
+            owner = entry.get("home")
+            token = None
+            try:
+                if owner:
+                    token = set_hermes_home_override(owner)
+                held = _bd_lease.human_holds()
+            finally:
+                if token is not None:
+                    reset_hermes_home_override(token)
+            if not held:
+                kept.append(entry)
+                continue
+            victims.append(entry)
+        _inflight_dock_cli[:] = kept
+    for entry in victims:
+        proc = entry.get("proc")
+        killer = entry.get("kill")
+        try:
+            if callable(killer):
+                killer(proc)
+            elif proc is not None and getattr(proc, "poll", lambda: None)() is None:
+                proc.kill()
+        except Exception:
+            _bt.logger.debug("reserved browser CLI interrupt failed", exc_info=True)
+
+
+_NPX_LAUNCHERS = frozenset({"npx", "pnpx", "bunx"})
+_PACKAGE_EXEC_LAUNCHERS = frozenset({"npm", "pnpm", "yarn"})
+_PACKAGE_EXEC_SUBCOMMANDS = frozenset({"exec", "dlx"})
+_BUN_LAUNCHERS = frozenset({"bun"})
+_BUN_X_SUBCOMMANDS = frozenset({"x", "exec"})
+# bun verbs that are not ``bun <script>``. Official leftover daemons
+# spawn ``process.execPath`` + a script path (finding 142). ``bun run``
+# / ``bun install`` stay unknown (existing bun-x tests).
+_BUN_PACKAGE_VERBS = frozenset({
+    "run", "install", "i", "add", "remove", "rm", "update", "upgrade",
+    "outdated", "link", "unlink", "publish", "test", "build", "init",
+    "create", "repl", "pm", "patch",
+})
+_UVX_LAUNCHERS = frozenset({"uvx", "uv"})
+# Official leftover ``uv run`` / ``uvx`` value flags before the command.
+# ``--from`` is already in ``_LAUNCHER_VALUE_FLAGS``. Finding 151:
+# leftover ``uv run --with ruff -m browser_use.cli`` / ``uvx --with
+# ruff browser-use`` hid the attach because ``--with`` was treated as
+# a bare flag and the dependency became the command.
+_UV_VALUE_FLAGS = frozenset({
+    "--from", "--with", "--with-requirements", "--with-editable",
+    "--directory", "--project", "--package", "--python",
+    "--extra", "--group", "--env-file",
+})
+_NODE_LAUNCHERS = frozenset({"node", "nodejs", "iojs"})
+_ENV_LAUNCHERS = frozenset({"env"})
+_COREPACK_LAUNCHERS = frozenset({"corepack"})
+_AGENT_BROWSER_NODE_ENTRYPOINTS = frozenset({
+    "agent-browser", "agent-browser.js", "cli.js", "cli.mjs", "cli.cjs",
+    "index.js", "daemon.js",
+})
+# Official leftover native daemon: ``ensure_daemon`` re-execs
+# ``env::current_exe()`` — published names from the npm ``bin/`` set.
+_AGENT_BROWSER_NATIVE_TRIPLES = frozenset({
+    "linux-x64", "linux-arm64",
+    "linux-musl-x64", "linux-musl-arm64",
+    "darwin-x64", "darwin-arm64",
+    "win32-x64", "win32-arm64",
+})
+_PLAYWRIGHT_NODE_ENTRYPOINTS = frozenset({
+    "playwright", "cli.js", "cli.mjs", "cli.cjs",
+})
+_PLAYWRIGHT_MCP_NODE_ENTRYPOINTS = frozenset({
+    "mcp", "cli.js", "cli.mjs", "cli.cjs", "index.js",
+})
+_LIGHTHOUSE_NODE_ENTRYPOINTS = frozenset({
+    "lighthouse", "lighthouse.js", "lighthouse-cli.js",
+    "cli.js", "cli.mjs", "cli.cjs", "index.js",
+})
+_YARN_NODE_ENTRYPOINTS = frozenset({
+    "yarn", "yarn.js", "yarn.cjs", "yarn.mjs",
+    "cli.js", "cli.cjs", "cli.mjs",
+})
+_NPX_NODE_ENTRYPOINTS = frozenset({
+    "npx", "npx.js", "npx.cjs", "npx-cli.js", "npx-cli.cjs",
+})
+_NPM_NODE_ENTRYPOINTS = frozenset({
+    "npm", "npm.js", "npm.cjs", "npm-cli.js", "npm-cli.cjs",
+})
+_PNPM_NODE_ENTRYPOINTS = frozenset({
+    "pnpm", "pnpm.js", "pnpm.cjs", "pnpm.mjs",
+    "cli.js", "cli.cjs", "cli.mjs",
+})
+_COREPACK_NODE_ENTRYPOINTS = frozenset({
+    "corepack", "corepack.js", "corepack.cjs", "corepack.mjs",
+})
+_COREPACK_YARN_SHIMS = frozenset({
+    "yarn.js", "yarn.cjs", "yarn.mjs", "yarnpkg.js", "yarnpkg.cjs",
+})
+_COREPACK_PNPM_SHIMS = frozenset({"pnpm.js", "pnpm.cjs", "pnpm.mjs"})
+_COREPACK_NPM_SHIMS = frozenset({"npm.js", "npm.cjs"})
+_COREPACK_NPX_SHIMS = frozenset({
+    "pnpx.js", "pnpx.cjs", "pnpx.mjs",
+})
+# Official leftover ``codegen`` / ``test`` attach via Playwright's own
+# connect env. ``PLAYWRIGHT_MCP_CDP_ENDPOINT`` is MCP / Agent CLI only
+# (``configFromEnv`` in playwright-core). Finding 146: a shared scan
+# put ``PW_TEST_*`` first and also treated the MCP key as a regular
+# Playwright pin.
+_PLAYWRIGHT_CDP_ENV = (
+    "PW_TEST_CONNECT_WS_ENDPOINT",
+    "PLAYWRIGHT_WS_ENDPOINT",
+    "BROWSER_CDP_URL",
+)
+# Official leftover MCP / Agent CLI (``resolveCLIConfigForMCP`` /
+# ``resolveCLIConfigForCLI``) only read ``PLAYWRIGHT_MCP_CDP_ENDPOINT``.
+# Finding 146: leftover MCP with that key on the dock and
+# ``PW_TEST_CONNECT_WS_ENDPOINT`` on a sibling stayed running because
+# the shared scan took Playwright's key first. Finding 147: that
+# inherited Playwright connect env must not shadow official
+# ``--config`` / ``PLAYWRIGHT_MCP_CONFIG`` ``browser.cdpEndpoint``.
+# Keep it as a fallback after the official MCP env + config miss so
+# leftover MCP that inherited a ``PW_TEST`` pin still interrupts.
+_PLAYWRIGHT_MCP_OFFICIAL_CDP_ENV = (
+    "PLAYWRIGHT_MCP_CDP_ENDPOINT",
+)
+
+
+def _leftover_playwright_env_pin(
+    environ: Optional[Dict[str, str]],
+    *,
+    mcp: bool,
+    official_only: bool = False,
+) -> str:
+    """Leftover Playwright attach env aimed at a CDP URL.
+
+    MCP / Agent CLI leftover: official ``PLAYWRIGHT_MCP_CDP_ENDPOINT``
+    first (finding 146). ``official_only`` skips inherited
+    ``PW_TEST_*`` / ``PLAYWRIGHT_WS_ENDPOINT`` / ``BROWSER_CDP_URL``
+    so those cannot hide official ``--config`` attach (finding 147).
+    Regular Playwright leftover: Playwright's own connect env only.
+    """
+    env = environ or {}
+    if mcp:
+        keys = _PLAYWRIGHT_MCP_OFFICIAL_CDP_ENV
+        if not official_only:
+            keys = keys + _PLAYWRIGHT_CDP_ENV
+    else:
+        keys = _PLAYWRIGHT_CDP_ENV
+    for key in keys:
+        val = (env.get(key) or "").strip()
+        if val:
+            return val
+    return ""
+
+
+def _token_basename_is(token: str, name: str) -> bool:
+    """True when this argv token *is* ``name`` (binary or package@ver).
+
+    Token-match only — never ``name in cmdline``. A path substring such as
+    ``cat agent-browser.log`` or ``chrome --user-data-dir=…/agent-browser``
+    is not an invocation.
+    """
+    raw = (token or "").strip().strip("\"'")
+    if not raw or not name:
+        return False
+    pkg = Path(raw).name.split("@", 1)[0]
+    lower = pkg.lower()
+    if lower.endswith((".exe", ".cmd", ".bat")):
+        lower = Path(lower).stem.lower()
+    return lower == name.lower()
+
+
+def _token_is_agent_browser_native_binary(token: str) -> bool:
+    """True when this token is an official leftover native ``agent-browser-*``.
+
+    Finding 112 matched basename ``agent-browser``. Official leftover
+    ``connect`` re-execs ``env::current_exe()`` as the daemon — the
+    published binaries ``agent-browser-linux-x64`` /
+    ``agent-browser-darwin-arm64`` / ``agent-browser-win32-x64.exe`` /
+    ``agent-browser-linux-musl-*``. ``agent-browser-mcp`` /
+    ``cat agent-browser-linux-x64`` are not.
+    """
+    raw = (token or "").strip().strip("\"'")
+    if not raw:
+        return False
+    name = Path(raw).name.lower()
+    if name.endswith((".exe", ".cmd", ".bat")):
+        name = Path(name).stem.lower()
+    prefix = "agent-browser-"
+    if not name.startswith(prefix):
+        return False
+    return name[len(prefix):] in _AGENT_BROWSER_NATIVE_TRIPLES
+
+
+def _token_basename_is_agent_browser(token: str) -> bool:
+    return (
+        _token_basename_is(token, "agent-browser")
+        or _token_is_agent_browser_native_binary(token)
+    )
+
+
+def _is_python_launcher(name0: str) -> bool:
+    return name0 == "python" or name0.startswith("python3")
+
+
+def _token_is_agent_browser_daemon(token: str) -> bool:
+    """True when this token is official leftover ``agent-browser/dist/daemon.js``.
+
+    Finding 112 matched argv0 ``agent-browser`` with ``AGENT_BROWSER_CDP``.
+    Official leftover ``connect <dock>`` also leaves
+    ``node …/agent-browser/dist/daemon.js`` detached
+    (``AGENT_BROWSER_DAEMON=1``; that process keeps the CDP
+    connection). Path parts must include ``agent-browser`` — a random
+    ``daemon.js`` is not. ``chrome-devtools-mcp`` / ``cat daemon.js``
+    are not.
+    """
+    raw = (token or "").strip().strip("\"'")
+    if not raw:
+        return False
+    path = Path(raw)
+    if path.name.lower() != "daemon.js":
+        return False
+    return "agent-browser" in [p.lower() for p in path.parts]
+
+
+def _token_is_agent_browser_script(token: str) -> bool:
+    """True when this token is the agent-browser binary or its Node entry.
+
+    Linux shebang rewrites argv0 to ``node`` and the script path. A package
+    path ``…/agent-browser/dist/cli.js`` is an invocation; ``cli.js`` outside
+    that package and ``--user-data-dir=…/agent-browser`` are not.
+    ``…/agent-browser/dist/daemon.js`` is the leftover Node connect
+    daemon (finding 140). Official leftover today re-execs the
+    published native binary ``agent-browser-<os>-<arch>`` (finding
+    141); the npm bin is ``bin/agent-browser.js``.
+    """
+    if _token_basename_is_agent_browser(token):
+        return True
+    if _token_is_agent_browser_daemon(token):
+        return True
+    raw = (token or "").strip().strip("\"'")
+    if not raw:
+        return False
+    path = Path(raw)
+    parts = [p.lower() for p in path.parts]
+    if "agent-browser" not in parts:
+        return False
+    return path.name.lower() in _AGENT_BROWSER_NODE_ENTRYPOINTS
+
+
+def _env_command_tokens(tokens: List[str]) -> List[str]:
+    """Argv after ``env`` [assignments] [flags], or empty."""
+    i = 1
+    while i < len(tokens):
+        raw = str(tokens[i])
+        if raw == "--":
+            return [str(t) for t in tokens[i + 1:]]
+        if raw.startswith("-"):
+            if raw in {"-u", "--unset"}:
+                i += 2
+                continue
+            i += 1
+            continue
+        if "=" in raw and not raw.startswith("="):
+            i += 1
+            continue
+        return [str(t) for t in tokens[i:]]
+    return []
+
+
+def _corepack_command_tokens(tokens: List[str]) -> List[str]:
+    """Argv after ``corepack`` [flags], or empty.
+
+    ``corepack pnpm exec lighthouse --port 9333`` is the leftover writer
+    finding 91's ``pnpm exec`` match misses. ``corepack enable`` /
+    ``corepack use`` are not leftover invocations. Keep the child's
+    flags (``--port``, ``--browserUrl``) — do not strip them as
+    corepack's own.
+    """
+    if not tokens or _launcher_basename(tokens[0]) not in _COREPACK_LAUNCHERS:
+        return []
+    i = 1
+    while i < len(tokens):
+        raw = str(tokens[i])
+        if raw == "--":
+            return [str(t) for t in tokens[i + 1:]]
+        if raw.startswith("-"):
+            i += 1
+            continue
+        return [str(t) for t in tokens[i:]]
+    return []
+
+
+def _launcher_basename(token: str) -> str:
+    name0 = Path((token or "").strip().strip("\"'")).name.lower()
+    if name0.endswith((".exe", ".cmd", ".bat")):
+        name0 = Path(name0).stem.lower()
+    return name0
+
+
+_LAUNCHER_VALUE_FLAGS = frozenset({"--from"})
+# agent-browser globals that take a value before ``connect <port|url>``.
+# ``--session foo connect 9333`` must see ``connect``, not ``foo``.
+# Official leftover globals that always take an operand before
+# ``connect <port|url>``. Finding 133 added ``--config``; finding 134
+# is the rest of the documented string / array / number flags —
+# ``--state ./auth.json connect <dock>`` treated ``./auth.json`` as
+# the attach. Booleans are ``_AGENT_BROWSER_OPTIONAL_BOOL_FLAGS``.
+_AGENT_BROWSER_VALUE_FLAGS = frozenset({
+    "--session", "--profile", "--cdp", "--cdp-endpoint",
+    "-p", "--provider", "--headers", "--executable-path", "--args",
+    "--user-agent", "--proxy", "--proxy-bypass", "--name", "-n",
+    "--color-scheme", "--config", "--state", "--restore",
+    "--restore-save", "--restore-check-url", "--restore-check-text",
+    "--restore-check-fn", "--namespace", "--session-name",
+    "--extension", "--init-script", "--enable", "--device",
+    "--ca-cert", "--download-path", "--max-output",
+    "--allowed-domains", "--action-policy", "--confirm-actions",
+    "--engine", "--screenshot-dir", "--screenshot-quality",
+    "--screenshot-format", "--idle-timeout", "--model",
+})
+# Official leftover booleans accept an optional ``true`` / ``false``
+# (``--headed false connect <dock>``). A bare ``--headed connect``
+# must still see ``connect`` — do not swallow the command.
+_AGENT_BROWSER_OPTIONAL_BOOL_FLAGS = frozenset({
+    "--headed", "--json", "--debug", "--hide-scrollbars", "--webgpu",
+    "--no-webmcp", "--ignore-https-errors", "--no-ca-cert",
+    "--allow-file-access", "--auto-connect", "--pin-tab",
+    "--annotate", "--content-boundaries", "--confirm-interactive",
+    "--no-auto-dialog",
+})
+# Global options that take a path / selector *before* exec|dlx|x.
+# Space-separated values used to become the "command" (``pnpm --dir /tmp
+# exec lighthouse`` → rest[0] == ``/tmp``), so leftover unwrap missed
+# every workspace-dir writer. Equals form (``--dir=/tmp``) already
+# skipped as a flag. Do not put ``-p`` here — that is npm's package pin.
+_PACKAGE_EXEC_VALUE_FLAGS = frozenset({
+    "--dir", "-C", "--prefix", "--cwd", "--filter", "--workspace", "-w",
+})
+_BUN_VALUE_FLAGS = frozenset({"--cwd"})
+# npx / pnpx / bunx. ``--prefix /tmp lighthouse`` used to see ``/tmp`` as
+# the package (finding 103). ``--workspace web`` is the same shape
+# (finding 104). Do not put ``-p`` / ``--package`` here — ``npx -p
+# lighthouse --port 9333`` (no binary repeat) matches the pin. Do not
+# put ``-w`` here globally — pnpx ``-w`` is boolean ``--workspace-root``
+# and would swallow the binary. ``npx -w`` is npm's workspace pin and
+# is added only for argv0 ``npx``.
+_NPX_VALUE_FLAGS = frozenset({"--prefix", "--cwd", "--workspace"})
+
+
+def _npx_package_tokens(tokens: List[str]) -> List[str]:
+    """Operands after ``npx`` / ``pnpx`` / ``bunx``, prefix/cwd/workspace skipped."""
+    flags = _NPX_VALUE_FLAGS
+    if tokens and _launcher_basename(tokens[0]) == "npx":
+        flags = _NPX_VALUE_FLAGS | {"-w"}
+    return _first_non_flag_tokens(tokens, value_flags=flags)
+
+
+_NPX_PACKAGE_PIN_FLAGS = frozenset({"--package", "-p"})
+
+
+def _npx_launcher_value_flags(tokens: List[str]) -> frozenset:
+    """Value flags for peeling npx argv. Includes ``--package`` / ``-p``.
+
+    Do not feed these into ``_npx_package_tokens`` — consuming ``-p``
+    there would miss ``npx -p lighthouse --port`` (no binary repeat).
+    """
+    flags = set(_NPX_VALUE_FLAGS) | set(_NPX_PACKAGE_PIN_FLAGS)
+    if tokens and _launcher_basename(tokens[0]) == "npx":
+        flags.add("-w")
+    return frozenset(flags)
+
+
+def _npx_package_pins(tokens: List[str]) -> List[str]:
+    """``--package=foo`` / ``-p foo`` pins before ``--``, in order."""
+    if not tokens or _launcher_basename(tokens[0]) not in _NPX_LAUNCHERS:
+        return []
+    pins: List[str] = []
+    i = 1
+    while i < len(tokens):
+        raw = str(tokens[i]) if tokens[i] is not None else ""
+        if raw == "--":
+            break
+        if raw in _NPX_PACKAGE_PIN_FLAGS and i + 1 < len(tokens):
+            nxt = str(tokens[i + 1])
+            if not nxt.startswith("-"):
+                pins.append(nxt)
+            i += 2
+            continue
+        if raw.startswith("--package="):
+            val = raw.split("=", 1)[1]
+            if val:
+                pins.append(val)
+            i += 1
+            continue
+        i += 1
+    return pins
+
+
+def _npx_invocation_matches(tokens: List[str], match_token) -> bool:
+    """True when the npx operand or last ``--package`` / ``-p`` pin matches.
+
+    ``npx --package=lighthouse -- --port <dock>`` has no leftover binary
+    operand (finding 105). Last-wins: a later ``--package=ruff`` is not
+    lighthouse. Do not consume ``-p`` as a value flag on the operand
+    walk — ``npx -p lighthouse --port`` still matches via ``rest[0]``.
+    """
+    rest = _npx_package_tokens(tokens)
+    if rest and match_token(rest[0]):
+        return True
+    pins = _npx_package_pins(tokens)
+    return bool(pins) and match_token(pins[-1])
+
+
+def _npx_child_argv(tokens: List[str]) -> Optional[List[str]]:
+    """Child argv after npx's ``--``, or None when ``--`` is the child's.
+
+    ``npx --package=lighthouse -- --port <dock>`` puts leftover flags
+    after npx's ``--``. ``npx lighthouse --port <dock> -- url`` keeps
+    ``--port`` *before* the child's terminator — peeling that ``--``
+    would hide the aim. Only peel when no operand remains before
+    ``--`` after skipping prefix/package pins.
+    """
+    if not tokens or _launcher_basename(tokens[0]) not in _NPX_LAUNCHERS:
+        return None
+    sep = None
+    for i, tok in enumerate(tokens):
+        if str(tok) == "--":
+            sep = i
+            break
+    if sep is None:
+        return None
+    rest_before = _first_non_flag_tokens(
+        list(tokens[:sep]), value_flags=_npx_launcher_value_flags(tokens),
+    )
+    if rest_before:
+        return None
+    return [str(t) for t in tokens[sep + 1:]]
+
+
+def _first_non_flag_tokens(
+    tokens: List[str],
+    skip: int = 1,
+    value_flags: Optional[frozenset] = None,
+    reserved: Optional[frozenset] = None,
+    optional_bool_flags: Optional[frozenset] = None,
+) -> List[str]:
+    """Non-flag argv after the launcher, skipping values of known launcher flags.
+
+    ``uvx --from browser-use==1 browser-use`` must see ``browser-use`` as the
+    command, not the pin. ``npx -p agent-browser@latest agent-browser`` is
+    the same shape. ``pnpm --dir /tmp exec lighthouse`` must see ``exec``,
+    not the directory. A reserved next token (``exec`` / ``x``) is the
+    subcommand, not a directory named ``exec``.
+
+    ``optional_bool_flags`` consume a following ``true`` / ``false`` only
+    (finding 134). Official leftover ``--headed false connect <dock>``
+    hid the attach; a bare ``--headed connect`` must still see
+    ``connect``.
+    """
+    known = _LAUNCHER_VALUE_FLAGS if not value_flags else (_LAUNCHER_VALUE_FLAGS | value_flags)
+    reserved_next = reserved or frozenset()
+    optional_bool = optional_bool_flags or frozenset()
+    out: List[str] = []
+    expect_value = False
+    expect_optional_bool = False
+    for tok in tokens[skip:]:
+        raw = str(tok) if tok is not None else ""
+        if expect_value:
+            expect_value = False
+            if raw in reserved_next:
+                out.append(raw)
+            continue
+        if expect_optional_bool:
+            expect_optional_bool = False
+            if raw.lower() in {"true", "false"}:
+                continue
+            if not raw.startswith("-"):
+                out.append(raw)
+                continue
+        if not raw or raw.startswith("-"):
+            key = raw.split("=", 1)[0]
+            if key in known and "=" not in raw:
+                expect_value = True
+            elif key in optional_bool and "=" not in raw:
+                expect_optional_bool = True
+            continue
+        out.append(raw)
+    return out
+
+
+def _package_exec_parts(
+    tokens: List[str],
+) -> Optional[Tuple[List[str], List[str]]]:
+    """``npm|pnpm|yarn exec|dlx`` → ``(flag_packages, operands)``, else None.
+
+    ``npx`` / ``pnpx`` / ``bunx`` already unwrap. ``pnpm exec`` / ``npm exec``
+    / ``yarn dlx`` are the leftover writers those launchers miss. ``pnpm run``
+    / ``npm install`` / ``yarn add`` are not invocations. ``npm x`` is
+    ``npm exec``. ``--package`` / ``-p`` before a bare ``--`` are npm's
+    package pins, not the child's ``-p`` port. ``--dir`` / ``-C`` /
+    ``--prefix`` / ``--cwd`` / ``--filter`` / ``--workspace`` / ``-w``
+    take a value — do not treat that selector as the command (findings
+    102, 104).     ``yarn workspace <name> exec`` is the leftover writer
+    ``yarn exec`` misses. ``yarn workspace <name> run`` /
+    ``yarn workspaces foreach`` are not leftover exec.
+    ``yarn npm exec`` is Yarn Berry's leftover writer ``npm exec``
+    misses when argv0 is yarn (finding 106).
+    """
+    if not tokens:
+        return None
+    rewritten = _yarn_npm_as_npm_argv(tokens)
+    if rewritten is not None:
+        tokens = rewritten
+    name0 = _launcher_basename(tokens[0])
+    if name0 not in _PACKAGE_EXEC_LAUNCHERS:
+        return None
+    reserved = _PACKAGE_EXEC_SUBCOMMANDS | ({"x"} if name0 == "npm" else set())
+    rest = _first_non_flag_tokens(
+        tokens, value_flags=_PACKAGE_EXEC_VALUE_FLAGS, reserved=reserved,
+    )
+    if not rest:
+        return None
+    sub = rest[0]
+    if name0 == "yarn" and sub == "workspace":
+        if len(rest) < 3 or rest[2] not in _PACKAGE_EXEC_SUBCOMMANDS:
+            return None
+        operands = rest[3:]
+    elif name0 == "npm" and sub == "x":
+        operands = rest[1:]
+    elif sub not in _PACKAGE_EXEC_SUBCOMMANDS:
+        return None
+    else:
+        operands = rest[1:]
+    if operands and operands[0] == "--":
+        operands = operands[1:]
+    flag_pkgs: List[str] = []
+    i = 1
+    while i < len(tokens):
+        raw = str(tokens[i]) if tokens[i] is not None else ""
+        if raw == "--":
+            break
+        if raw in {"--package", "-p"} and i + 1 < len(tokens):
+            nxt = str(tokens[i + 1])
+            if not nxt.startswith("-"):
+                flag_pkgs.append(nxt)
+            i += 2
+            continue
+        if raw.startswith("--package="):
+            val = raw.split("=", 1)[1]
+            if val:
+                flag_pkgs.append(val)
+            i += 1
+            continue
+        i += 1
+    return (flag_pkgs, operands)
+
+
+def _invocation_via_package_exec(tokens: List[str], matches) -> Optional[bool]:
+    """None when argv is not npm/pnpm/yarn exec|dlx; else leftover-CLI match."""
+    parts = _package_exec_parts(tokens)
+    if parts is None:
+        return None
+    flag_pkgs, operands = parts
+    if any(matches([pkg]) for pkg in flag_pkgs):
+        return True
+    return bool(operands) and bool(matches(operands))
+
+
+def _bun_x_operands(tokens: List[str]) -> Optional[List[str]]:
+    """``bun x|exec`` operands, else None.
+
+    ``bunx`` already unwraps via ``_NPX_LAUNCHERS``. ``bun x lighthouse``
+    and ``bun exec chrome-devtools-mcp`` are the leftover writers that
+    miss. ``bun run`` / ``bun install`` / ``bun add`` are not invocations.
+    """
+    if not tokens or _launcher_basename(tokens[0]) not in _BUN_LAUNCHERS:
+        return None
+    rest = _first_non_flag_tokens(
+        tokens, value_flags=_BUN_VALUE_FLAGS, reserved=_BUN_X_SUBCOMMANDS,
+    )
+    if not rest or rest[0] not in _BUN_X_SUBCOMMANDS:
+        return None
+    operands = rest[1:]
+    if operands and operands[0] == "--":
+        operands = operands[1:]
+    return operands
+
+
+def _invocation_via_bun_x(tokens: List[str], matches) -> Optional[bool]:
+    """None when argv is not ``bun x|exec``; else leftover-CLI match."""
+    operands = _bun_x_operands(tokens)
+    if operands is None:
+        return None
+    return bool(operands) and bool(matches(operands))
+
+
+def _bun_direct_script_operands(tokens: List[str]) -> Optional[List[str]]:
+    """``bun [flags] <script> …`` operands, else None.
+
+    Official leftover Playwright / chrome-devtools / older agent-browser
+    daemons spawn ``process.execPath`` + the script (finding 142). When
+    the parent CLI was started with bun / bunx, leftover argv0 is
+    ``bun``, not ``node``. Findings 138–140 only matched ``node``.
+    ``bun x`` / ``bun exec`` stay with ``_bun_x_operands``. ``bun run``
+    / ``bun install`` / ``bun add`` are package verbs, not leftover
+    script runners.
+    """
+    if not tokens or _launcher_basename(tokens[0]) not in _BUN_LAUNCHERS:
+        return None
+    if _bun_x_operands(tokens) is not None:
+        return None
+    rest = _first_non_flag_tokens(tokens, value_flags=_BUN_VALUE_FLAGS)
+    if not rest or rest[0] in _BUN_PACKAGE_VERBS:
+        return None
+    return rest
+
+
+def _invocation_via_bun_script(tokens: List[str], token_matches) -> Optional[bool]:
+    """None when argv is not ``bun <script>``; else leftover-CLI token match."""
+    operands = _bun_direct_script_operands(tokens)
+    if operands is None:
+        return None
+    return any(token_matches(t) for t in operands)
+
+
+def _package_manager_child_argv(tokens: List[str]) -> Optional[List[str]]:
+    """Child argv after npm|pnpm|yarn exec|dlx or bun x|exec, flags kept.
+
+    ``_package_exec_parts`` / ``_bun_x_operands`` drop ``--port`` /
+    ``--browserUrl`` via ``_first_non_flag_tokens``. Flag parse needs
+    those. ``pnpm run`` / ``bun install`` return None.
+    """
+    if not tokens:
+        return None
+    name0 = _launcher_basename(tokens[0])
+    if name0 in _PACKAGE_EXEC_LAUNCHERS:
+        return _package_exec_child_argv(tokens)
+    if name0 in _BUN_LAUNCHERS:
+        return _bun_x_child_argv(tokens)
+    return None
+
+
+def _yarn_npm_as_npm_argv(tokens: List[str]) -> Optional[List[str]]:
+    """``yarn [flags] npm <rest>`` → ``[npm, <rest>]``, else None.
+
+    Yarn Berry ``yarn npm exec lighthouse --port <dock>`` keeps argv0
+    ``yarn``, so leftover unwrap never entered ``npm exec``. ``yarn npm
+    install`` rewrites to ``npm install`` and stays unknown. ``yarn
+    exec`` / ``yarn workspace`` are not this shape. Do not eat
+    ``npm`` as a ``--cwd`` value.
+    """
+    if not tokens or _launcher_basename(tokens[0]) != "yarn":
+        return None
+    reserved = frozenset({"npm"})
+    i = 1
+    while i < len(tokens):
+        raw = str(tokens[i]) if tokens[i] is not None else ""
+        if raw == "--":
+            rest = [str(t) for t in tokens[i + 1:]]
+            if rest and _launcher_basename(rest[0]) == "npm":
+                return rest
+            return None
+        skipped = _skip_manager_value_flag(
+            tokens, i, raw, _PACKAGE_EXEC_VALUE_FLAGS, reserved,
+        )
+        if skipped is not None:
+            i = skipped
+            continue
+        if raw.startswith("-"):
+            i += 1
+            continue
+        if raw == "npm":
+            return ["npm"] + [str(t) for t in tokens[i + 1:]]
+        return None
+    return None
+
+
+def _is_package_exec_sub(name0: str, raw: str) -> bool:
+    return (name0 == "npm" and raw == "x") or raw in _PACKAGE_EXEC_SUBCOMMANDS
+
+
+def _skip_manager_value_flag(
+    tokens: List[str],
+    i: int,
+    raw: str,
+    value_flags: frozenset,
+    reserved: frozenset,
+) -> Optional[int]:
+    """Advance past ``--dir /tmp`` / ``--cwd=/tmp``. None if ``raw`` is not one.
+
+    Do not eat the subcommand as a value (``pnpm --dir exec lighthouse``).
+    """
+    key = raw.split("=", 1)[0]
+    if key not in value_flags:
+        return None
+    if "=" in raw:
+        return i + 1
+    if i + 1 < len(tokens):
+        nxt = str(tokens[i + 1]) if tokens[i + 1] is not None else ""
+        if nxt and not nxt.startswith("-") and nxt not in reserved:
+            return i + 2
+    return i + 1
+
+
+def _peel_exec_operand_separator(tokens: List[str]) -> List[str]:
+    """``npm exec pkg -- --port`` drops the manager ``--``, not the child's.
+
+    Finding 105 peels npx ``--`` only when no leftover operand remains.
+    ``npm exec lighthouse -- --port <dock>`` / ``npm exec playwright-cli
+    -- attach --cdp <dock>`` have an operand, so leftover flag parse
+    stopped at the manager ``--`` and missed the aim (finding 109).
+    The child does not see that ``--``. A later child ``--`` still ends
+    flag parse.
+    """
+    if len(tokens) >= 2 and tokens[1] == "--":
+        return [tokens[0]] + [str(t) for t in tokens[2:]]
+    return tokens
+
+
+def _package_exec_child_argv(tokens: List[str]) -> Optional[List[str]]:
+    rewritten = _yarn_npm_as_npm_argv(tokens)
+    if rewritten is not None:
+        tokens = rewritten
+    name0 = _launcher_basename(tokens[0])
+    reserved = _PACKAGE_EXEC_SUBCOMMANDS | ({"x"} if name0 == "npm" else set())
+    i = 1
+    saw_sub = False
+    skip_workspace_name = False
+    while i < len(tokens):
+        raw = str(tokens[i]) if tokens[i] is not None else ""
+        if raw == "--":
+            return [str(t) for t in tokens[i + 1:]] if saw_sub else None
+        if raw in {"--package", "-p"} and i + 1 < len(tokens):
+            nxt = str(tokens[i + 1])
+            if not nxt.startswith("-"):
+                i += 2
+                continue
+        skipped = _skip_manager_value_flag(
+            tokens, i, raw, _PACKAGE_EXEC_VALUE_FLAGS, reserved,
+        )
+        if skipped is not None:
+            i = skipped
+            continue
+        if raw.startswith("-"):
+            i += 1
+            continue
+        if not saw_sub:
+            if name0 == "yarn" and raw == "workspace" and not skip_workspace_name:
+                skip_workspace_name = True
+                i += 1
+                continue
+            if skip_workspace_name:
+                skip_workspace_name = False
+                i += 1
+                continue
+            if _is_package_exec_sub(name0, raw):
+                saw_sub = True
+                i += 1
+                continue
+            return None
+        return _peel_exec_operand_separator([str(t) for t in tokens[i:]])
+    return [] if saw_sub else None
+
+
+def _bun_x_child_argv(tokens: List[str]) -> Optional[List[str]]:
+    i = 1
+    saw_sub = False
+    while i < len(tokens):
+        raw = str(tokens[i]) if tokens[i] is not None else ""
+        if raw == "--":
+            return [str(t) for t in tokens[i + 1:]] if saw_sub else None
+        skipped = _skip_manager_value_flag(
+            tokens, i, raw, _BUN_VALUE_FLAGS, _BUN_X_SUBCOMMANDS,
+        )
+        if skipped is not None:
+            i = skipped
+            continue
+        if raw.startswith("-"):
+            i += 1
+            continue
+        if not saw_sub:
+            if raw in _BUN_X_SUBCOMMANDS:
+                saw_sub = True
+                i += 1
+                continue
+            return None
+        return _peel_exec_operand_separator([str(t) for t in tokens[i:]])
+    return [] if saw_sub else None
+
+
+def _path_has_pkg(parts: List[str], *names: str) -> bool:
+    """True when a path part is ``name`` or ``.name`` (Yarn Berry ``.yarn``)."""
+    want = {n.lower() for n in names}
+    return any(p.lower() in want or p.lower().lstrip(".") in want for p in parts)
+
+
+def _token_is_yarn_script(token: str) -> bool:
+    """True when this token is the Yarn CLI or its Node entry.
+
+    Linux shebang rewrites argv0 to ``node``. Official
+    ``…/yarn/bin/yarn.js`` and Berry ``…/.yarn/releases/yarn-4.x.cjs``
+    are leftover writers. ``cat yarn.js`` is not.
+    """
+    if _token_basename_is(token, "yarn"):
+        return True
+    raw = (token or "").strip().strip("\"'")
+    if not raw:
+        return False
+    path = Path(raw)
+    name = path.name.lower()
+    parts = [p.lower() for p in path.parts]
+    # Corepack's ``yarn`` bin is ``…/corepack/dist/yarn.js`` — no ``yarn/``
+    # package dir, so finding 107's yarn-pkg walk missed it (finding 108).
+    if _path_has_pkg(parts, "corepack") and name in _COREPACK_YARN_SHIMS:
+        return True
+    if not _path_has_pkg(parts, "yarn"):
+        return False
+    if name in _YARN_NODE_ENTRYPOINTS:
+        return True
+    return name.startswith("yarn-") and name.endswith((".js", ".cjs", ".mjs"))
+
+
+def _token_is_npx_script(token: str) -> bool:
+    """True when this token is npx's Node entry (``npx-cli.js`` under npm)."""
+    if _token_basename_is(token, "npx") or _token_basename_is(token, "pnpx"):
+        return True
+    raw = (token or "").strip().strip("\"'")
+    if not raw:
+        return False
+    path = Path(raw)
+    name = path.name.lower()
+    if name in _NPX_NODE_ENTRYPOINTS:
+        return True
+    parts = [p.lower() for p in path.parts]
+    return _path_has_pkg(parts, "corepack") and name in _COREPACK_NPX_SHIMS
+
+
+def _token_is_npm_script(token: str) -> bool:
+    """True when this token is npm's Node entry (``npm-cli.js``)."""
+    if _token_basename_is(token, "npm"):
+        return True
+    raw = (token or "").strip().strip("\"'")
+    if not raw:
+        return False
+    path = Path(raw)
+    name = path.name.lower()
+    if name not in _NPM_NODE_ENTRYPOINTS:
+        return False
+    parts = [p.lower() for p in path.parts]
+    if _path_has_pkg(parts, "corepack") and name in _COREPACK_NPM_SHIMS:
+        return True
+    return _path_has_pkg(parts, "npm") or name.startswith("npm-")
+
+
+def _token_is_pnpm_script(token: str) -> bool:
+    """True when this token is pnpm's Node entry (``pnpm.cjs``)."""
+    if _token_basename_is(token, "pnpm"):
+        return True
+    raw = (token or "").strip().strip("\"'")
+    if not raw:
+        return False
+    path = Path(raw)
+    name = path.name.lower()
+    parts = [p.lower() for p in path.parts]
+    if _path_has_pkg(parts, "corepack") and name in _COREPACK_PNPM_SHIMS:
+        return True
+    if not _path_has_pkg(parts, "pnpm"):
+        return False
+    return name in _PNPM_NODE_ENTRYPOINTS
+
+
+def _token_is_corepack_script(token: str) -> bool:
+    """True when this token is Corepack's Node entry (``corepack.js``)."""
+    if _token_basename_is(token, "corepack"):
+        return True
+    raw = (token or "").strip().strip("\"'")
+    if not raw:
+        return False
+    path = Path(raw)
+    name = path.name.lower()
+    parts = [p.lower() for p in path.parts]
+    if not _path_has_pkg(parts, "corepack"):
+        return False
+    return name in _COREPACK_NODE_ENTRYPOINTS
+
+
+def _node_package_manager_argv(tokens: List[str]) -> Optional[List[str]]:
+    """``node …/yarn.js|npx-cli.js|npm-cli.js|pnpm.cjs <rest>`` → PM argv.
+
+    Finding 79 matches shebang ``node …/lighthouse/cli.js``. After
+    shebang the leftover *writer* for ``yarn npm exec --package=`` /
+    ``npx --package=`` is still ``node``, so findings 105–106 never
+    ran (finding 107). Corepack's ``yarn`` / ``pnpm`` bins are
+    ``…/corepack/dist/yarn.js`` — no ``yarn/`` package dir — so 107
+    missed those shims (finding 108). ``node /tmp/other.js
+    --package=lighthouse`` is not a package-manager entry.
+    """
+    if not tokens or _launcher_basename(tokens[0]) not in _NODE_LAUNCHERS:
+        return None
+    i = 1
+    while i < len(tokens):
+        raw = str(tokens[i]) if tokens[i] is not None else ""
+        if raw == "--":
+            return None
+        if raw.startswith("-"):
+            i += 1
+            continue
+        if _token_is_yarn_script(raw):
+            return ["yarn"] + [str(t) for t in tokens[i + 1:]]
+        if _token_is_npx_script(raw):
+            name = Path(raw).name.lower()
+            launcher = (
+                "pnpx"
+                if name.startswith("pnpx") or _token_basename_is(raw, "pnpx")
+                else "npx"
+            )
+            return [launcher] + [str(t) for t in tokens[i + 1:]]
+        if _token_is_npm_script(raw):
+            return ["npm"] + [str(t) for t in tokens[i + 1:]]
+        if _token_is_pnpm_script(raw):
+            return ["pnpm"] + [str(t) for t in tokens[i + 1:]]
+        if _token_is_corepack_script(raw):
+            return ["corepack"] + [str(t) for t in tokens[i + 1:]]
+        return None
+    return None
+
+
+def _leftover_flag_tokens(tokens: List[str]) -> List[str]:
+    """Argv the leftover CLI itself sees.
+
+    ``npm exec --package=foo -- --browserUrl <dock>`` puts the child's
+    flags after npm's ``--``. ``npx --package=lighthouse -- --port``
+    is the same shape (finding 105). Shebang ``node …/npx-cli.js --``
+    is finding 107. Stopping ``_flag_value`` at the first ``--`` then
+    missed the dock aim. Peel corepack / exec|dlx / bun x / npx /
+    shebang node PM *without* dropping child flags. A later ``--`` on
+    the child (lighthouse yargs) still ends flag parse.
+    """
+    if not tokens:
+        return []
+    peeled = _corepack_command_tokens(tokens)
+    work = peeled or [str(t) if t is not None else "" for t in tokens]
+    node_pm = _node_package_manager_argv(work)
+    if node_pm is not None:
+        return _leftover_flag_tokens(node_pm)
+    child = _package_manager_child_argv(work)
+    if child is not None:
+        return child
+    npx_child = _npx_child_argv(work)
+    return npx_child if npx_child is not None else work
+
+
+def _is_agent_browser_invocation(tokens: List[str]) -> bool:
+    """True when argv launches agent-browser (binary, npx, or shebang node).
+
+    ``terminal()`` is ``bash -c`` (new session). After Linux shebang the
+    leftover writer is ``node /path/to/agent-browser``, not argv0
+    ``agent-browser``. Official leftover ``connect`` also leaves
+    ``node …/agent-browser/dist/daemon.js`` (finding 140). Finding
+    141: current official leftover (vercel-labs/agent-browser 0.37.x)
+    re-execs the published native binary
+    ``agent-browser-<os>-<arch>`` as the daemon (no extra argv;
+    ``AGENT_BROWSER_CDP`` frozen). Finding 112 used exact argv0
+    ``agent-browser``; finding 140 matched Node ``daemon.js``.
+    Neither matched ``agent-browser-linux-x64``. Finding 142:
+    official leftover Node daemons spawn ``process.execPath``; bun /
+    bunx parents leave ``bun …/daemon.js``. The npm bin is
+    ``bin/agent-browser.js``. ``agent-browser-mcp`` is not a
+    published triple. Do not treat the bash parent as the writer —
+    PID-only kill of bash orphans the child still sending CDP.
+    """
+    if not tokens:
+        return False
+    if _token_basename_is_agent_browser(tokens[0]):
+        return True
+    name0 = _launcher_basename(tokens[0])
+    if name0 in _ENV_LAUNCHERS:
+        return _is_agent_browser_invocation(_env_command_tokens(tokens))
+    if name0 in _COREPACK_LAUNCHERS:
+        rest = _corepack_command_tokens(tokens)
+        return bool(rest) and _is_agent_browser_invocation(rest)
+    via = _invocation_via_package_exec(tokens, _is_agent_browser_invocation)
+    if via is not None:
+        return via
+    via = _invocation_via_bun_x(tokens, _is_agent_browser_invocation)
+    if via is not None:
+        return via
+    via = _invocation_via_bun_script(tokens, _token_is_agent_browser_script)
+    if via is not None:
+        return via
+    if name0 in _NPX_LAUNCHERS:
+        return _npx_invocation_matches(tokens, _token_basename_is_agent_browser)
+    if name0 in _NODE_LAUNCHERS:
+        node_pm = _node_package_manager_argv(tokens)
+        if node_pm:
+            return _is_agent_browser_invocation(node_pm)
+        return any(_token_is_agent_browser_script(t) for t in _first_non_flag_tokens(tokens))
+    if _is_python_launcher(name0):
+        rest = _first_non_flag_tokens(tokens)
+        return bool(rest) and _token_basename_is_agent_browser(rest[0])
+    return False
+
+
+_BROWSER_USE_SCRIPT_NAMES = (
+    "browser-use",
+    "browseruse",
+    "bu",
+    "browser-use-tui",
+)
+# Official leftover ``python -m`` names. ``browser_use.mcp`` is the
+# documented MCP server (``browser_use/mcp/__main__.py`` →
+# ``browser_use.mcp.server.main``). ``browser_use.mcp.cli_mcp`` is
+# ``browser-use --cli-mcp``. ``browser_use.mcp.client`` /
+# ``browser_use.mcp.controller`` are not leftover writers.
+_BROWSER_USE_MODULE_NAMES = (
+    "browser_use",
+    "browser_use.cli",
+    "browser_use.mcp",
+    "browser_use.mcp.server",
+    "browser_use.mcp.cli_mcp",
+)
+_BROWSER_USE_MCP_PATH_NAMES = frozenset({
+    "__main__.py",
+    "server.py",
+    "cli_mcp.py",
+})
+
+
+def _pep508_requirement_name(token: str) -> str:
+    """Package/script name from a leftover uv requirement token.
+
+    Official leftover ``uvx 'browser-use[cli]'`` / ``uvx
+    browser-use==0.1.0`` is one PEP 508 token. ``_token_basename_is``
+    only strips ``@ver``, so Take over never saw those writers
+    (finding 150). ``browser-use-cli==1`` stays a different name.
+    """
+    raw = (token or "").strip().strip("\"'")
+    if not raw:
+        return ""
+    name = Path(raw).name.split("@", 1)[0]
+    extras = name.find("[")
+    if extras != -1:
+        name = name[:extras]
+    for sep in ("===", "==", ">=", "<=", "~=", "!=", ">", "<"):
+        if sep in name:
+            name = name.split(sep, 1)[0]
+            break
+    if name.lower().endswith((".exe", ".cmd", ".bat")):
+        name = Path(name).stem
+    return name.strip()
+
+
+def _token_is_browser_use_script(token: str) -> bool:
+    """Official leftover console scripts except the too-broad ``browser``.
+
+    PyPI ``[project.scripts]`` also ships ``browser`` → ``cli:main``.
+    Argv0 ``browser`` is every wrapper named that; do not treat it as
+    this leftover. ``browseruse`` / ``bu`` / ``browser-use-tui`` are
+    the unique official aliases (finding 149). Finding 150: leftover
+    ``uvx`` pins extras / a version on the same token
+    (``browser-use[cli]`` / ``browser-use==0.1.0``). ``browser[cli]``
+    stays unknown.
+    """
+    name = _pep508_requirement_name(token)
+    return any(_token_basename_is(name, script) for script in _BROWSER_USE_SCRIPT_NAMES)
+
+
+def _uv_browser_use_command(cmd_tokens: List[str]) -> bool:
+    """True when leftover uvx/uv operands launch browser-use.
+
+    Finding 149 matched ``uvx browseruse``. Official leftover is
+    also ``uvx --from browser-use python -m browser_use.cli`` /
+    ``uv run python -m browser_use.cli`` (``-m`` is skipped by
+    ``_first_non_flag_tokens``, so the module is the next operand).
+    ``uvx python -m ruff`` / ``uv run ruff`` are not.
+    """
+    if not cmd_tokens:
+        return False
+    if _token_is_browser_use_script(cmd_tokens[0]):
+        return True
+    if _is_python_launcher(_launcher_basename(cmd_tokens[0])):
+        more = cmd_tokens[1:]
+        return bool(more) and (
+            _token_is_browser_use_script(more[0])
+            or _token_is_browser_use_module(more[0])
+        )
+    return False
+
+
+def _uv_run_module(tokens: List[str]) -> Optional[str]:
+    """Official leftover ``uv run -m`` / ``--module`` name, or None.
+
+    Finding 150 matched ``uv run python -m browser_use.cli``. Official
+    leftover ``uv run --module`` / ``-m`` is uv's own flag
+    (equivalent to ``python -m``). ``_first_non_flag_tokens`` drops
+    ``-m``, so the module looked like a command named
+    ``browser_use.cli``. ``uv run pytest -m browser_use`` is pytest's
+    marker: ``-m`` after a leftover command operand is not uv's
+    module. ``uvx -m`` / ``uv tool run -m`` are not this flag.
+    """
+    if not tokens or _launcher_basename(tokens[0]) != "uv":
+        return None
+    known = _LAUNCHER_VALUE_FLAGS | _UV_VALUE_FLAGS
+    expect_value = False
+    run_idx = None
+    for i, tok in enumerate(tokens[1:], start=1):
+        raw = str(tok) if tok is not None else ""
+        if expect_value:
+            expect_value = False
+            continue
+        if raw == "--":
+            return None
+        if raw.startswith("-"):
+            key = raw.split("=", 1)[0]
+            if key in known and "=" not in raw:
+                expect_value = True
+            continue
+        run_idx = i
+        break
+    if run_idx is None or str(tokens[run_idx]) != "run":
+        return None
+    expect_value = False
+    for i, tok in enumerate(tokens[run_idx + 1:], start=run_idx + 1):
+        raw = str(tok) if tok is not None else ""
+        if expect_value:
+            expect_value = False
+            continue
+        if raw == "--":
+            return None
+        if raw.startswith("-"):
+            key, _, eq = raw.partition("=")
+            if key in {"-m", "--module"}:
+                if eq:
+                    return eq or None
+                if i + 1 < len(tokens):
+                    nxt = str(tokens[i + 1]) if tokens[i + 1] is not None else ""
+                    if nxt and not nxt.startswith("-"):
+                        return nxt
+                return None
+            if key in known and not eq:
+                expect_value = True
+            continue
+        return None
+    return None
+
+
+def _token_is_browser_use_module(token: str) -> bool:
+    """True when this token is official leftover ``browser_use`` / MCP.
+
+    The PyPI package's console script is ``browser-use``; its import
+    name is ``browser_use`` and the entry is ``browser_use.cli:main``.
+    Finding 79 matched ``python -m browser_use`` and missed
+    ``python -m browser_use.cli`` / ``…/browser_use/cli.py``, so Take
+    over left that writer typing into the jar. Finding 152: official
+    leftover MCP is ``python -m browser_use.mcp`` (``Usage:`` in
+    ``browser_use/mcp/__main__.py``), plus ``browser_use.mcp.server``
+    and ``browser_use.mcp.cli_mcp``. A path named ``browser_use`` is
+    a random script. ``browser_use_cli`` / ``browser_usage`` /
+    ``browser_use.mcp.client`` / a random ``cli.py`` /
+    ``…/mcp/__main__.py`` are not.
+    """
+    raw = (token or "").strip().strip("\"'")
+    if not raw:
+        return False
+    if "/" not in raw and "\\" not in raw:
+        return any(
+            _token_basename_is(raw, name) for name in _BROWSER_USE_MODULE_NAMES
+        )
+    path = Path(raw)
+    name = path.name.lower()
+    if name == "cli.py":
+        return "browser_use" in [p.lower() for p in path.parts]
+    if name not in _BROWSER_USE_MCP_PATH_NAMES:
+        return False
+    parent = path.parent
+    return (
+        parent.name.lower() == "mcp"
+        and parent.parent.name.lower() == "browser_use"
+    )
+
+
+def _is_browser_use_invocation(tokens: List[str]) -> bool:
+    """True when argv launches the browser-use CLI (direct, uvx, uv run, python).
+
+    Token-match only. ``cat browser-use.log`` and ``uvx ruff`` are not
+    invocations. Finding 42 only tracks Hermes-spawned ``browser_exec``.
+    Official leftover when the console script is missing is
+    ``python -m browser_use`` — finding 79 matched the hyphenated script
+    path and missed the module form, so Take over left that writer in
+    the field a human was typing into. Finding 149: official leftover
+    is also ``python -m browser_use.cli`` and the unique aliases
+    ``browseruse`` / ``bu`` / ``browser-use-tui``. Argv0 ``browser``
+    stays unknown. Finding 150: leftover ``uvx 'browser-use[cli]'`` /
+    ``uvx browser-use==ver`` and ``uvx --from … python -m
+    browser_use.cli`` / ``uv run python -m browser_use.cli``.
+    Finding 151: leftover ``uv run -m`` / ``--module`` (uv's own
+    flag) and leftover ``uvx --with`` / ``uv run --with`` hid the
+    attach because those value flags were not consumed. Finding
+    152: leftover ``python -m browser_use.mcp`` / ``.server`` /
+    ``.cli_mcp`` (official MCP server) hid leftover attach.
+    """
+    if not tokens:
+        return False
+    if _token_is_browser_use_script(tokens[0]):
+        return True
+    name0 = _launcher_basename(tokens[0])
+    if name0 in _ENV_LAUNCHERS:
+        return _is_browser_use_invocation(_env_command_tokens(tokens))
+    if name0 in _COREPACK_LAUNCHERS:
+        rest = _corepack_command_tokens(tokens)
+        return bool(rest) and _is_browser_use_invocation(rest)
+    via = _invocation_via_package_exec(tokens, _is_browser_use_invocation)
+    if via is not None:
+        return via
+    via = _invocation_via_bun_x(tokens, _is_browser_use_invocation)
+    if via is not None:
+        return via
+    if _is_python_launcher(name0):
+        rest = _first_non_flag_tokens(tokens)
+        return bool(rest) and (
+            _token_is_browser_use_script(rest[0])
+            or _token_is_browser_use_module(rest[0])
+        )
+    if name0 not in _UVX_LAUNCHERS:
+        return False
+    rest = _first_non_flag_tokens(tokens, value_flags=_UV_VALUE_FLAGS)
+    if not rest:
+        return False
+    if name0 == "uvx":
+        return _uv_browser_use_command(rest)
+    mod = _uv_run_module(tokens)
+    if mod and _token_is_browser_use_module(mod):
+        return True
+    # uv tool run browser-use / uv run browser-use
+    if rest[0] == "tool" and len(rest) >= 3 and rest[1] == "run":
+        return _uv_browser_use_command(rest[2:])
+    if rest[0] == "run" and len(rest) >= 2:
+        return _uv_browser_use_command(rest[1:])
+    return False
+
+
+def _token_is_browser_harness_daemon(token: str) -> bool:
+    """True when this token is official leftover ``browser_harness.daemon``.
+
+    ``browser-use/browser-harness`` ``admin.ensure_daemon`` starts
+    ``sys.executable -m browser_harness.daemon`` in its own session.
+    The daemon is the long-lived CDP holder (``get_ws_url()`` reads
+    ``BU_CDP_WS`` then ``BU_CDP_URL``). Path parts must include
+    ``browser_harness`` — a random ``daemon.py`` is not.
+    ``python -m browser_harness`` (admin) / ``browser-harness``
+    (``run.py``) / ``cat daemon.py`` are not.
+    """
+    raw = (token or "").strip().strip("\"'")
+    if not raw:
+        return False
+    if "/" not in raw and "\\" not in raw:
+        return _token_basename_is(raw, "browser_harness.daemon")
+    path = Path(raw)
+    if path.name.lower() != "daemon.py":
+        return False
+    return "browser_harness" in [p.lower() for p in path.parts]
+
+
+def _uv_browser_harness_daemon_command(cmd_tokens: List[str]) -> bool:
+    """True when leftover uvx/uv operands launch ``browser_harness.daemon``.
+
+    Finding 148 matched ``python -m``. Official leftover ``uv run``
+    / ``uvx --from`` after finding 151 is also ``python -m
+    browser_harness.daemon`` (``-m`` is skipped by
+    ``_first_non_flag_tokens``). ``uvx python -m ruff`` /
+    ``uv run browser-harness`` are not.
+    """
+    if not cmd_tokens:
+        return False
+    if _is_python_launcher(_launcher_basename(cmd_tokens[0])):
+        more = cmd_tokens[1:]
+        return bool(more) and _token_is_browser_harness_daemon(more[0])
+    return False
+
+
+def _is_browser_harness_daemon_invocation(tokens: List[str]) -> bool:
+    """True when argv is official leftover ``python -m browser_harness.daemon``.
+
+    Finding 78 / 110 matched leftover ``browser-use`` / ``python -m
+    browser_use``. Official leftover ``--cdp-url`` / ``BU_CDP_*``
+    also leaves this detached daemon after the CLI exits
+    (``start_new_session``). ``interrupt_reserved_browser_harness``
+    only kills Hermes-registered ``browser_exec`` daemons, so a
+    terminal-spawned leftover holder stayed typing into the jar a
+    human holds. Finding 154: leftover ``uv run -m`` / ``uv run
+    python -m`` / ``uvx --from … python -m`` hid the same holder
+    (findings 151 / 153 already unwrapped those for browser-use and
+    harness MCP). Unpinned daemons stay unknown — official
+    ``get_ws_url()`` can scan default Chrome / 9222 when ``BU_CDP_*``
+    is unset. Do not fold this into ``_is_browser_use_invocation``.
+    """
+    if not tokens:
+        return False
+    name0 = _launcher_basename(tokens[0])
+    if name0 in _ENV_LAUNCHERS:
+        return _is_browser_harness_daemon_invocation(_env_command_tokens(tokens))
+    if _is_python_launcher(name0):
+        rest = _first_non_flag_tokens(tokens)
+        return bool(rest) and _token_is_browser_harness_daemon(rest[0])
+    if name0 not in _UVX_LAUNCHERS:
+        return False
+    rest = _first_non_flag_tokens(tokens, value_flags=_UV_VALUE_FLAGS)
+    if not rest:
+        return False
+    if name0 == "uvx":
+        return _uv_browser_harness_daemon_command(rest)
+    mod = _uv_run_module(tokens)
+    if mod and _token_is_browser_harness_daemon(mod):
+        return True
+    if rest[0] == "tool" and len(rest) >= 3 and rest[1] == "run":
+        return _uv_browser_harness_daemon_command(rest[2:])
+    if rest[0] == "run" and len(rest) >= 2:
+        return _uv_browser_harness_daemon_command(rest[1:])
+    return False
+
+
+def _token_is_browser_harness_mcp_script(token: str) -> bool:
+    """Official leftover console script ``browser-harness-mcp``.
+
+    ``[project.scripts]`` is ``browser-harness-mcp`` →
+    ``browser_harness.mcp_cli:main``. ``browser-harness`` (``run.py``)
+    / ``browser-harness[mcp]`` (the extra, not this script) /
+    ``browser_harness_mcp`` are not.
+    """
+    name = _pep508_requirement_name(token)
+    return _token_basename_is(name, "browser-harness-mcp")
+
+
+def _token_is_browser_harness_mcp_module(token: str) -> bool:
+    """True when this token is official leftover ``browser_harness.mcp_cli``.
+
+    Finding 148 matched ``python -m browser_harness.daemon``. Official
+    leftover MCP is ``python -m browser_harness.mcp_cli`` /
+    ``…/browser_harness/mcp_cli.py``. ``python -m mcp_server`` (too
+    broad) / ``browser_harness.admin`` / a random ``mcp_cli.py``
+    are not.
+    """
+    raw = (token or "").strip().strip("\"'")
+    if not raw:
+        return False
+    if "/" not in raw and "\\" not in raw:
+        return _token_basename_is(raw, "browser_harness.mcp_cli")
+    path = Path(raw)
+    if path.name.lower() != "mcp_cli.py":
+        return False
+    return path.parent.name.lower() == "browser_harness"
+
+
+def _uv_browser_harness_mcp_command(cmd_tokens: List[str]) -> bool:
+    """True when leftover uvx/uv operands launch ``browser-harness-mcp``."""
+    if not cmd_tokens:
+        return False
+    if _token_is_browser_harness_mcp_script(cmd_tokens[0]):
+        return True
+    if _is_python_launcher(_launcher_basename(cmd_tokens[0])):
+        more = cmd_tokens[1:]
+        return bool(more) and (
+            _token_is_browser_harness_mcp_script(more[0])
+            or _token_is_browser_harness_mcp_module(more[0])
+        )
+    return False
+
+
+def _is_browser_harness_mcp_invocation(tokens: List[str]) -> bool:
+    """True when argv launches official leftover ``browser-harness-mcp``.
+
+    Finding 148 matched the detached ``python -m browser_harness.daemon``
+    holder. Official leftover MCP is the long-lived stdio server
+    (``docs/MCP.md``): ``uvx --from 'browser-harness[mcp]'
+    browser-harness-mcp`` / ``uv run --extra mcp browser-harness-mcp``
+    / ``python -m browser_harness.mcp_cli``. It calls
+    ``ensure_daemon()`` then ``type_text`` / ``fill_input`` against
+    ``BU_CDP_*``. ``browser-harness`` (``run.py``), ``python -m
+    mcp_server``, ``python -m browser_harness``, an unpinned leftover
+    (official leftover can scan 9222), and ``cat mcp_cli.py`` are not.
+    """
+    if not tokens:
+        return False
+    if _token_is_browser_harness_mcp_script(tokens[0]):
+        return True
+    name0 = _launcher_basename(tokens[0])
+    if name0 in _ENV_LAUNCHERS:
+        return _is_browser_harness_mcp_invocation(_env_command_tokens(tokens))
+    if name0 in _COREPACK_LAUNCHERS:
+        rest = _corepack_command_tokens(tokens)
+        return bool(rest) and _is_browser_harness_mcp_invocation(rest)
+    via = _invocation_via_package_exec(tokens, _is_browser_harness_mcp_invocation)
+    if via is not None:
+        return via
+    via = _invocation_via_bun_x(tokens, _is_browser_harness_mcp_invocation)
+    if via is not None:
+        return via
+    if _is_python_launcher(name0):
+        rest = _first_non_flag_tokens(tokens)
+        return bool(rest) and (
+            _token_is_browser_harness_mcp_script(rest[0])
+            or _token_is_browser_harness_mcp_module(rest[0])
+        )
+    if name0 not in _UVX_LAUNCHERS:
+        return False
+    rest = _first_non_flag_tokens(tokens, value_flags=_UV_VALUE_FLAGS)
+    if not rest:
+        return False
+    if name0 == "uvx":
+        return _uv_browser_harness_mcp_command(rest)
+    mod = _uv_run_module(tokens)
+    if mod and _token_is_browser_harness_mcp_module(mod):
+        return True
+    if rest[0] == "tool" and len(rest) >= 3 and rest[1] == "run":
+        return _uv_browser_harness_mcp_command(rest[2:])
+    if rest[0] == "run" and len(rest) >= 2:
+        return _uv_browser_harness_mcp_command(rest[1:])
+    return False
+
+
+def _token_is_playwright_cli_daemon(token: str) -> bool:
+    """True when this token is official leftover Agent CLI ``cliDaemon.js``.
+
+    Finding 109 / 136 matched ``playwright-cli`` / ``@playwright/cli``.
+    Official leftover ``attach --cdp=<dock>`` exits after spawning
+    ``node …/lib/entry/cliDaemon.js <session> --cdp=<url>`` detached
+    (``Session.startDaemon``). That daemon keeps the CDP connection;
+    later ``fill`` / ``snapshot`` have no ``--cdp``. Path parts are
+    ``playwright-core`` + ``entry`` or ``playwright`` + ``entry``, so
+    ``cli.js`` matching never saw it. ``dashboardApp.js`` /
+    ``cat cliDaemon.js`` are not.
+    """
+    return _token_basename_is(token, "cliDaemon.js")
+
+
+def _token_is_playwright_script(token: str) -> bool:
+    """True when this token is the Playwright CLI or its Node entry.
+
+    ``…/playwright/cli.js`` is an invocation. ``playwright-cli`` is the
+    Agent CLI leftover writer (``attach --cdp=<dock>``).
+    ``…/lib/entry/cliDaemon.js`` is the Agent CLI attach daemon
+    (finding 138). ``…/@playwright/mcp/cli.js`` is not — Path parts
+    are ``@playwright`` + ``mcp``, not ``playwright``. ``playwright-core``
+    as a package token is not. ``npx playwright install`` is an
+    invocation but stays unknown without a CDP aim (not leftover action).
+    """
+    if _token_basename_is(token, "playwright") or _token_basename_is(
+        token, "playwright-cli",
+    ):
+        return True
+    if _token_is_playwright_cli_package(token):
+        return True
+    if _token_is_playwright_cli_daemon(token):
+        return True
+    raw = (token or "").strip().strip("\"'")
+    if not raw:
+        return False
+    path = Path(raw)
+    name = path.name.lower()
+    parts = [p.lower() for p in path.parts]
+    if "playwright-cli" in parts:
+        return name in _PLAYWRIGHT_NODE_ENTRYPOINTS or name in {
+            "playwright-cli", "playwright-cli.js",
+        }
+    if "playwright" not in parts:
+        return False
+    return name in _PLAYWRIGHT_NODE_ENTRYPOINTS
+
+
+def _token_is_playwright_cli_package(token: str) -> bool:
+    """True when this token is official leftover ``@playwright/cli``.
+
+    Finding 109 matched argv0 ``playwright-cli`` / ``…/playwright-cli/``.
+    Official leftover also ships the scoped package
+    ``npx @playwright/cli`` / ``node …/@playwright/cli/cli.js`` — Path
+    parts are ``@playwright`` + ``cli``, not ``playwright`` or
+    ``playwright-cli``, so Take over never saw that writer.
+    ``@playwright/mcp`` and ``cat cli.log`` are not.
+    """
+    raw = (token or "").strip().strip("\"'")
+    if not raw:
+        return False
+    lower = raw.lower()
+    if lower.startswith("@playwright/cli"):
+        rest = lower[len("@playwright/cli"):]
+        return rest == "" or rest.startswith("@")
+    path = Path(raw)
+    parts = [p.lower() for p in path.parts]
+    if "@playwright" not in parts:
+        return False
+    idx = parts.index("@playwright")
+    if idx + 1 >= len(parts):
+        return False
+    if parts[idx + 1].split("@", 1)[0] != "cli":
+        return False
+    return path.name.lower() in _PLAYWRIGHT_NODE_ENTRYPOINTS or path.name.lower() in {
+        "playwright-cli", "playwright-cli.js",
+    }
+
+
+def _is_playwright_invocation(tokens: List[str]) -> bool:
+    """True when argv launches the Playwright CLI (binary, npx, shebang node).
+
+    Token-match only. ``npx playwright install`` is an invocation; it is
+    not dock-aimed unless ``--cdp-endpoint`` / ``PW_TEST_CONNECT_*`` pin
+    this jar. Regular Playwright does not read
+    ``PLAYWRIGHT_MCP_CDP_ENDPOINT``.     ``playwright-cli attach --cdp=<dock>`` / ``npx @playwright/cli``
+    are leftover Agent CLI (finding 109 / 136). Official leftover
+    ``attach`` also leaves ``node …/cliDaemon.js --cdp=<dock>``
+    (finding 138). Finding 142: official leftover
+    ``Session.startDaemon`` spawns ``process.execPath`` + the script.
+    When the parent was bun / bunx, leftover argv0 is ``bun``, not
+    ``node``. ``bun run`` is not this shape. Do not match
+    ``@playwright/mcp`` or a bare ``playwright-core`` package token
+    by substring.
+    """
+    if not tokens:
+        return False
+    if (
+        _token_basename_is(tokens[0], "playwright")
+        or _token_basename_is(tokens[0], "playwright-cli")
+        or _token_is_playwright_cli_package(tokens[0])
+        or _token_is_playwright_cli_daemon(tokens[0])
+    ):
+        return True
+    name0 = _launcher_basename(tokens[0])
+    if name0 in _ENV_LAUNCHERS:
+        return _is_playwright_invocation(_env_command_tokens(tokens))
+    if name0 in _COREPACK_LAUNCHERS:
+        rest = _corepack_command_tokens(tokens)
+        return bool(rest) and _is_playwright_invocation(rest)
+    via = _invocation_via_package_exec(tokens, _is_playwright_invocation)
+    if via is not None:
+        return via
+    via = _invocation_via_bun_x(tokens, _is_playwright_invocation)
+    if via is not None:
+        return via
+    via = _invocation_via_bun_script(tokens, _token_is_playwright_script)
+    if via is not None:
+        return via
+    if name0 in _NPX_LAUNCHERS:
+        return _npx_invocation_matches(tokens, _token_is_playwright_script)
+    if name0 in _NODE_LAUNCHERS:
+        node_pm = _node_package_manager_argv(tokens)
+        if node_pm:
+            return _is_playwright_invocation(node_pm)
+        return any(_token_is_playwright_script(t) for t in _first_non_flag_tokens(tokens))
+    if _is_python_launcher(name0):
+        rest = _first_non_flag_tokens(tokens)
+        return bool(rest) and _token_basename_is(rest[0], "playwright")
+    return False
+
+
+def _token_is_playwright_mcp(token: str) -> bool:
+    """True when this token is the ``@playwright/mcp`` package or its Node entry.
+
+    Path parts are ``@playwright`` + ``mcp``, not ``playwright`` — finding 84
+    correctly refused to treat that as the Playwright CLI. Token-match the
+    scoped package only. ``…/playwright/cli.js`` and ``cat mcp.log`` are not.
+    """
+    raw = (token or "").strip().strip("\"'")
+    if not raw:
+        return False
+    lower = raw.lower()
+    if lower.startswith("@playwright/mcp"):
+        rest = lower[len("@playwright/mcp"):]
+        return rest == "" or rest.startswith("@")
+    path = Path(raw)
+    parts = [p.lower() for p in path.parts]
+    if "@playwright" not in parts:
+        return False
+    idx = parts.index("@playwright")
+    if idx + 1 >= len(parts):
+        return False
+    if parts[idx + 1].split("@", 1)[0] != "mcp":
+        return False
+    return path.name.lower() in _PLAYWRIGHT_MCP_NODE_ENTRYPOINTS
+
+
+def _flag_value(tokens: List[str], keys: Tuple[str, ...]) -> Optional[str]:
+    """Value of a flag (``--key val`` or ``--key=val``).
+
+    yargs / commander / Chromium keep the *last* value when a flag
+    repeats and stop at ``--``. First-wins treated
+    ``lighthouse --port=1 --port=<dock>`` as another Chrome, so Take
+    over left the leftover writer running. A following flag is not a
+    value. ``--cdp`` does not eat ``--cdp-endpoint`` (prefix is
+    ``key=``).
+    """
+    tokens = _leftover_flag_tokens(tokens)
+    found: Optional[str] = None
+    i = 0
+    n = len(tokens)
+    while i < n:
+        raw = str(tokens[i]) if tokens[i] is not None else ""
+        if raw == "--":
+            break
+        for key in keys:
+            if raw == key:
+                if i + 1 < n:
+                    nxt = str(tokens[i + 1])
+                    if nxt.startswith("-"):
+                        found = None
+                    else:
+                        found = nxt
+                        i += 1
+                else:
+                    found = None
+                break
+            if raw.startswith(key + "="):
+                found = raw.split("=", 1)[1]
+                break
+        i += 1
+    return found
+
+
+def _flag_value_allow_leading_dash(
+    tokens: List[str], keys: Tuple[str, ...],
+) -> Optional[str]:
+    """Like ``_flag_value`` but a following ``--switch`` is still a value.
+
+    lighthouse ``--chrome-flags "--user-data-dir=<dock>"`` /
+    ``--chrome-flags --user-data-dir=<dock>`` are Chrome switches, so
+    ``_flag_value`` treated them as missing. ``--`` still ends parse.
+    Last-wins when the flag repeats.
+    """
+    tokens = _leftover_flag_tokens(tokens)
+    found: Optional[str] = None
+    i = 0
+    n = len(tokens)
+    while i < n:
+        raw = str(tokens[i]) if tokens[i] is not None else ""
+        if raw == "--":
+            break
+        for key in keys:
+            if raw == key:
+                if i + 1 < n:
+                    nxt = str(tokens[i + 1])
+                    if nxt == "--":
+                        found = None
+                    else:
+                        found = nxt
+                        i += 1
+                else:
+                    found = None
+                break
+            if raw.startswith(key + "="):
+                found = raw.split("=", 1)[1]
+                break
+        i += 1
+    return found
+
+
+def _flag_values_allow_leading_dash(
+    tokens: List[str], keys: Tuple[str, ...],
+) -> List[str]:
+    """Every leftover value for a yargs-style array flag.
+
+    ``--chromeArg --no-sandbox --chromeArg --user-data-dir=<dock>``
+    keeps both operands. Last-wins ``_flag_value_allow_leading_dash``
+    dropped the dock pin when a later chromeArg was ``--headless``.
+    ``--`` still ends parse.
+    """
+    tokens = _leftover_flag_tokens(tokens)
+    found: List[str] = []
+    i = 0
+    n = len(tokens)
+    while i < n:
+        raw = str(tokens[i]) if tokens[i] is not None else ""
+        if raw == "--":
+            break
+        matched = False
+        for key in keys:
+            if raw == key:
+                if i + 1 < n:
+                    nxt = str(tokens[i + 1])
+                    if nxt != "--":
+                        found.append(nxt)
+                        i += 1
+                matched = True
+                break
+            if raw.startswith(key + "="):
+                found.append(raw.split("=", 1)[1])
+                matched = True
+                break
+        i += 1
+    return found
+
+
+def _token_is_chrome_remote_interface(token: str) -> bool:
+    """True when this token is the CRI CLI or its Node entry.
+
+    Token-match only. ``node /tmp/cdp-debug.js`` that ``require``s the
+    library is not an invocation — that argv has no package token.
+    """
+    if _token_basename_is(token, "chrome-remote-interface"):
+        return True
+    raw = (token or "").strip().strip("\"'")
+    if not raw:
+        return False
+    path = Path(raw)
+    parts = [p.lower() for p in path.parts]
+    if "chrome-remote-interface" not in parts:
+        return False
+    return path.name.lower() in {
+        "chrome-remote-interface", "client.js", "cli.js", "cli.mjs", "index.js",
+    }
+
+
+def _is_chrome_remote_interface_invocation(tokens: List[str]) -> bool:
+    """True when argv launches the chrome-remote-interface CLI.
+
+    ``npx chrome-remote-interface --port <dock> inspect`` is leftover
+    action. A random ``node script.js`` is not, even if the script
+    requires the library.
+    """
+    if not tokens:
+        return False
+    if _token_is_chrome_remote_interface(tokens[0]):
+        return True
+    name0 = _launcher_basename(tokens[0])
+    if name0 in _ENV_LAUNCHERS:
+        return _is_chrome_remote_interface_invocation(_env_command_tokens(tokens))
+    if name0 in _COREPACK_LAUNCHERS:
+        rest = _corepack_command_tokens(tokens)
+        return bool(rest) and _is_chrome_remote_interface_invocation(rest)
+    via = _invocation_via_package_exec(tokens, _is_chrome_remote_interface_invocation)
+    if via is not None:
+        return via
+    via = _invocation_via_bun_x(tokens, _is_chrome_remote_interface_invocation)
+    if via is not None:
+        return via
+    via = _invocation_via_bun_script(tokens, _token_is_chrome_remote_interface)
+    if via is not None:
+        return via
+    if name0 in _NPX_LAUNCHERS:
+        return _npx_invocation_matches(tokens, _token_is_chrome_remote_interface)
+    if name0 in _NODE_LAUNCHERS:
+        node_pm = _node_package_manager_argv(tokens)
+        if node_pm:
+            return _is_chrome_remote_interface_invocation(node_pm)
+        return any(_token_is_chrome_remote_interface(t) for t in _first_non_flag_tokens(tokens))
+    return False
+
+
+def _token_is_bundled_playwright_cli(token: str) -> bool:
+    """Playwright CLI binary/script, not Agent CLI / ``@playwright/mcp``.
+
+    Official leftover Playwright 1.62+ is ``npx playwright mcp`` — the
+    bundled MCP server.     ``playwright-cli`` / ``@playwright/cli`` / ``cliDaemon.js`` are
+    the Agent CLI leftover (finding 109 / 136 / 138). ``@playwright/mcp`` is
+    the standalone package (finding 87 / 127).
+    """
+    if (
+        _token_is_playwright_mcp(token)
+        or _token_is_playwright_cli_package(token)
+        or _token_basename_is(token, "playwright-cli")
+        or _token_is_playwright_cli_daemon(token)
+    ):
+        return False
+    raw = (token or "").strip().strip("\"'")
+    if raw and "playwright-cli" in [p.lower() for p in Path(raw).parts]:
+        return False
+    return _token_is_playwright_script(token)
+
+
+def _playwright_cli_mcp_subcommand(tokens: List[str]) -> bool:
+    """True when official leftover is ``playwright mcp`` (Playwright 1.62+).
+
+    ``npx playwright mcp`` / ``node …/playwright/cli.js mcp`` is the
+    bundled MCP server and reads the same ``PLAYWRIGHT_MCP_*`` /
+    ``--config`` pins as ``@playwright/mcp``. Finding 127 only matched
+    the scoped package token, so Take over left this writer running.
+    ``npx playwright codegen`` / ``playwright-cli attach`` /
+    ``cliDaemon.js`` are not MCP and must not read those keys. A bare
+    ``mcp`` binary is not.
+    """
+    if not tokens:
+        return False
+    if _token_basename_is(tokens[0], "playwright"):
+        rest = _first_non_flag_tokens(tokens, skip=1)
+        return bool(rest) and rest[0] == "mcp"
+    if (
+        _token_basename_is(tokens[0], "playwright-cli")
+        or _token_is_playwright_cli_package(tokens[0])
+        or _token_is_playwright_cli_daemon(tokens[0])
+    ):
+        return False
+    name0 = _launcher_basename(tokens[0])
+    if name0 in _ENV_LAUNCHERS:
+        return _playwright_cli_mcp_subcommand(_env_command_tokens(tokens))
+    if name0 in _COREPACK_LAUNCHERS:
+        rest = _corepack_command_tokens(tokens)
+        return bool(rest) and _playwright_cli_mcp_subcommand(rest)
+    via = _invocation_via_package_exec(tokens, _playwright_cli_mcp_subcommand)
+    if via is not None:
+        if via:
+            return True
+        parts = _package_exec_parts(tokens)
+        if parts:
+            flag_pkgs, operands = parts
+            if (
+                flag_pkgs
+                and _token_basename_is(flag_pkgs[-1], "playwright")
+                and operands
+                and operands[0] == "mcp"
+            ):
+                return True
+        return False
+    via = _invocation_via_bun_x(tokens, _playwright_cli_mcp_subcommand)
+    if via is not None:
+        return via
+    if name0 in _NPX_LAUNCHERS:
+        rest = _npx_package_tokens(tokens)
+        if rest and _token_is_bundled_playwright_cli(rest[0]):
+            return _playwright_cli_mcp_subcommand(rest)
+        child = _npx_child_argv(tokens)
+        pins = _npx_package_pins(tokens)
+        if (
+            child
+            and pins
+            and _token_basename_is(pins[-1], "playwright")
+            and child[0] == "mcp"
+        ):
+            return True
+        return False
+    if name0 in _NODE_LAUNCHERS:
+        node_pm = _node_package_manager_argv(tokens)
+        if node_pm:
+            return _playwright_cli_mcp_subcommand(node_pm)
+        operands = _first_non_flag_tokens(tokens)
+        for i, tok in enumerate(operands):
+            if _token_is_bundled_playwright_cli(tok):
+                rest = operands[i + 1:]
+                return bool(rest) and rest[0] == "mcp"
+        return False
+    if _is_python_launcher(name0):
+        rest = _first_non_flag_tokens(tokens)
+        return bool(rest) and _playwright_cli_mcp_subcommand(rest)
+    return False
+
+
+def _is_playwright_mcp_invocation(tokens: List[str]) -> bool:
+    """True when argv launches Playwright MCP (package or ``playwright mcp``).
+
+    Token-match only. ``npx @playwright/mcp`` without ``--cdp-endpoint``
+    launches its own Chrome and stays unknown. Official leftover
+    Playwright 1.62+ also ships ``npx playwright mcp`` (finding 135) —
+    the same MCP server, same env / ``--config`` pins. Do not match a
+    bare ``mcp`` binary, ``@playwright/test``, or ``playwright codegen``.
+    """
+    if not tokens:
+        return False
+    if _playwright_cli_mcp_subcommand(tokens):
+        return True
+    if _token_is_playwright_mcp(tokens[0]):
+        return True
+    name0 = _launcher_basename(tokens[0])
+    if name0 in _ENV_LAUNCHERS:
+        return _is_playwright_mcp_invocation(_env_command_tokens(tokens))
+    if name0 in _COREPACK_LAUNCHERS:
+        rest = _corepack_command_tokens(tokens)
+        return bool(rest) and _is_playwright_mcp_invocation(rest)
+    via = _invocation_via_package_exec(tokens, _is_playwright_mcp_invocation)
+    if via is not None:
+        return via
+    via = _invocation_via_bun_x(tokens, _is_playwright_mcp_invocation)
+    if via is not None:
+        return via
+    via = _invocation_via_bun_script(tokens, _token_is_playwright_mcp)
+    if via is not None:
+        return via
+    if name0 in _NPX_LAUNCHERS:
+        return _npx_invocation_matches(tokens, _token_is_playwright_mcp)
+    if name0 in _NODE_LAUNCHERS:
+        node_pm = _node_package_manager_argv(tokens)
+        if node_pm:
+            return _is_playwright_mcp_invocation(node_pm)
+        return any(_token_is_playwright_mcp(t) for t in _first_non_flag_tokens(tokens))
+    return False
+
+
+def _is_playwright_cli_agent_invocation(tokens: List[str]) -> bool:
+    """True when leftover is official Playwright Agent CLI.
+
+    ``playwright-cli``, ``npx @playwright/cli``,
+    ``node …/@playwright/cli/cli.js``, ``npx playwright cli``, or
+    ``node …/lib/entry/cliDaemon.js`` (finding 138). Finding 142:
+    official leftover spawns ``process.execPath``; bun / bunx parents
+    leave ``bun …/cliDaemon.js``. Finding 109
+    matched argv0 ``playwright-cli`` / ``--cdp`` only. Official leftover
+    also pins ``PLAYWRIGHT_MCP_USER_DATA_DIR`` / ``--config`` /
+    ``~/.playwright/cli.config.json`` / ``.playwright/cli.config.json``
+    (finding 136). ``npx playwright mcp`` / ``codegen`` / ``test`` and
+    ``@playwright/mcp`` are not Agent CLI.
+    """
+    if not tokens:
+        return False
+    if (
+        _token_basename_is(tokens[0], "playwright-cli")
+        or _token_is_playwright_cli_package(tokens[0])
+        or _token_is_playwright_cli_daemon(tokens[0])
+    ):
+        return True
+    if _token_basename_is(tokens[0], "playwright"):
+        rest = _first_non_flag_tokens(tokens, skip=1)
+        return bool(rest) and rest[0] == "cli"
+    name0 = _launcher_basename(tokens[0])
+    if name0 in _ENV_LAUNCHERS:
+        return _is_playwright_cli_agent_invocation(_env_command_tokens(tokens))
+    if name0 in _COREPACK_LAUNCHERS:
+        rest = _corepack_command_tokens(tokens)
+        return bool(rest) and _is_playwright_cli_agent_invocation(rest)
+    via = _invocation_via_package_exec(tokens, _is_playwright_cli_agent_invocation)
+    if via is not None:
+        if via:
+            return True
+        parts = _package_exec_parts(tokens)
+        if parts:
+            flag_pkgs, operands = parts
+            if (
+                flag_pkgs
+                and _token_basename_is(flag_pkgs[-1], "playwright")
+                and operands
+                and operands[0] == "cli"
+            ):
+                return True
+        return False
+    via = _invocation_via_bun_x(tokens, _is_playwright_cli_agent_invocation)
+    if via is not None:
+        return via
+    operands = _bun_direct_script_operands(tokens)
+    if operands is not None:
+        for i, tok in enumerate(operands):
+            if (
+                _token_is_playwright_cli_package(tok)
+                or _token_basename_is(tok, "playwright-cli")
+                or _token_is_playwright_cli_daemon(tok)
+            ):
+                return True
+            if _token_is_bundled_playwright_cli(tok):
+                rest = operands[i + 1:]
+                return bool(rest) and rest[0] == "cli"
+        return False
+    if name0 in _NPX_LAUNCHERS:
+        rest = _npx_package_tokens(tokens)
+        if rest and (
+            _token_is_playwright_cli_package(rest[0])
+            or _token_basename_is(rest[0], "playwright-cli")
+        ):
+            return True
+        if rest and _token_is_bundled_playwright_cli(rest[0]):
+            return _is_playwright_cli_agent_invocation(rest)
+        pins = _npx_package_pins(tokens)
+        if pins and (
+            _token_is_playwright_cli_package(pins[-1])
+            or _token_basename_is(pins[-1], "playwright-cli")
+        ):
+            return True
+        child = _npx_child_argv(tokens)
+        if (
+            child
+            and pins
+            and _token_basename_is(pins[-1], "playwright")
+            and child[0] == "cli"
+        ):
+            return True
+        return False
+    if name0 in _NODE_LAUNCHERS:
+        node_pm = _node_package_manager_argv(tokens)
+        if node_pm:
+            return _is_playwright_cli_agent_invocation(node_pm)
+        operands = _first_non_flag_tokens(tokens)
+        for i, tok in enumerate(operands):
+            if (
+                _token_is_playwright_cli_package(tok)
+                or _token_basename_is(tok, "playwright-cli")
+                or _token_is_playwright_cli_daemon(tok)
+            ):
+                return True
+            if _token_is_bundled_playwright_cli(tok):
+                rest = operands[i + 1:]
+                return bool(rest) and rest[0] == "cli"
+        return False
+    if _is_python_launcher(name0):
+        rest = _first_non_flag_tokens(tokens)
+        return bool(rest) and _is_playwright_cli_agent_invocation(rest)
+    return False
+
+
+def _token_is_chrome_devtools_mcp(token: str) -> bool:
+    """True when this token is chrome-devtools-mcp or its official CLI bin.
+
+    The package ships two bins: ``chrome-devtools-mcp`` (MCP server) and
+    ``chrome-devtools`` (CLI wrapper — ``chrome-devtools start`` /
+    ``fill`` / ``click``). Finding 89 / 123 only matched the MCP name, so
+    leftover ``chrome-devtools start --userDataDir=<dock>`` never
+    counted as an invocation. Official leftover ``start`` also exits
+    after spawning ``node …/daemon/daemon.js <mcpArgs>`` detached
+    (``startDaemon``; finding 139). Path parts must include
+    ``chrome-devtools-mcp`` — a random ``daemon.js`` is not.
+    ``chrome-devtools-frontend`` / ``cat chrome-devtools-mcp.log``
+    are not.
+    """
+    if _token_basename_is(token, "chrome-devtools-mcp"):
+        return True
+    if _token_basename_is(token, "chrome-devtools"):
+        return True
+    raw = (token or "").strip().strip("\"'")
+    if not raw:
+        return False
+    path = Path(raw)
+    parts = [p.lower() for p in path.parts]
+    if "chrome-devtools-mcp" not in parts:
+        return False
+    name = path.name.lower()
+    if name.startswith("chrome-devtools-mcp"):
+        return True
+    return name in {
+        "cli.js", "cli.mjs", "cli.cjs", "index.js", "bin.js", "main.js",
+        "chrome-devtools.js", "chrome-devtools.mjs", "chrome-devtools.cjs",
+        "daemon.js",
+    }
+
+
+def _is_chrome_devtools_mcp_invocation(tokens: List[str]) -> bool:
+    """True when argv launches chrome-devtools-mcp or chrome-devtools.
+
+    Token-match only. Official leftover CLI is argv0 ``chrome-devtools``
+    after ``npm i -g chrome-devtools-mcp``. Official leftover ``start``
+    also leaves ``node …/daemon/daemon.js --browserUrl=<dock>``
+    (finding 139). Finding 142: official leftover
+    ``startDaemon`` uses ``process.execPath``; bun / bunx parents
+    leave ``bun …/daemon/daemon.js``. ``--autoConnect`` / no pin
+    launches or attaches a Chrome we cannot prove is this jar — stay
+    unknown.
+    ``chrome-devtools-frontend`` is not this package.
+    """
+    if not tokens:
+        return False
+    if _token_is_chrome_devtools_mcp(tokens[0]):
+        return True
+    name0 = _launcher_basename(tokens[0])
+    if name0 in _ENV_LAUNCHERS:
+        return _is_chrome_devtools_mcp_invocation(_env_command_tokens(tokens))
+    if name0 in _COREPACK_LAUNCHERS:
+        rest = _corepack_command_tokens(tokens)
+        return bool(rest) and _is_chrome_devtools_mcp_invocation(rest)
+    via = _invocation_via_package_exec(tokens, _is_chrome_devtools_mcp_invocation)
+    if via is not None:
+        return via
+    via = _invocation_via_bun_x(tokens, _is_chrome_devtools_mcp_invocation)
+    if via is not None:
+        return via
+    via = _invocation_via_bun_script(tokens, _token_is_chrome_devtools_mcp)
+    if via is not None:
+        return via
+    if name0 in _NPX_LAUNCHERS:
+        return _npx_invocation_matches(tokens, _token_is_chrome_devtools_mcp)
+    if name0 in _NODE_LAUNCHERS:
+        node_pm = _node_package_manager_argv(tokens)
+        if node_pm:
+            return _is_chrome_devtools_mcp_invocation(node_pm)
+        return any(_token_is_chrome_devtools_mcp(t) for t in _first_non_flag_tokens(tokens))
+    return False
+
+
+def _token_is_lighthouse(token: str) -> bool:
+    """True when this token is the Lighthouse CLI or its Node entry.
+
+    Token-match only. ``lighthouse-ci`` / ``@lhci/cli`` / ``cat lighthouse.log``
+    are not invocations. Path parts must include ``lighthouse`` — not
+    ``lighthouse-ci``.
+    """
+    if _token_basename_is(token, "lighthouse"):
+        return True
+    raw = (token or "").strip().strip("\"'")
+    if not raw:
+        return False
+    path = Path(raw)
+    parts = [p.lower() for p in path.parts]
+    if "lighthouse" not in parts:
+        return False
+    return path.name.lower() in _LIGHTHOUSE_NODE_ENTRYPOINTS
+
+
+def _is_lighthouse_invocation(tokens: List[str]) -> bool:
+    """True when argv launches the Lighthouse CLI (binary, npx, shebang node).
+
+    Token-match only. ``npx lighthouse https://example.com`` without
+    ``--port`` launches its own Chrome and stays unknown at aim time.
+    Do not match ``lighthouse-ci`` or a bash ``-c`` parent. Do not use
+    ``-p`` as a port flag — that is npm's package pin / CRI's short port.
+    """
+    if not tokens:
+        return False
+    if _token_is_lighthouse(tokens[0]):
+        return True
+    name0 = _launcher_basename(tokens[0])
+    if name0 in _ENV_LAUNCHERS:
+        return _is_lighthouse_invocation(_env_command_tokens(tokens))
+    if name0 in _COREPACK_LAUNCHERS:
+        rest = _corepack_command_tokens(tokens)
+        return bool(rest) and _is_lighthouse_invocation(rest)
+    via = _invocation_via_package_exec(tokens, _is_lighthouse_invocation)
+    if via is not None:
+        return via
+    via = _invocation_via_bun_x(tokens, _is_lighthouse_invocation)
+    if via is not None:
+        return via
+    via = _invocation_via_bun_script(tokens, _token_is_lighthouse)
+    if via is not None:
+        return via
+    if name0 in _NPX_LAUNCHERS:
+        return _npx_invocation_matches(tokens, _token_is_lighthouse)
+    if name0 in _NODE_LAUNCHERS:
+        node_pm = _node_package_manager_argv(tokens)
+        if node_pm:
+            return _is_lighthouse_invocation(node_pm)
+        return any(_token_is_lighthouse(t) for t in _first_non_flag_tokens(tokens))
+    if _is_python_launcher(name0):
+        rest = _first_non_flag_tokens(tokens)
+        return bool(rest) and _token_is_lighthouse(rest[0])
+    return False
+
+
+def _is_unregistered_dock_cli_invocation(tokens: List[str]) -> bool:
+    return (
+        _is_agent_browser_invocation(tokens)
+        or _is_browser_use_invocation(tokens)
+        or _is_browser_harness_daemon_invocation(tokens)
+        or _is_browser_harness_mcp_invocation(tokens)
+        or _is_playwright_invocation(tokens)
+        or _is_playwright_mcp_invocation(tokens)
+        or _is_chrome_remote_interface_invocation(tokens)
+        or _is_chrome_devtools_mcp_invocation(tokens)
+        or _is_lighthouse_invocation(tokens)
+    )
+
+
+def _cdp_arg_from_argv(tokens: List[str]) -> Optional[str]:
+    """``--cdp`` / ``--cdp-endpoint`` value, or None. Does not guess ``--session``."""
+    return _flag_value(tokens, ("--cdp-endpoint", "--cdp"))
+
+
+def _agent_browser_connect_target(tokens: List[str]) -> Optional[str]:
+    """``agent-browser connect <port|url>`` leftover attach, or None.
+
+    Official leftover: connect once, then later commands have no ``--cdp``.
+    The in-flight writer is ``connect 9333`` / ``connect http://…``.
+    ``--session foo connect 9333`` must not treat ``foo`` as the target.
+    Official leftover ``--config <path> connect <dock>`` is the same
+    shape (finding 133) — the config path is not the attach. Finding
+    134 is the rest of the official leftover globals: ``--state`` /
+    ``--provider`` / ``--namespace`` / ``--restore`` / ``--engine`` /
+    ``--ca-cert`` / ``--headed false`` hid ``connect <dock>`` the same
+    way. A bare ``--headed connect`` must still see ``connect``.
+    ``--auto-connect`` is not a port. ``connect`` with no operand stays
+    unknown.
+    """
+    if not tokens or not _is_agent_browser_invocation(tokens):
+        return None
+    work = _leftover_flag_tokens(tokens)
+    rest = _first_non_flag_tokens(
+        work,
+        value_flags=_AGENT_BROWSER_VALUE_FLAGS,
+        optional_bool_flags=_AGENT_BROWSER_OPTIONAL_BOOL_FLAGS,
+    )
+    if rest and (
+        _token_basename_is_agent_browser(rest[0])
+        or _token_is_agent_browser_script(rest[0])
+    ):
+        rest = rest[1:]
+    if len(rest) < 2 or rest[0] != "connect":
+        return None
+    target = str(rest[1]) if rest[1] is not None else ""
+    if not target or target.startswith("-"):
+        return None
+    return target
+
+
+def _unregistered_cli_aims_at_dock(
+    tokens: List[str],
+    environ: Optional[Dict[str, str]],
+    profile: Optional[Path],
+    dock_port: Optional[int],
+    *,
+    cwd: Optional[Path] = None,
+) -> bool:
+    """True when this leftover CLI is aimed at *this* profile's dock jar.
+
+    Explicit ``--cdp`` wins: another loopback Chrome, a LAN endpoint, or a
+    cloud URL is not the dock even if ``AGENT_BROWSER_PROFILE`` is pinned.
+    A leftover URL on the other loopback family of this port is a sibling
+    squat (finding 145), not this jar. Port-only / localhost stay
+    unknown-family.
+    Official leftover that *stays* after ``connect <dock>`` is the
+    daemon with ``AGENT_BROWSER_CDP`` frozen (finding 112). Finding
+    112 matched argv0 ``agent-browser`` / ``cli.js``. Official leftover
+    also leaves ``node …/agent-browser/dist/daemon.js`` detached
+    (finding 140) — Path name ``daemon.js`` was not an agent-browser
+    entry, so Take over left the long-lived holder. Finding 141:
+    current official leftover re-execs
+    ``AGENT_BROWSER_DAEMON=1 AGENT_BROWSER_CDP=<dock>
+    /path/to/agent-browser-<triple>`` with no extra argv. Finding 112
+    used exact argv0 ``agent-browser``; finding 140 matched Node
+    ``daemon.js``. Neither matched ``agent-browser-linux-x64``.
+    Finding 142: official leftover Playwright / chrome-devtools /
+    older agent-browser daemons spawn ``process.execPath`` + script.
+    bun / bunx parents leave ``bun …/cliDaemon.js`` /
+    ``bun …/daemon.js``. Findings 138–140 only matched ``node``.
+    ``agent-browser-mcp`` is not a published triple. Positional
+    ``connect <port|url>`` is the in-flight attach. Official leftover
+    globals before ``connect`` (finding 134) — ``--state`` /
+    ``--provider`` / ``--headed false`` — hid that attach; finding 133
+    only peeled ``--config``. ``--auto-connect`` /
+    ``AGENT_BROWSER_AUTO_CONNECT`` stay unknown (a Chrome we cannot
+    prove is this jar). ``--session`` without a CDP pin stays unknown.
+    A random ``daemon.js`` outside ``agent-browser`` is not.
+
+    browser-use leftover writers (finding 78) aim via ``BU_CDP_*`` /
+    ``BROWSER_CDP_URL``. Official leftover attach is also
+    ``--cdp-url <dock>`` on argv (finding 110); env-only hid that
+    writer. Finding 79 matched ``python -m browser_use`` and the
+    hyphenated script; official leftover is also
+    ``python -m browser_use.cli`` and the unique aliases
+    ``browseruse`` / ``bu`` / ``browser-use-tui`` (finding 149).
+    Finding 150: leftover ``uvx 'browser-use[cli]'`` /
+    ``uvx browser-use==ver`` and ``uvx --from … python -m
+    browser_use.cli`` / ``uv run python -m browser_use.cli``.
+    Finding 151: leftover ``uv run -m`` / ``--module`` and
+    leftover ``uvx --with`` / ``uv run --with``.
+    Argv0 ``browser`` / ``browser[cli]`` stay unknown. Official leftover also leaves
+    ``python -m browser_harness.daemon`` detached with those same
+    env pins (finding 148) — finding 78 / 110 only matched the
+    parent CLI, so Take over left the long-lived holder.
+    ``--connect`` / no URL / an unpinned harness daemon stays
+    unknown (a Chrome we cannot prove is this jar). Explicit
+    ``--cdp-url`` wins over env.
+
+    A relative ``AGENT_BROWSER_PROFILE`` is the leftover writer's jar,
+    resolved against *that* process cwd (finding 95 for Chromium argv).
+    Official leftover also expands ``~/`` on ``--profile`` /
+    ``AGENT_BROWSER_PROFILE`` (finding 129) — agent-browser replaces
+    a leading ``~/`` with ``os.homedir()``. Chromium / Playwright /
+    lighthouse do not; do not expand ``--user-data-dir``. Official
+    leftover also pins the jar on argv: agent-browser
+    ``--profile`` and Playwright ``--user-data-dir`` / ``open --profile``
+    (finding 111). Official leftover also forwards Chromium
+    ``--user-data-dir`` via ``--args`` / ``AGENT_BROWSER_ARGS``
+    (finding 130) — comma or newline separated. Finding 111 only
+    checked ``--profile``, so Take over left that writer running.
+    Explicit ``--cdp`` still wins. Official leftover also pins off
+    argv (finding 133): ``--config`` / ``AGENT_BROWSER_CONFIG`` and
+    the auto files ``./agent-browser.json`` (writer cwd) /
+    ``~/.agent-browser/config.json`` (writer HOME) with ``profile`` /
+    ``args`` / ``cdp``. Finding 111 / 130 only checked argv / env, so
+    Take over left ``agent-browser fill`` whose project config
+    launched Chrome on this cookie jar. CLI / env still override the
+    file per key. Explicit ``--config`` replaces the auto files.
+    Official leftover globals before ``connect`` (finding 134) —
+    ``--state`` / ``--provider`` / ``--headed false`` — hid the
+    attach; finding 133 only peeled ``--config``. ``autoConnect`` /
+    no pin stays unknown. Gateway cwd must not decide a relative
+    config path.
+    chrome-devtools-mcp ``--userDataDir`` /
+    ``--user-data-dir`` is the same launch pin (finding 123) — it
+    conflicts with attach flags, so URL-only hid that writer. Official
+    leftover also hides the pin in ``--chromeArg`` / ``--chrome-arg``
+    (yargs array; Puppeteer appends those switches after its
+    ``userDataDir``, so Chromium last-wins the dock) and in ``--config``
+    JSON ``userDataDir`` / ``browserUrl`` / ``wsEndpoint`` / ``chromeArg``
+    (finding 131). Finding 123 only checked argv ``--userDataDir``, so
+    Take over left ``--chrome-arg=--user-data-dir=<dock>`` and
+    ``--config {userDataDir}`` typing. Official leftover ``start``
+    also exits after spawning ``node …/daemon/daemon.js`` with those
+    same mcpArgs (finding 139) — finding 89 / 123 / 131 only matched
+    the parent CLI / MCP bin, so Take over left the long-lived holder.
+    yargs CLI flags still override the file per key. Env-only hid those
+    writers. Explicit ``--cdp`` / ``--browserUrl`` still wins. Gateway
+    cwd must not decide the pin. browser-use ``--profile`` is a Chrome
+    profile *name* and stays unknown. ``--autoConnect`` / no pin /
+    later ``chrome-devtools fill`` without a pin stays unknown.
+
+    lighthouse leftover launch pin is ``--chrome-flags=--user-data-dir=<dock>``
+    (finding 126). Official leftover joins *every* ``--chrome-flags``
+    group (``parseChromeFlags`` array) and accepts ``chromeFlags`` as
+    an array in ``--cli-flags-path`` JSON (finding 132). Finding 126 /
+    128 last-wins / string-only dropped the dock pin when a later
+    group was ``--headless`` or the file used ``["--user-data-dir"]``.
+    Official leftover also hides ``--port`` / ``--chrome-flags`` in
+    ``--cli-flags-path`` / ``--cliFlagsPath`` JSON (finding 128) —
+    yargs ``config: true``. Finding 126 only checked argv, so Take
+    over left that writer running. CLI flags still override the file.
+    Official attach is still ``--port``. chrome-launcher appends
+    chrome-flags *after* its temp ``--user-data-dir``, so Chromium
+    last-wins the dock jar.
+    ``--port=0`` / missing ``--port`` launch that Chrome. A set
+    ``--port`` that is not this dock stays another Chrome (do not
+    guess an empty listen). LAN ``--hostname`` does not launch local
+    Chrome. ``--config-path`` is Lighthouse audit config, not CLI
+    flags.
+
+    Playwright MCP leftover also pins the jar off argv (finding 127):
+    ``PLAYWRIGHT_MCP_USER_DATA_DIR`` and ``--config`` /
+    ``PLAYWRIGHT_MCP_CONFIG`` ``browser.userDataDir`` / ``cdpEndpoint``.
+    Finding 111 only checked ``--user-data-dir``. Official leftover
+    Playwright 1.62+ is also ``npx playwright mcp`` (finding 135) —
+    finding 127 only matched ``@playwright/mcp``, so env / ``--config``
+    on the bundled subcommand stayed unknown. Finding 143: official
+    leftover ``loadConfig`` also reads INI, so ``--config dock.ini``
+    hid the same pins.     Official leftover Agent
+    CLI (finding 136) is ``playwright-cli`` / ``npx @playwright/cli`` /
+    ``npx playwright cli`` and reads the same env keys plus
+    ``~/.playwright/cli.config.json`` (writer HOME, or
+    ``PWTEST_CLI_GLOBAL_CONFIG`` — finding 143) and
+    ``.playwright/cli.config.json`` (writer cwd), replaced by
+    ``--config`` / ``PLAYWRIGHT_MCP_CONFIG``. Finding 109 / 111 only
+    checked argv ``--cdp`` / ``--profile``, so Take over left
+    ``npx @playwright/cli --config {browser.userDataDir}`` and
+    ``npx @playwright/cli attach --cdp`` running. Finding 127 / 136
+    ``json.loads`` only, so Take over left INI ``--config`` and a
+    relocated global file running. Official leftover
+    ``attach --cdp`` also exits after spawning
+    ``node …/cliDaemon.js <session> --cdp=<dock>`` (finding 138) —
+    finding 109 / 136 only matched the parent CLI, so Take over left
+    the long-lived attach holder. Regular Playwright CLI (``codegen``
+    / ``test``) does not read those Agent / MCP keys.
+    ``--isolated`` / no pin stays unknown. A set argv ``--profile``
+    skips env / config dir. Gateway cwd / ``Path.home()`` must not
+    decide a relative or global Agent CLI file.
+    """
+    env = environ or {}
+    if (
+        _is_browser_use_invocation(tokens)
+        or _is_browser_harness_daemon_invocation(tokens)
+        or _is_browser_harness_mcp_invocation(tokens)
+    ) and not _is_agent_browser_invocation(tokens):
+        # Official leftover attach: ``browser-use --cdp-url <dock>``.
+        # Finding 78 only checked BU_CDP_* env, so Take over left the
+        # argv-aimed writer running (finding 110). Official leftover
+        # ``ensure_daemon`` also leaves ``python -m
+        # browser_harness.daemon`` with those env pins (finding 148).
+        # Finding 153: leftover ``browser-harness-mcp`` is the
+        # long-lived stdio writer (``docs/MCP.md``) on the same
+        # ``BU_CDP_*`` pins. Do not guess ``--cdp`` (agent-browser)
+        # or treat ``--connect`` as this jar.
+        cdp = _flag_value(tokens, ("--cdp-url",))
+        if cdp:
+            return _leftover_cdp_aims_at_dock(cdp, dock_port)
+        for key in ("BU_CDP_WS", "BU_CDP_URL", "BROWSER_CDP_URL"):
+            val = (env.get(key) or "").strip()
+            if not val:
+                continue
+            return _leftover_cdp_aims_at_dock(val, dock_port)
+        return False
+    if (
+        (_is_playwright_invocation(tokens) or _is_playwright_mcp_invocation(tokens))
+        and not _is_agent_browser_invocation(tokens)
+    ):
+        cdp = _cdp_arg_from_argv(tokens)
+        mcp_flavor = (
+            _is_playwright_mcp_invocation(tokens)
+            or _is_playwright_cli_agent_invocation(tokens)
+        )
+        if not cdp:
+            # Official leftover MCP / Agent CLI env is
+            # ``PLAYWRIGHT_MCP_CDP_ENDPOINT`` only (finding 146).
+            # Inherited ``PW_TEST_*`` is a fallback after config
+            # (finding 147), not a pin that hides ``--config``.
+            cdp = _leftover_playwright_env_pin(
+                env, mcp=mcp_flavor, official_only=True,
+            )
+        if not cdp:
+            # Official leftover: ``codegen --user-data-dir=<dock>`` /
+            # ``playwright-cli open --profile=<dock>``. Finding 99 only
+            # checked AGENT_BROWSER_PROFILE on the agent-browser
+            # fallthrough, so Take over left these writers running.
+            pinned = _flag_value(tokens, ("--user-data-dir", "--profile"))
+            if _leftover_profile_pin_aims_at_dock(pinned, profile, cwd):
+                return True
+            # Official Agent CLI leftover also pins off argv (finding
+            # 136): ``PLAYWRIGHT_MCP_USER_DATA_DIR`` and
+            # ``--config`` / auto ``cli.config.json``
+            # ``browser.userDataDir`` / ``cdpEndpoint``. Finding 109 /
+            # 111 only checked argv ``--cdp`` / ``--profile``.
+            # ``codegen`` / ``test`` do not read those keys. A set
+            # argv profile skips env / config dir.
+            if _is_playwright_cli_agent_invocation(tokens):
+                argv_dir_set = bool((pinned or "").strip())
+                env_dir = (env.get("PLAYWRIGHT_MCP_USER_DATA_DIR") or "").strip()
+                if not argv_dir_set and _leftover_profile_pin_aims_at_dock(
+                    env_dir, profile, cwd,
+                ):
+                    return True
+                cfg_cdp, cfg_dir = _playwright_cli_config_pins(
+                    tokens, env, cwd,
+                )
+                if cfg_cdp:
+                    return _leftover_cdp_aims_at_dock(cfg_cdp, dock_port)
+                if argv_dir_set or env_dir:
+                    return False
+                if _leftover_profile_pin_aims_at_dock(cfg_dir, profile, cwd):
+                    return True
+                fallback = _leftover_playwright_env_pin(
+                    env, mcp=True, official_only=False,
+                )
+                if fallback:
+                    return _leftover_cdp_aims_at_dock(fallback, dock_port)
+                return False
+            # Official MCP leftover launch / attach also lives in env
+            # and ``--config`` JSON (finding 127 / 135). Finding 111
+            # only checked argv ``--user-data-dir``. Finding 127 only
+            # matched ``@playwright/mcp``, so ``npx playwright mcp``
+            # env / ``--config`` stayed unknown. Finding 146: leftover
+            # MCP / Agent CLI env prefers official
+            # ``PLAYWRIGHT_MCP_CDP_ENDPOINT`` over ``PW_TEST_*``.
+            # Finding 147: inherited ``PW_TEST_*`` must not hide
+            # official ``--config`` ``browser.cdpEndpoint``. Regular
+            # Playwright CLI (``codegen`` / ``test``) does not read
+            # those keys.
+            if not _is_playwright_mcp_invocation(tokens):
+                return False
+            pinned = (env.get("PLAYWRIGHT_MCP_USER_DATA_DIR") or "").strip()
+            if _leftover_profile_pin_aims_at_dock(pinned, profile, cwd):
+                return True
+            cfg_cdp, cfg_dir = _playwright_mcp_config_pins(tokens, env, cwd)
+            if cfg_cdp:
+                return _leftover_cdp_aims_at_dock(cfg_cdp, dock_port)
+            if _leftover_profile_pin_aims_at_dock(cfg_dir, profile, cwd):
+                return True
+            fallback = _leftover_playwright_env_pin(
+                env, mcp=True, official_only=False,
+            )
+            if fallback:
+                return _leftover_cdp_aims_at_dock(fallback, dock_port)
+            return False
+        return _leftover_cdp_aims_at_dock(cdp, dock_port)
+    if (
+        _is_chrome_remote_interface_invocation(tokens)
+        and not _is_agent_browser_invocation(tokens)
+    ):
+        ws = _flag_value(tokens, ("--web-socket", "-w"))
+        if ws:
+            return _leftover_cdp_aims_at_dock(ws, dock_port)
+        host = _flag_value(tokens, ("--host",))
+        if host and not _is_loopback_cdp_host(host):
+            return False
+        port_text = _flag_value(tokens, ("--port", "-p"))
+        if port_text and str(port_text).isdigit():
+            port = int(port_text)
+            return _leftover_host_port_aims_at_dock(host, port, dock_port)
+        val = (env.get("BROWSER_CDP_URL") or "").strip()
+        if val:
+            return _leftover_cdp_aims_at_dock(val, dock_port)
+        return False
+    if (
+        _is_chrome_devtools_mcp_invocation(tokens)
+        and not _is_agent_browser_invocation(tokens)
+    ):
+        for keys in (
+            ("--browserUrl", "--browser-url", "-u"),
+            ("--wsEndpoint", "--ws-endpoint", "-w"),
+            ("--cdp-endpoint", "--cdp"),
+        ):
+            cdp = _flag_value(tokens, keys)
+            if not cdp:
+                continue
+            return _leftover_cdp_aims_at_dock(cdp, dock_port)
+        val = (env.get("BROWSER_CDP_URL") or "").strip()
+        if val:
+            return _leftover_cdp_aims_at_dock(val, dock_port)
+        # Official leftover launch pin: ``--userDataDir`` / ``--user-data-dir``
+        # conflicts with ``--browserUrl`` / ``--wsEndpoint`` / ``--isolated``.
+        # Finding 89 only checked URL attach, so Take over left the
+        # launch-on-jar writer running on the cookie jar a human holds.
+        # Official leftover also forwards Chromium ``--user-data-dir``
+        # via ``--chromeArg`` / ``--chrome-arg`` and hides both launch
+        # and attach in ``--config`` JSON (finding 131). Finding 123
+        # only checked argv ``--userDataDir``. ``_flag_value`` treats
+        # ``--chrome-arg=--user-data-dir=<dock>`` as missing.
+        # Puppeteer appends chromeArg after its ``userDataDir``, so
+        # Chromium last-wins the dock. yargs CLI still overrides the
+        # file per key. ``--autoConnect`` / no pin stays unknown (a
+        # Chrome we cannot prove is this jar).
+        argv_chrome = _chrome_devtools_chrome_args(tokens)
+        if argv_chrome:
+            pinned = _user_data_dir_from_chrome_flags(" ".join(argv_chrome))
+            if _leftover_profile_pin_aims_at_dock(pinned, profile, cwd):
+                return True
+        pinned = _flag_value(tokens, ("--userDataDir", "--user-data-dir"))
+        if _leftover_profile_pin_aims_at_dock(pinned, profile, cwd):
+            return True
+        return _chrome_devtools_config_aims_at_dock(
+            tokens, profile, dock_port, cwd,
+            skip_user_data_dir=pinned is not None,
+            skip_chrome_arg=bool(argv_chrome),
+        )
+    if (
+        _is_lighthouse_invocation(tokens)
+        and not _is_agent_browser_invocation(tokens)
+    ):
+        # Official attach: ``lighthouse URL --port=<dock>``. Default
+        # hostname is localhost. ``--port=0`` / missing ``--port`` launch
+        # their own Chrome. LAN ``--hostname`` is another machine.
+        # ``--port`` only — never ``-p`` (npm pin / CRI short port).
+        host = _flag_value(tokens, ("--hostname",))
+        if host and not _is_loopback_cdp_host(host):
+            return False
+        port_text = _flag_value(tokens, ("--port",))
+        if port_text and str(port_text).isdigit():
+            port = int(port_text)
+            if 1 <= port <= 65535:
+                return _leftover_host_port_aims_at_dock(host, port, dock_port)
+        # Official leftover launch pin: ``--chrome-flags=--user-data-dir``.
+        # Finding 92 only checked ``--port``, so Take over left the
+        # launch-on-jar writer running on the cookie jar a human holds.
+        # chrome-launcher emits its temp dir *before* chrome-flags;
+        # Chromium last-wins the dock. ``--chromeFlags`` is yargs
+        # camelCase. Official leftover joins every ``--chrome-flags``
+        # group (finding 132) — last-wins dropped the dock pin when a
+        # later group was ``--headless``. A set non-dock ``--port``
+        # stays another Chrome.
+        chrome_groups = _flag_values_allow_leading_dash(
+            tokens, ("--chrome-flags", "--chromeFlags"),
+        )
+        if chrome_groups:
+            pinned = _user_data_dir_from_chrome_flags(" ".join(chrome_groups))
+            if _leftover_profile_pin_aims_at_dock(pinned, profile, cwd):
+                return True
+        # Official leftover also hides ``--port`` / ``--chrome-flags``
+        # in ``--cli-flags-path`` JSON (finding 128 / 132). Finding
+        # 126 only checked argv. CLI flags still override the file
+        # (yargs). File ``chromeFlags`` may be a string or an array.
+        return _lighthouse_cli_flags_path_aims_at_dock(
+            tokens, profile, dock_port, cwd,
+        )
+    cdp = _cdp_arg_from_argv(tokens)
+    if not cdp and _is_agent_browser_invocation(tokens):
+        cdp = _agent_browser_connect_target(tokens)
+    if not cdp and _is_agent_browser_invocation(tokens):
+        cdp = (env.get("AGENT_BROWSER_CDP") or "").strip() or None
+    cfg = None
+    if not cdp and _is_agent_browser_invocation(tokens):
+        cfg = _agent_browser_merged_config(tokens, env, cwd)
+        if cfg:
+            cdp = _agent_browser_config_str(cfg, "cdp")
+    if cdp:
+        return _leftover_cdp_aims_at_dock(cdp, dock_port)
+    pinned = _flag_value(tokens, ("--profile",))
+    if not pinned:
+        pinned = (env.get("AGENT_BROWSER_PROFILE") or "").strip()
+    if not pinned and _is_agent_browser_invocation(tokens):
+        if cfg is None:
+            cfg = _agent_browser_merged_config(tokens, env, cwd)
+        if cfg:
+            pinned = _agent_browser_config_str(cfg, "profile")
+    # Official leftover expands ``~/`` on --profile / AGENT_BROWSER_PROFILE
+    # (finding 129). Finding 111 compared the literal ``~/…`` path, so
+    # Take over left that writer running. Chromium does not expand
+    # ``--user-data-dir``; only this agent-browser pin does. Config
+    # ``profile`` is the same key (finding 133).
+    pinned = _expand_agent_browser_home_prefix(pinned, env)
+    if _leftover_profile_pin_aims_at_dock(pinned, profile, cwd):
+        return True
+    # Official leftover launch pin: ``--args --user-data-dir=<dock>`` /
+    # ``AGENT_BROWSER_ARGS`` (finding 130). Finding 111 only checked
+    # ``--profile``. Playwright launch appends user args after its temp
+    # dir; Chromium last-wins the dock jar. CLI ``--args`` overrides
+    # the env key. ``--cdp`` already returned above. Config ``args``
+    # is the same key when CLI / env did not set it (finding 133).
+    raw_args = _flag_value_allow_leading_dash(tokens, ("--args",))
+    if raw_args is None:
+        raw_args = (env.get("AGENT_BROWSER_ARGS") or "").strip() or None
+        if raw_args is None:
+            raw_args = (env.get("AGENT_BROWSER_CHROME_FLAGS") or "").strip() or None
+        if raw_args is None and _is_agent_browser_invocation(tokens):
+            if cfg is None:
+                cfg = _agent_browser_merged_config(tokens, env, cwd)
+            if cfg:
+                raw_args = _agent_browser_config_str(cfg, "args")
+    pinned = _user_data_dir_from_agent_browser_args(raw_args)
+    return _leftover_profile_pin_aims_at_dock(pinned, profile, cwd)
+
+
+_CHROME_DEVTOOLS_CHROME_ARG_FLAGS = ("--chromeArg", "--chrome-arg")
+_CHROME_DEVTOOLS_CONFIG_MAX_BYTES = 256 * 1024
+
+
+def _chrome_devtools_chrome_args(tokens: List[str]) -> List[str]:
+    """All leftover ``--chromeArg`` / ``--chrome-arg`` values (yargs array)."""
+    return _flag_values_allow_leading_dash(tokens, _CHROME_DEVTOOLS_CHROME_ARG_FLAGS)
+
+
+def _chrome_devtools_config_str(data: dict, *keys: str) -> Optional[str]:
+    for key in keys:
+        raw = data.get(key)
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip()
+    return None
+
+
+def _chrome_devtools_config_chrome_args(data: dict) -> List[str]:
+    raw = data.get("chromeArg")
+    if raw is None:
+        raw = data.get("chrome-arg")
+    if isinstance(raw, str) and raw.strip():
+        return [raw.strip()]
+    if not isinstance(raw, list):
+        return []
+    out: List[str] = []
+    for item in raw:
+        if isinstance(item, str) and item.strip():
+            out.append(item.strip())
+    return out
+
+
+def _chrome_devtools_config_aims_at_dock(
+    tokens: List[str],
+    profile: Optional[Path],
+    dock_port: Optional[int],
+    cwd: Optional[Path],
+    *,
+    skip_user_data_dir: bool = False,
+    skip_chrome_arg: bool = False,
+) -> bool:
+    """True when leftover ``--config`` JSON aims at this dock.
+
+    Official leftover: ``npx chrome-devtools-mcp --config mcp.json``
+    with flat ``userDataDir`` / ``browserUrl`` / ``wsEndpoint`` /
+    ``chromeArg``. Finding 123 only checked argv ``--userDataDir``,
+    so Take over left that writer running. yargs CLI flags override
+    the file per key. Relative paths resolve against the leftover
+    writer cwd — gateway cwd must not decide the pin (finding 137).
+    Unreadable / oversized / non-JSON stays unknown.
+    """
+    path_text = _flag_value(tokens, ("--config",))
+    text = (path_text or "").strip()
+    if not text:
+        return False
+    path = _leftover_resolve_config_path(text, cwd)
+    if path is None:
+        return False
+    try:
+        if path.stat().st_size > _CHROME_DEVTOOLS_CONFIG_MAX_BYTES:
+            return False
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    cdp = _chrome_devtools_config_str(
+        data,
+        "browserUrl", "browser-url",
+        "wsEndpoint", "ws-endpoint",
+    )
+    if cdp:
+        return _leftover_cdp_aims_at_dock(cdp, dock_port)
+    if not skip_user_data_dir:
+        pinned = _chrome_devtools_config_str(data, "userDataDir", "user-data-dir")
+        if _leftover_profile_pin_aims_at_dock(pinned, profile, cwd):
+            return True
+    if skip_chrome_arg:
+        return False
+    chrome_args = _chrome_devtools_config_chrome_args(data)
+    if not chrome_args:
+        return False
+    pinned = _user_data_dir_from_chrome_flags(" ".join(chrome_args))
+    return _leftover_profile_pin_aims_at_dock(pinned, profile, cwd)
+
+
+_PLAYWRIGHT_MCP_CONFIG_MAX_BYTES = 256 * 1024
+
+
+def _playwright_ini_unquote(value: str) -> str:
+    """Strip one npm ``ini`` quote layer. Playwright ``loadConfig`` uses that parser."""
+    text = (value or "").strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
+        return text[1:-1]
+    return text
+
+
+def _playwright_ini_to_config(text: str) -> Optional[dict]:
+    """Official leftover ``loadConfig`` INI fallback (playwright-core ``configIni``).
+
+    Finding 127 / 136 ``json.loads`` only. Official leftover
+    ``loadConfig`` parses ``.ini`` and any file that does not start
+    with ``{`` via npm ``ini`` + dotted ``browser.cdpEndpoint`` /
+    ``browser.userDataDir`` or a ``[browser]`` section. Take over
+    left ``--config dock.ini`` / an INI-shaped
+    ``.playwright/cli.config.json`` typing. A leading ``{`` that
+    fails JSON stays unknown — official leftover does not INI-fallback
+    a JSON object. ``remoteEndpoint`` is not read here.
+    """
+    import configparser
+
+    parser = configparser.RawConfigParser(interpolation=None)
+    parser.optionxform = str
+    try:
+        parser.read_string(text)
+    except configparser.MissingSectionHeaderError:
+        parser = configparser.RawConfigParser(interpolation=None)
+        parser.optionxform = str
+        try:
+            parser.read_string("[__pw_top__]\n" + text)
+        except configparser.Error:
+            return None
+    except configparser.Error:
+        return None
+    browser: Dict[str, str] = {}
+    for section in parser.sections():
+        for key, raw in parser.items(section):
+            if key in {"browser.cdpEndpoint", "browser.userDataDir"}:
+                short = key.split(".", 1)[1]
+                val = _playwright_ini_unquote(raw)
+                if val:
+                    browser[short] = val
+    if parser.has_section("browser"):
+        for key in ("cdpEndpoint", "userDataDir"):
+            if not parser.has_option("browser", key):
+                continue
+            val = _playwright_ini_unquote(parser.get("browser", key))
+            if val:
+                browser[key] = val
+    return {"browser": browser} if browser else {}
+
+
+def _playwright_load_config_object(path: Path) -> Optional[dict]:
+    """One leftover Playwright MCP / Agent CLI config file, JSON or INI."""
+    try:
+        if path.stat().st_size > _PLAYWRIGHT_MCP_CONFIG_MAX_BYTES:
+            return None
+        raw = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return None
+    if raw.startswith("\ufeff"):
+        raw = raw[1:]
+    if re.match(r"^\s*\{", raw):
+        try:
+            data = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            return None
+        return data if isinstance(data, dict) else None
+    return _playwright_ini_to_config(raw)
+
+
+def _playwright_browser_pins_from_config_data(
+    data: dict,
+) -> Tuple[Optional[str], Optional[str]]:
+    browser = data.get("browser")
+    if not isinstance(browser, dict):
+        return None, None
+    cdp = browser.get("cdpEndpoint")
+    pinned = browser.get("userDataDir")
+    if not isinstance(cdp, str) or not cdp.strip():
+        cdp = None
+    else:
+        cdp = cdp.strip()
+    if not isinstance(pinned, str) or not pinned.strip():
+        pinned = None
+    else:
+        pinned = pinned.strip()
+    return cdp, pinned
+
+
+def _playwright_mcp_config_pins(
+    tokens: List[str],
+    environ: Dict[str, str],
+    cwd: Optional[Path],
+) -> Tuple[Optional[str], Optional[str]]:
+    """``(cdpEndpoint, userDataDir)`` from leftover MCP ``--config`` / env.
+
+    Official leftover: ``npx @playwright/mcp --config mcp.json`` with
+    ``browser.cdpEndpoint`` / ``browser.userDataDir``. Finding 109
+    covered argv / ``PLAYWRIGHT_MCP_CDP_ENDPOINT``; finding 111 covered
+    argv ``--user-data-dir``.     The config file hid both. Finding 143:
+    official leftover ``loadConfig`` also reads INI (``.ini`` and any
+    file that does not start with ``{``). Finding 127 ``json.loads``
+    only, so Take over left ``--config dock.ini``. Relative paths
+    resolve against the leftover writer cwd — gateway cwd must not
+    decide the pin (finding 137). Unreadable / oversized / a leading
+    ``{`` that is not JSON stays unknown. ``remoteEndpoint`` is
+    Playwright protocol, not CDP. Do not treat chrome-devtools
+    ``--config`` as this file.
+    """
+    path_text = _flag_value(tokens, ("--config",))
+    if not path_text:
+        path_text = (environ.get("PLAYWRIGHT_MCP_CONFIG") or "").strip()
+    text = (path_text or "").strip()
+    if not text:
+        return None, None
+    path = _leftover_resolve_config_path(text, cwd)
+    if path is None:
+        return None, None
+    data = _playwright_load_config_object(path)
+    if not isinstance(data, dict):
+        return None, None
+    return _playwright_browser_pins_from_config_data(data)
+
+
+def _leftover_resolve_config_path(
+    text: str, cwd: Optional[Path],
+) -> Optional[Path]:
+    """Resolve leftover relative config against writer cwd only.
+
+    Official leftover ``--config`` / ``--cli-flags-path`` paths are
+    the writer's. Gateway ``Path.cwd()`` must not decide the pin when
+    leftover cwd is missing (finding 137).
+    """
+    path = Path(text)
+    if path.is_absolute():
+        return path
+    if cwd is None:
+        return None
+    return cwd / path
+
+
+def _playwright_cli_resolve_config_path(
+    text: str, cwd: Optional[Path],
+) -> Optional[Path]:
+    return _leftover_resolve_config_path(text, cwd)
+
+
+def _playwright_cli_browser_pins_from_path(
+    path: Path,
+) -> Tuple[Optional[str], Optional[str]]:
+    """``(cdpEndpoint, userDataDir)`` from one leftover Agent CLI config file.
+
+    Finding 143: official leftover ``loadConfig`` is JSON or INI, not
+    ``json.loads`` only.
+    """
+    data = _playwright_load_config_object(path)
+    if not isinstance(data, dict):
+        return None, None
+    return _playwright_browser_pins_from_config_data(data)
+
+
+def _playwright_cli_global_config_root(
+    environ: Dict[str, str],
+    cwd: Optional[Path],
+) -> Optional[Path]:
+    """Directory official leftover joins with ``.playwright/cli.config.json``.
+
+    ``resolveCLIConfigForCLI`` uses ``PWTEST_CLI_GLOBAL_CONFIG ?? homedir``.
+    Finding 136 only read leftover ``HOME`` / ``USERPROFILE``, so a
+    relocated global pin never aimed. Relative
+    ``PWTEST_CLI_GLOBAL_CONFIG`` is the leftover writer cwd — gateway
+    cwd / ``Path.home()`` must not decide it. A set but unresolvable
+    relative root skips the global file (do not fall through to HOME;
+    official leftover would not read HOME either).
+    """
+    relocated = (environ.get("PWTEST_CLI_GLOBAL_CONFIG") or "").strip()
+    if relocated:
+        root = Path(relocated)
+        if root.is_absolute():
+            return root
+        if cwd is None:
+            return None
+        return cwd / root
+    home = (environ.get("HOME") or "").strip()
+    if not home:
+        home = (environ.get("USERPROFILE") or "").strip()
+    if not home:
+        return None
+    return Path(home)
+
+
+def _playwright_cli_config_pins(
+    tokens: List[str],
+    environ: Dict[str, str],
+    cwd: Optional[Path],
+) -> Tuple[Optional[str], Optional[str]]:
+    """Merge leftover Agent CLI config: global HOME then ``--config`` / cwd auto.
+
+    Official leftover, lowest → highest: ``~/.playwright/cli.config.json``
+    (writer HOME, or ``PWTEST_CLI_GLOBAL_CONFIG`` — finding 143), then
+    ``.playwright/cli.config.json`` (writer cwd) replaced by
+    ``--config`` / ``PLAYWRIGHT_MCP_CONFIG``. Env and CLI
+    flags are applied by the caller. Finding 109 / 111 only checked
+    argv ``--cdp`` / ``--profile``. Finding 127 / 136 ``json.loads``
+    only; official leftover ``loadConfig`` also reads INI. Relative
+    ``--config`` and the project auto file resolve against the leftover
+    writer cwd — gateway cwd must not decide the pin. Global file uses
+    leftover ``PWTEST_CLI_GLOBAL_CONFIG`` / ``HOME`` / ``USERPROFILE``,
+    not ``Path.home()``. Unreadable / oversized / a leading ``{`` that
+    is not JSON stays unknown. ``remoteEndpoint`` is Playwright
+    protocol, not CDP. Do not apply these auto files to
+    ``@playwright/mcp`` or ``codegen``.
+    """
+    cdp: Optional[str] = None
+    pinned: Optional[str] = None
+    global_root = _playwright_cli_global_config_root(environ, cwd)
+    if global_root is not None:
+        global_cdp, global_dir = _playwright_cli_browser_pins_from_path(
+            global_root / ".playwright" / "cli.config.json",
+        )
+        if global_cdp:
+            cdp = global_cdp
+        if global_dir:
+            pinned = global_dir
+    path_text = _flag_value(tokens, ("--config",))
+    if not path_text:
+        path_text = (environ.get("PLAYWRIGHT_MCP_CONFIG") or "").strip()
+    text = (path_text or "").strip()
+    if text:
+        path = _playwright_cli_resolve_config_path(text, cwd)
+        if path is not None:
+            expl_cdp, expl_dir = _playwright_cli_browser_pins_from_path(path)
+            if expl_cdp is not None:
+                cdp = expl_cdp
+            if expl_dir is not None:
+                pinned = expl_dir
+        return cdp, pinned
+    if cwd is not None:
+        auto_cdp, auto_dir = _playwright_cli_browser_pins_from_path(
+            cwd / ".playwright" / "cli.config.json",
+        )
+        if auto_cdp is not None:
+            cdp = auto_cdp
+        if auto_dir is not None:
+            pinned = auto_dir
+    return cdp, pinned
+
+
+_LIGHTHOUSE_CLI_FLAGS_MAX_BYTES = 256 * 1024
+
+
+def _lighthouse_cli_flags_path_aims_at_dock(
+    tokens: List[str],
+    profile: Optional[Path],
+    dock_port: Optional[int],
+    cwd: Optional[Path],
+) -> bool:
+    """True when leftover ``--cli-flags-path`` JSON aims at this dock.
+
+    Official leftover: ``lighthouse URL --cli-flags-path=flags.json``
+    with ``port`` / ``chromeFlags`` / ``chrome-flags``. Finding 126
+    only checked argv ``--port`` / ``--chrome-flags``, so Take over
+    left that writer running. Official leftover also joins every
+    ``--chrome-flags`` group and accepts a ``chromeFlags`` array
+    (finding 132). yargs CLI flags override the file: a set argv
+    ``--port`` (including ``0``) / ``--hostname`` / ``--chrome-flags``
+    wins that key. ``--config-path`` is audit config, not this file.
+    Unreadable / oversized / non-JSON stays unknown. Relative paths
+    resolve against the leftover writer cwd — gateway cwd must not
+    decide the pin (finding 137).
+    """
+    path_text = _flag_value(tokens, ("--cli-flags-path", "--cliFlagsPath"))
+    text = (path_text or "").strip()
+    if not text:
+        return False
+    path = _leftover_resolve_config_path(text, cwd)
+    if path is None:
+        return False
+    try:
+        if path.stat().st_size > _LIGHTHOUSE_CLI_FLAGS_MAX_BYTES:
+            return False
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    if _flag_value(tokens, ("--hostname",)) is None:
+        host = data.get("hostname")
+        if isinstance(host, str) and host.strip() and not _is_loopback_cdp_host(host):
+            return False
+    if _flag_value(tokens, ("--port",)) is None:
+        raw_port = data.get("port")
+        port: Optional[int] = None
+        if isinstance(raw_port, bool):
+            port = None
+        elif isinstance(raw_port, int):
+            port = raw_port
+        elif isinstance(raw_port, str) and raw_port.strip().isdigit():
+            port = int(raw_port.strip())
+        if port is not None and 1 <= port <= 65535:
+            file_host = None
+            argv_host = _flag_value(tokens, ("--hostname",))
+            if argv_host is not None:
+                file_host = argv_host
+            else:
+                raw_host = data.get("hostname")
+                if isinstance(raw_host, str) and raw_host.strip():
+                    file_host = raw_host.strip()
+            return _leftover_host_port_aims_at_dock(file_host, port, dock_port)
+    if _flag_values_allow_leading_dash(
+        tokens, ("--chrome-flags", "--chromeFlags"),
+    ):
+        return False
+    raw_flags = _lighthouse_chrome_flags_text(data.get("chromeFlags"))
+    if raw_flags is None:
+        raw_flags = _lighthouse_chrome_flags_text(data.get("chrome-flags"))
+    if raw_flags is None:
+        return False
+    pinned = _user_data_dir_from_chrome_flags(raw_flags)
+    return _leftover_profile_pin_aims_at_dock(pinned, profile, cwd)
+
+
+def _lighthouse_chrome_flags_text(raw) -> Optional[str]:
+    """Join leftover lighthouse ``chromeFlags`` string or array.
+
+    Official ``parseChromeFlags`` accepts both: one ``--chrome-flags``
+    group is a string; repeated groups / file arrays are joined.
+    Finding 128 required a string, so Take over left
+    ``{"chromeFlags": ["--user-data-dir=<dock>"]}`` running.
+    """
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    if not isinstance(raw, list):
+        return None
+    parts = [item.strip() for item in raw if isinstance(item, str) and item.strip()]
+    return " ".join(parts) if parts else None
+
+
+_AGENT_BROWSER_CONFIG_MAX_BYTES = 256 * 1024
+
+
+def _agent_browser_config_str(data: dict, *keys: str) -> Optional[str]:
+    for key in keys:
+        raw = data.get(key)
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip()
+    return None
+
+
+def _agent_browser_read_json_object(path: Path) -> Optional[dict]:
+    try:
+        if path.stat().st_size > _AGENT_BROWSER_CONFIG_MAX_BYTES:
+            return None
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _agent_browser_resolve_config_path(
+    text: str, cwd: Optional[Path],
+) -> Optional[Path]:
+    return _leftover_resolve_config_path(text, cwd)
+
+
+def _agent_browser_merged_config(
+    tokens: List[str],
+    environ: Dict[str, str],
+    cwd: Optional[Path],
+) -> Optional[dict]:
+    """Leftover agent-browser ``profile`` / ``args`` / ``cdp`` config.
+
+    Official leftover: ``--config`` / ``AGENT_BROWSER_CONFIG`` replace
+    the auto files. Otherwise ``~/.agent-browser/config.json`` then
+    ``./agent-browser.json`` (project wins per key). Finding 111 / 130
+    only checked argv / env. Relative ``--config`` and the project
+    file resolve against the leftover writer cwd — gateway cwd must
+    not decide the pin. Unreadable / oversized / non-JSON stays
+    unknown. Missing auto files are ignored.
+    """
+    path_text = _flag_value(tokens, ("--config",))
+    if not path_text:
+        path_text = (environ.get("AGENT_BROWSER_CONFIG") or "").strip()
+    text = (path_text or "").strip()
+    if text:
+        path = _agent_browser_resolve_config_path(text, cwd)
+        if path is None:
+            return None
+        return _agent_browser_read_json_object(path)
+    merged: dict = {}
+    home = (environ.get("HOME") or "").strip()
+    if not home:
+        home = (environ.get("USERPROFILE") or "").strip()
+    if home:
+        user = _agent_browser_read_json_object(
+            Path(home) / ".agent-browser" / "config.json",
+        )
+        if user:
+            merged.update(user)
+    if cwd is not None:
+        project = _agent_browser_read_json_object(cwd / "agent-browser.json")
+        if project:
+            merged.update(project)
+    return merged or None
+
+
+def _user_data_dir_from_agent_browser_args(raw: Optional[str]) -> Optional[str]:
+    """``--user-data-dir`` inside leftover ``--args`` / ``AGENT_BROWSER_ARGS``.
+
+    Official leftover is comma or newline separated Chromium switches.
+    A quoted space-delimited group is the same class as lighthouse
+    ``--chrome-flags``. Chromium last-wins when the switch repeats.
+    """
+    text = (raw or "").strip()
+    if not text:
+        return None
+    return _user_data_dir_from_chrome_flags(text.replace("\n", " ").replace(",", " "))
+
+
+def _user_data_dir_from_chrome_flags(chrome_flags: Optional[str]) -> Optional[str]:
+    """``--user-data-dir`` inside lighthouse ``--chrome-flags``.
+
+    Official leftover is space-delimited Chrome switches. Lighthouse
+    ``parseChromeFlags`` also strips wrapping quotes around the whole
+    group (``execFile`` leftover). Chromium last-wins when the switch
+    repeats. ``--remote-debugging-port`` here is not leftover attach
+    (finding 92 is lighthouse ``--port``).
+    """
+    text = (chrome_flags or "").strip()
+    if len(text) >= 2 and text[0] in "'\"" and text[-1] == text[0]:
+        text = text[1:-1].strip()
+    if not text:
+        return None
+    try:
+        flag_tokens = shlex.split(text, posix=True)
+    except ValueError:
+        flag_tokens = text.split()
+    from tools.bot_desktop.browser import _chromium_switch_value
+    return _chromium_switch_value(flag_tokens, "user-data-dir")
+
+
+def _expand_agent_browser_home_prefix(
+    pinned: Optional[str],
+    environ: Dict[str, str],
+) -> Optional[str]:
+    """Expand leftover agent-browser ``~/`` profile pins.
+
+    Official leftover replaces a leading ``~/`` with ``os.homedir()``.
+    Use that process ``HOME`` / ``USERPROFILE``, then this process home.
+    ``~`` alone / ``~user/`` stay literal. Do not use for Chromium
+    ``--user-data-dir`` (Chromium stores the path as written).
+    """
+    text = (pinned or "").strip()
+    if not text.startswith("~/"):
+        return pinned
+    home = (environ.get("HOME") or "").strip()
+    if not home:
+        home = (environ.get("USERPROFILE") or "").strip()
+    if not home:
+        home = str(Path.home())
+    return str(Path(home) / text[2:])
+
+
+def _leftover_profile_pin_aims_at_dock(
+    pinned: Optional[str],
+    profile: Optional[Path],
+    cwd: Optional[Path],
+) -> bool:
+    """True when a leftover profile-dir pin is *this* dock jar.
+
+    Finding 99 resolved ``AGENT_BROWSER_PROFILE`` against the writer cwd.
+    Finding 111 is the official argv twin (``--profile`` /
+    ``--user-data-dir``). Empty / other / unreadable pins stay unknown.
+    """
+    text = (pinned or "").strip()
+    if not text or profile is None:
+        return False
+    try:
+        from tools.bot_desktop.browser import _paths_same_user_data_dir
+        return _paths_same_user_data_dir(text, str(profile), cwd=cwd)
+    except Exception:
+        return False
+
+
+def _singleton_lock_pid(user_data_dir: str) -> Optional[int]:
+    """Alive lock pid that still names this jar, or None.
+
+    Finding 157: interrupt skipped the raw symlink target. A leftover
+    writer that inherited a crashed chrome's lock (or a recycled pid)
+    then survived Take over. Recover already refuses a recycled pid
+    whose cmdline / ``CHROME_USER_DATA_DIR`` is not this jar.
+    A materialized regular-file lock still names this jar (finding 160).
+    """
+    try:
+        from tools.bot_desktop import browser as _bd_browser
+        return _bd_browser._this_jar_chromium_pid(user_data_dir)
+    except Exception:
+        return None
+
+
+def _proc_ppid(pid: int) -> Optional[int]:
+    try:
+        with open(f"/proc/{pid}/status", encoding="utf-8") as fh:
+            ppid = next((int(line.split()[1]) for line in fh if line.startswith("PPid:")), 0)
+    except (OSError, ValueError):
+        return None
+    return ppid if ppid > 1 else None
+
+
+def _inflight_dock_cli_pids() -> set:
+    pids: set = set()
+    with _inflight_dock_cli_lock:
+        for entry in _inflight_dock_cli:
+            proc = entry.get("proc")
+            pid = getattr(proc, "pid", None)
+            if type(pid) is int and pid > 1:
+                pids.add(pid)
+    return pids
+
+
+def _live_scan_unregistered_dock_cli_allowed() -> bool:
+    """Pytest must not process_iter the host — tests inject ``processes=``.
+
+    ``lease.acquire(human)`` already runs ``stop_reserved_supervisors``. A
+    remembered dock port of 9333 in a fence test would otherwise SIGKILL a
+    developer's leftover ``agent-browser --cdp …:9333``.
+    """
+    return not os.environ.get("PYTEST_CURRENT_TEST")
+
+
+def _known_unregistered_cli_homes() -> list[Optional[str]]:
+    """Homes a ``home=None`` leftover scan must re-enter after multiplex.
+
+    Inflight CLI / harness already walk per-entry homes. Unregistered
+    ``terminal()`` leftover has no row. The 0.25s watch calls
+    ``interrupt_unregistered_dock_cli()`` with no home — ambient is the
+    launch bot, missing ``lease.json`` fail-opens as agent, and leftover
+    ``python -m browser_use --cdp-url <sibling dock>`` kept typing.
+    Session owners, cua backends, inflight / harness / supervisor homes,
+    and served profiles are the same set leftover persist already walks.
+    Unrecorded owner stays ambient-only.
+    """
+    homes: list[Optional[str]] = [None]
+    try:
+        homes.extend(
+            h for h in _bt._session_owner_homes.values()
+            if isinstance(h, str) and h
+        )
+    except Exception:
+        pass
+    try:
+        from tools.computer_use.tool import _backend_homes
+        homes.extend(h for h in _backend_homes.values() if isinstance(h, str) and h)
+    except Exception:
+        pass
+    with _inflight_dock_cli_lock:
+        for entry in _inflight_dock_cli:
+            h = entry.get("home")
+            if isinstance(h, str) and h:
+                homes.append(h)
+    with _reserved_dock_harness_lock:
+        for entry in _reserved_dock_harness:
+            h = entry.get("home")
+            if isinstance(h, str) and h:
+                homes.append(h)
+    try:
+        from tools.browser_supervisor import SUPERVISOR_REGISTRY
+        from tools.browser_tool_supervisor_lease import _supervisor_home
+        with SUPERVISOR_REGISTRY._lock:
+            items = list(SUPERVISOR_REGISTRY._by_task.items())
+        for raw_key, sup in items:
+            stored_id = getattr(sup, "task_id", None)
+            task_id = stored_id if isinstance(stored_id, str) and stored_id else raw_key
+            h = _supervisor_home(sup, task_id if isinstance(task_id, str) else None)
+            if isinstance(h, str) and h:
+                homes.append(h)
+    except Exception:
+        pass
+    try:
+        from hermes_cli.profiles import profiles_to_serve
+        for _name, path in profiles_to_serve(True):
+            homes.append(str(path))
+    except Exception:
+        pass
+    try:
+        from tui_gateway.methods_display_watch import _served_profile_homes
+        for path in list(_served_profile_homes):
+            homes.append(str(path))
+    except Exception:
+        pass
+    return homes
+
+
+def _unique_hermes_homes(homes: list[Optional[str]]) -> list[Optional[str]]:
+    from hermes_constants import hermes_home_key
+    seen: set[str] = set()
+    out: list[Optional[str]] = []
+    for home in homes:
+        key = hermes_home_key(home) if home else hermes_home_key()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(home)
+    return out
+
+
+def interrupt_unregistered_dock_cli(
+    home: Optional[str] = None,
+    *,
+    processes=None,
+    chromium_pid: Optional[int] = None,
+    owner_daemon_pid: Optional[int] = None,
+) -> int:
+    """PID-only SIGKILL leftover terminal-spawned agent-browser aimed at the dock.
+
+    Finding 42 only tracks Hermes-spawned CLIs (``_spawn_and_collect`` /
+    ``browser_exec``). ``terminal()`` ``agent-browser`` / ``npx agent-browser``
+    and ``browser-use`` / ``uvx browser-use`` / ``npx playwright`` /
+    ``npx lighthouse --port <dock>`` never enter ``_inflight_dock_cli``,
+    so Take over would wait those writers out — leftover *action* in the
+    field the human is typing into, the same class as leftover
+    ``ws.send``. After Linux shebang the writer is
+    ``node /path/agent-browser`` (or ``python3 …/browser-use``), not
+    argv0. The bash ``-c`` parent is not the writer — PID-only kill of
+    bash orphans the child. This is not a lease-gated terminal fence:
+    ``terminal()`` still runs the CLI; Take over drops a dock-aimed leftover.
+
+    Never ``killpg`` / tree-kill. Skip the shared Chromium and the daemon
+    that spawned it (finding 40). Skip already-registered inflight PIDs
+    (they already got the finding-42 SIGINT). Other Chrome ``--cdp 9222``,
+    LAN CDP, and a sibling profile's jar stay up.
+
+    ``home=None`` (watch / ``stop_reserved_supervisors``) re-enters each
+    known leftover home. After a multiplex turn ambient is the launch
+    bot; a human on a sibling must still drop writers aimed at that jar.
+    An explicit ``home`` stays single-profile (in-process acquire).
+    """
+    homes = [home] if home else _unique_hermes_homes(_known_unregistered_cli_homes())
+    shared = processes
+    if shared is None:
+        if not _live_scan_unregistered_dock_cli_allowed():
+            return 0
+        try:
+            import psutil
+            shared = list(psutil.process_iter(attrs=["pid"]))
+        except Exception:
+            return 0
+    killed = 0
+    skip_pids: set[int] = set()
+    for candidate in homes:
+        killed += _interrupt_unregistered_dock_cli_at(
+            candidate,
+            processes=shared,
+            chromium_pid=chromium_pid,
+            owner_daemon_pid=owner_daemon_pid,
+            skip_pids=skip_pids,
+        )
+    return killed
+
+
+def _interrupt_unregistered_dock_cli_at(
+    home: Optional[str],
+    *,
+    processes,
+    chromium_pid: Optional[int],
+    owner_daemon_pid: Optional[int],
+    skip_pids: set[int],
+) -> int:
+    from hermes_constants import hermes_home_key, reset_hermes_home_override, set_hermes_home_override
+    from tools.bot_desktop import browser as _bd_browser
+    from tools.bot_desktop import lease as _bd_lease
+
+    token = None
+    killed = 0
+    try:
+        if home:
+            token = set_hermes_home_override(home)
+        try:
+            _bd_browser.persist_live_dock_cdp_port()
+        except Exception:
+            pass
+        if not _bd_lease.human_holds():
+            return 0
+        try:
+            profile = _bd_browser.profile_dir()
+        except Exception:
+            profile = None
+        dock_port = None
+        try:
+            if profile is not None:
+                dock_port = _bd_browser.running_instance_cdp_port(str(profile))
+        except Exception:
+            dock_port = None
+        if dock_port is None:
+            try:
+                dock_port = _bd_browser.last_known_dock_cdp_port()
+            except Exception:
+                dock_port = None
+        if dock_port is None:
+            dock_port = _last_dock_cdp_port.get(hermes_home_key())
+        live_chromium = chromium_pid
+        live_daemon = owner_daemon_pid
+        if live_chromium is None and profile is not None:
+            live_chromium = _singleton_lock_pid(str(profile))
+        if live_daemon is None and type(live_chromium) is int and live_chromium > 1:
+            try:
+                if _bd_browser._launched_by_session(live_chromium):
+                    live_daemon = _proc_ppid(live_chromium)
+            except Exception:
+                live_daemon = None
+        skip = {os.getpid(), os.getppid()} | skip_pids
+        if type(live_chromium) is int and live_chromium > 1:
+            skip.add(live_chromium)
+        if type(live_daemon) is int and live_daemon > 1:
+            skip.add(live_daemon)
+        skip |= _inflight_dock_cli_pids()
+        for proc in processes:
+            try:
+                pid = int(getattr(proc, "pid", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            if pid <= 1 or pid in skip:
+                continue
+            try:
+                raw_cmd = proc.cmdline() if callable(getattr(proc, "cmdline", None)) else None
+            except Exception:
+                raw_cmd = None
+            if not raw_cmd:
+                continue
+            tokens = [str(t) for t in raw_cmd]
+            if not _is_unregistered_dock_cli_invocation(tokens):
+                continue
+            try:
+                environ = proc.environ() if callable(getattr(proc, "environ", None)) else {}
+            except Exception:
+                environ = {}
+            cwd = None
+            cwd_fn = getattr(proc, "cwd", None)
+            if callable(cwd_fn):
+                try:
+                    raw_cwd = cwd_fn()
+                    if raw_cwd:
+                        cwd = Path(raw_cwd)
+                except Exception:
+                    cwd = None
+            if cwd is None:
+                try:
+                    from tools.bot_desktop.browser import _proc_cwd
+                    cwd = _proc_cwd(pid)
+                except Exception:
+                    cwd = None
+            if not _unregistered_cli_aims_at_dock(
+                tokens, environ or {}, profile, dock_port, cwd=cwd,
+            ):
+                continue
+            try:
+                killer = getattr(proc, "kill", None)
+                if callable(killer):
+                    killer()
+                else:
+                    os.kill(pid, signal.SIGKILL)
+                killed += 1
+                skip_pids.add(pid)
+                skip.add(pid)
+            except (ProcessLookupError, PermissionError, OSError):
+                continue
+            except Exception:
+                _bt.logger.debug(
+                    "unregistered dock CLI interrupt failed pid=%s", pid, exc_info=True,
+                )
+        return killed
+    finally:
+        if token is not None:
+            reset_hermes_home_override(token)
+
+
+_HARNESS_NAME_RE = re.compile(r"\A[A-Za-z0-9_-]{1,64}\Z")
+_reserved_dock_harness_lock = threading.Lock()
+_reserved_dock_harness: list[dict] = []
+
+
+def register_reserved_dock_harness(
+    name: str,
+    home: Optional[str] = None,
+    *,
+    pid: Optional[int] = None,
+    kill: Optional[Callable] = None,
+) -> None:
+    """Remember a browser-use harness daemon aimed at this profile's dock Chromium.
+
+    The CLI process-group kill (finding 42) does not reach this daemon: it
+    ``start_new_session``s out of the CLI, then stays CDP-connected after the
+    command returns. Take over must drop that leftover client — same class as
+    attach-only agent-browser (finding 40) — without tree-killing Chromium.
+    """
+    from hermes_constants import hermes_home_key
+    from tools.browser_tool_supervisor_lease import install_supervisor_lease_hook
+
+    if not name or not _HARNESS_NAME_RE.match(name):
+        return
+    install_supervisor_lease_hook()
+    owner = str(home) if home else ""
+    owner_key = hermes_home_key(owner or None)
+    with _reserved_dock_harness_lock:
+        for entry in _reserved_dock_harness:
+            if entry.get("name") == name and entry.get("home_key") == owner_key:
+                if pid is not None:
+                    entry["pid"] = pid
+                if kill is not None:
+                    entry["kill"] = kill
+                return
+        _reserved_dock_harness.append({
+            "name": name,
+            "home": owner or None,
+            "home_key": owner_key,
+            "pid": pid,
+            "kill": kill,
+        })
+
+
+def refresh_reserved_dock_harness_pid(name: str, home: Optional[str] = None) -> Optional[int]:
+    """Resolve and store the live harness PID for a registered dock leftover."""
+    from hermes_constants import hermes_home_key
+
+    owner_key = hermes_home_key(home) if home is not None else hermes_home_key()
+    with _reserved_dock_harness_lock:
+        for entry in _reserved_dock_harness:
+            if entry.get("name") != name or entry.get("home_key") != owner_key:
+                continue
+            pid = entry.get("pid") or _resolve_harness_daemon_pid(name)
+            if pid:
+                entry["pid"] = pid
+            return pid
+    return None
+
+
+def _reset_reserved_dock_harness_for_tests() -> None:
+    with _reserved_dock_harness_lock:
+        _reserved_dock_harness.clear()
+
+
+def _harness_pid_file_candidates(name: str) -> List[Path]:
+    """Pid files the vendor daemon writes. Isolated ``bu.pid`` only when a runtime dir is set."""
+    if not name or not _HARNESS_NAME_RE.match(name):
+        return []
+    dirs: list[Path] = []
+    isolated = os.environ.get("BH_RUNTIME_DIR") or os.environ.get("BH_TMP_DIR")
+    if isolated:
+        dirs.append(Path(isolated))
+    dirs.append(Path("/tmp") if os.name != "nt" else Path(os.environ.get("TEMP") or os.environ.get("TMP") or "/tmp"))
+    try:
+        import tempfile
+        tmp = Path(tempfile.gettempdir())
+        if tmp not in dirs:
+            dirs.append(tmp)
+    except Exception:
+        pass
+    xdg = Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config")) / "browser-harness" / "runtime"
+    dirs.append(xdg)
+    for key in ("BH_HOME", "BROWSER_HARNESS_HOME"):
+        raw = os.environ.get(key)
+        if raw:
+            dirs.append(Path(raw) / "runtime")
+    stems = [f"bu-{name}", name]
+    if isolated:
+        stems.append("bu")
+    out: list[Path] = []
+    seen = set()
+    for directory in dirs:
+        for stem in stems:
+            path = directory / f"{stem}.pid"
+            key = str(path)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(path)
+    return out
+
+
+def _resolve_harness_daemon_pid(name: str) -> Optional[int]:
+    """Live harness PID for ``BU_NAME``, or None. Never trusts an unverified pid file."""
+    if not name or not _HARNESS_NAME_RE.match(name):
+        return None
+    try:
+        from browser_harness import _ipc as _bipc
+        pid = _bipc.identify(name)
+        if type(pid) is int and 0 < pid < (1 << 31) and _verify_harness_daemon(pid):
+            return pid
+    except Exception:
+        pass
+    for path in _harness_pid_file_candidates(name):
+        try:
+            pid = int(path.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            continue
+        if type(pid) is int and 0 < pid < (1 << 31) and _verify_harness_daemon(pid):
+            return pid
+    return None
+
+
+def _verify_harness_daemon(pid: int) -> bool:
+    """True when ``pid`` is a browser-harness daemon, not a recycled/planted number."""
+    try:
+        import psutil
+    except ImportError:
+        return False
+    try:
+        proc = psutil.Process(pid)
+        blob = f"{proc.name() or ''} {' '.join(proc.cmdline() or [])}".lower()
+    except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+        return False
+    return "browser_harness" in blob or "browser-harness" in blob
+
+
+def _kill_harness_daemon_pid(pid: int) -> None:
+    """PID-only kill. ``killpg`` / tree-kill would take a session-leader Chromium with it."""
+    if type(pid) is not int or pid <= 0:
+        return
+    if not _verify_harness_daemon(pid):
+        return
+    if os.name == "nt":
+        from hermes_cli._subprocess_compat import windows_hide_flags
+        with contextlib.suppress(OSError, subprocess.SubprocessError):
+            subprocess.run(
+                ["taskkill", "/F", "/PID", str(pid)],
+                stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=10, check=False,
+                creationflags=windows_hide_flags(),
+            )
+        return
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.kill(pid, signal.SIGKILL)
+
+
+def interrupt_reserved_browser_harness(home: Optional[str] = None) -> None:
+    """Drop leftover browser-use harness CDP clients aimed at a human-held dock.
+
+    After ``browser_exec`` returns, the harness daemon stays attached and
+    ``Target.setAutoAttach`` / Playwright input still land in the field the
+    human is typing into. Finding 42 only kills the in-flight CLI; this
+    daemon is a third leftover CDP client (findings 35–36, 40).
+    """
+    from hermes_constants import hermes_home_key, reset_hermes_home_override, set_hermes_home_override
+    from tools.bot_desktop import lease as _bd_lease
+
+    want = hermes_home_key(home) if home is not None else None
+    victims: list[dict] = []
+    with _reserved_dock_harness_lock:
+        for entry in _reserved_dock_harness:
+            owner_key = entry.get("home_key") or hermes_home_key()
+            if want is not None and owner_key != want:
+                continue
+            owner = entry.get("home")
+            token = None
+            try:
+                if owner:
+                    token = set_hermes_home_override(owner)
+                held = _bd_lease.human_holds()
+            finally:
+                if token is not None:
+                    reset_hermes_home_override(token)
+            if not held:
+                continue
+            victims.append(entry)
+    for entry in victims:
+        try:
+            killer = entry.get("kill")
+            pid = entry.get("pid") or _resolve_harness_daemon_pid(str(entry.get("name") or ""))
+            if pid:
+                entry["pid"] = pid
+            if callable(killer):
+                killer(pid)
+            elif pid:
+                _kill_harness_daemon_pid(pid)
+        except Exception:
+            _bt.logger.debug("reserved browser harness interrupt failed", exc_info=True)
+
+
+def _cdp_url_is_bot_desktop_browser(cdp_url: str) -> bool:
+    """True when ``cdp_url`` is this profile's live Bot Desktop Chromium.
+
+    ``/browser connect`` and ``browser.cdp_url`` create a ``cdp_override``
+    session with no ``local`` flag. If that URL is the dock (or agent-launched)
+    instance on ``bot-desktop/browser-profile``, it is the same cookie jar a
+    human types into — not "another browser".
+
+    Unique-listen recover stays unknown when Chromium has several *specific*
+    loopbacks. Persist can also miss (restart, worker, human ``lease.json``
+    already on disk). The operator override still names the DevTools port —
+    consult the same lock-pid + cmdline + listen guard persist uses. Do not
+    treat every configured loopback as the dock.
+
+    Finding 155: leftover / vault / attach already name a port. That is
+    not a guess — if this jar inode-listens there, the URL is the dock
+    even when persist and the override both miss. Do not stamp an
+    arbitrary connected loopback; do not skip the family check.
+
+    Finding 166: persist / ``_this_jar_listens_on_port`` require a fresh
+    TCP accept (finding 165 must not stamp another family's holder when
+    the lock pid still lists a dead family). Leftover may already hold
+    the CDP socket — a failed probe is not "another Chrome". Identify
+    from inode hosts + family without stamping persist. A leftover URL
+    on the other loopback family of the same port is still a sibling
+    squat (finding 145).
+
+    Persist is family-correct (finding 144). Port-only / localhost stay
+    unknown-family.
+
+    Finding 169: persist file then in-process memory. A stale
+    ``_last_dock_cdp_port`` must not hide leftover ``--cdp`` aimed at
+    the live stamp when named-listen hosts are empty.
+
+    Finding 173: a live recover / file-named stamp must not hide leftover
+    CDP aimed at another this-jar listen (inherited old fd + new
+    DevTools). ``running_instance_cdp_port`` returns the advertised
+    port when that TCP probe works — leftover ``--cdp`` / lighthouse
+    ``--port`` on the other listen then looked like another Chrome.
+    Fall through to named-listen identity for *want*. Do not stamp
+    persist to that other listen — recover already named the
+    advertised port. The other family squat and 9222 stay unknown.
+
+    Finding 175: finding 174 returns ``None`` when persist is still on
+    the lock pid and only its TCP probe failed. Named-listen identity
+    then treated recover as a miss and stamped leftover ``--cdp`` /
+    lighthouse ``--port`` aimed at stale file helpers, overwriting
+    ``dock-cdp-port``. Persist still on the lock is current chrome —
+    identify the other listen, do not stamp it. Finding 177: that
+    persist may live only in ``_last_dock_cdp_port`` after a remember
+    miss or unlinked ``dock-cdp-port``. Finding 179: that persist
+    may still be this-jar inode-listed after Take over unlinks
+    ``SingletonLock``. 9222 and the other family stay unknown.
+    """
+    want = _loopback_cdp_port(cdp_url)
+    if want is None:
+        return False
+    from hermes_constants import hermes_home_key
+    from tools.bot_desktop import browser as _bd_browser
+    live = _bd_browser.running_instance_cdp_port(str(_bd_browser.profile_dir()))
+    key = hermes_home_key()
+    recovered = live is not None
+    if recovered:
+        _last_dock_cdp_port[key] = live
+        _bd_browser.remember_dock_cdp_port(live)
+        if live == want:
+            return _leftover_cdp_host_matches_this_jar(cdp_url, live)
+    # Named port this jar still inode-listens on beats a stale persist
+    # file and does not need the operator override (finding 155).
+    # Stamp persist only when a fresh TCP accept works (finding 165)
+    # and recover missed (finding 173 must not overwrite the advertised
+    # stamp with the inherited listen leftover aimed at). Finding 175:
+    # a persist TCP miss while persist is still on the lock pid is not
+    # a recover miss that may stamp stale file helpers. Leftover
+    # identity does not wait on that probe (finding 166).
+    try:
+        hosts = _bd_browser._this_jar_listen_connect_hosts(want)
+    except Exception:
+        hosts = ()
+    if hosts:
+        if not recovered:
+            stamp_named = True
+            try:
+                listed = _bd_browser.lock_listed_persist_port()
+            except Exception:
+                listed = None
+            if listed is not None and listed != want:
+                stamp_named = False
+            if stamp_named:
+                try:
+                    named = _bd_browser._this_jar_listens_on_port(want)
+                except Exception:
+                    named = False
+                if named:
+                    _last_dock_cdp_port[key] = want
+                    _bd_browser.remember_dock_cdp_port(want)
+        return _leftover_cdp_host_matches_this_jar(cdp_url, want)
+    # Persist file then memory. ``remember_dock_cdp_port`` does not
+    # update ``_last_dock_cdp_port``, so a later live stamp hid leftover
+    # ``--cdp`` aimed at persist when hosts were empty (finding 169).
+    for remembered in _remembered_dock_port_candidates():
+        if remembered == want:
+            if _last_dock_cdp_port.get(key) is None:
+                _last_dock_cdp_port[key] = remembered
+            return _leftover_cdp_host_matches_this_jar(cdp_url, remembered)
+    try:
+        configured = _bd_browser._configured_listen_port_for_this_jar()
+    except Exception:
+        configured = None
+    if configured is not None and configured == want:
+        _last_dock_cdp_port[key] = configured
+        _bd_browser.remember_dock_cdp_port(configured)
+        return _leftover_cdp_host_matches_this_jar(cdp_url, configured)
+    return False
+
+
+_LEASE_MOVED_ERROR = (
+    "A human took over the bot's screen while this browser command ran; its result was "
+    "discarded. Call computer_use action='wait_for_human' to block until they hand back."
+)
+
+
+def _refuse_shared_session_while_human_holds(*, cdp_url: str = "") -> None:
+    """Refuse minting or joining the profile's shared local browser.
+
+    ``_run_browser_command`` fences the *command*, but ``_get_session_info``
+    launches and joins first. A leftover reserved session is already refused
+    by the existing holder check; this covers the no-row path: dock CDP
+    override, local Chromium, Lightpanda, and real-profile copies. Unrelated
+    remote CDP and cloud sessions are left alone — they are not the bot's
+    desktop jar.
+    """
+    if cdp_url:
+        session_info: Dict[str, Any] = {"cdp_url": cdp_url, "features": {"cdp_override": True}}
+    else:
+        session_info = {"features": {"local": True}}
+    if not _shares_bot_desktop_browser(session_info):
+        return
+    from tools.bot_desktop import lease as _bd_lease
+    _bd_lease.assert_agent_may_act()
+
+
+def _admit_shared_browser(
+    session_info: Optional[Dict[str, Any]] = None,
+    *,
+    cdp_url: str = "",
+    home: Optional[str] = None,
+    treat_as_dock: bool = False,
+):
+    """Admit a call against the Bot Desktop's shared Chromium.
+
+    Returns the lease snapshot when this *is* that browser (so the caller can
+    discard a mid-flight result). Returns ``None`` for another browser.
+    Raises ``HumanHasControl`` while a human holds.
+
+    ``home`` re-enters the profile that owns the dock (leftover supervisors
+    outlive a multiplex turn). ``treat_as_dock`` is mint-time identity: a
+    leftover WS stamped as the dock stays the dock even after
+    ``DevToolsActivePort`` disappears.
+    """
+    token = None
+    if isinstance(home, str) and home:
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        token = set_hermes_home_override(home)
+    try:
+        from tools.bot_desktop import lease as _bd_lease, runtime as _bd_runtime
+        if treat_as_dock:
+            if not (_bd_runtime.published_env().get("DISPLAY") or _bd_lease.human_holds()):
+                return None
+            return _stamp_admitted(_bd_lease.assert_agent_may_act())
+        if session_info is None and cdp_url:
+            session_info = {"cdp_url": cdp_url, "features": {"cdp_override": True}}
+        if not session_info or not _shares_bot_desktop_browser(session_info):
+            return None
+        return _stamp_admitted(_bd_lease.assert_agent_may_act())
+    finally:
+        if token is not None:
+            from hermes_constants import reset_hermes_home_override
+            reset_hermes_home_override(token)
+
+
+def _admit_resolved_cdp_for_attach(
+    endpoint: str,
+    *,
+    home: Optional[str] = None,
+    task_id: Optional[str] = None,
+) -> bool:
+    """True unless *endpoint* is the owner profile's dock and a human now holds.
+
+    Discovery (``/json/version``) can outlive the start-of-call admit.
+    Re-check the *resolved* WebSocket before ``get_or_start`` so a mid-resolve
+    Take over cannot mint a leftover supervisor on the jar. Unrelated
+    Chromes stay unfenced (admit returns None).
+
+    After a multiplex turn the process home is the launch profile. Ambient
+    admit then reads launch ``lease.json`` (agent, missing file) and leftover
+    vault / ``browser_cdp`` / supervisor attach still talked to the bot jar.
+    Re-enter ``home`` or ``_session_owner_homes[task_id]``. Unrecorded owner
+    stays ambient. A human on the launch bot does not void a sibling attach.
+    """
+    from tools.bot_desktop.lease import HumanHasControl
+    if not (isinstance(home, str) and home):
+        home = _session_owner_home(task_id)
+    try:
+        _admit_shared_browser(cdp_url=endpoint, home=home)
+        return True
+    except HumanHasControl:
+        return False
+
+
+def _session_owner_home(*names: Optional[str]) -> Optional[str]:
+    """HERMES_HOME that minted this task's session row, or None if unrecorded."""
+    try:
+        homes = _bt._session_owner_homes
+    except Exception:
+        return None
+    seen: set[str] = set()
+    for name in names:
+        if not isinstance(name, str) or not name or name in seen:
+            continue
+        seen.add(name)
+        owner = homes.get(name)
+        if isinstance(owner, str) and owner:
+            return owner
+    return None
+
+
+def _admit_task_shared_browser(task_id: Optional[str] = None, *, cdp_url: str = ""):
+    """Admit the task's session, or a CDP override aimed at this profile's dock Chromium.
+
+    Supervisor-only tools (vault fill, dialog accept) never go through
+    ``_run_browser_command``; they still have to hit the same lease as click/eval.
+
+    Re-enter the session owner's home. After a multiplex turn the process
+    home is the launch profile; ambient ``assert_agent_may_act`` then
+    reads launch's ``lease.json`` (agent, missing file) and leftover
+    vault / dialog / ``browser_cdp`` / vision talked to the bot jar a
+    human was typing into. Finding 101 scoped ``_run_browser_command``;
+    this is the leftover-admit twin. An unrecorded owner stays ambient.
+    """
+    key = _bt._last_session_key(task_id or "default")
+    info = _bt._active_sessions.get(key)
+    if info is None and task_id:
+        info = _bt._active_sessions.get(task_id)
+    owner = _session_owner_home(task_id, key)
+    raw = (cdp_url or "").strip()
+    leftover_home: Optional[str] = None
+    leftover_dock = False
+    if not raw:
+        try:
+            raw = _cdp._get_cdp_override_raw()
+        except Exception:
+            raw = ""
+    if not raw:
+        # Leftover supervisor after the session row was dropped: still the dock
+        # jar if it was stamped as THIS profile's Chromium at mint. Do not walk
+        # another task's ``default`` leftover — the registry is keyed only by
+        # task_id, so a sibling multiplex bot can leave one behind.
+        raw, leftover_home, leftover_dock = _leftover_supervisor_identity(task_id, key)
+    if info:
+        admitted = _admit_shared_browser(info, home=owner)
+        if admitted is not None:
+            return admitted
+    return _admit_shared_browser(
+        cdp_url=raw, home=leftover_home or owner, treat_as_dock=leftover_dock,
+    )
+
+
+def _admit_supervisor(supervisor, *, home: Optional[str] = None):
+    """Admit the jar this leftover CDP supervisor is actually attached to.
+
+    Leftover I/O talks to ``supervisor.cdp_url``, not the current session's
+    shared-browser row. After Take over, a same-profile leftover dock
+    supervisor can still be ``SUPERVISOR_REGISTRY.get(task_id)`` while the
+    current session is a cloud / other-profile / already-overridden row
+    whose admit is a no-op. Re-run the dock fence on the leftover's own
+    URL and ``targets_bot_desktop`` stamp so HumanHasControl / epoch
+    discard apply to the jar we are about to snapshot / eval / CDP.
+    """
+    if supervisor is None:
+        return None
+    leftover_home = getattr(supervisor, "hermes_home", None)
+    if not (isinstance(home, str) and home):
+        home = leftover_home if isinstance(leftover_home, str) and leftover_home else None
+    return _admit_shared_browser(
+        cdp_url=str(getattr(supervisor, "cdp_url", "") or ""),
+        home=home,
+        treat_as_dock=getattr(supervisor, "targets_bot_desktop", None) is True,
+    )
+
+
+def _admit_leftover_io(supervisor, task_id: Optional[str] = None):
+    """Admit leftover snapshot / eval / dialog / CDP against the leftover jar.
+
+    The leftover jar first (it is what I/O talks to). If that leftover is
+    not the dock, fall through to the task's current session so a local
+    session row still fences unstamped leftovers that share this profile's
+    Chromium.
+    """
+    admitted = _admit_supervisor(supervisor)
+    if admitted is not None:
+        return admitted
+    return _admit_task_shared_browser(task_id)
+
+
+def _stamp_admitted(lease):
+    """Remember which HERMES_HOME this snapshot was read from.
+
+    Leftover admit re-enters the minting profile, then resets the override
+    before the caller sees the lease. Epoch checks must re-read THAT file,
+    not the launch profile's ``lease.json``.
+    """
+    from hermes_constants import hermes_home_key
+    lease._hermes_home = hermes_home_key()
+    return lease
+
+
+def _leftover_supervisor_identity(
+    task_id: Optional[str], session_key: str,
+) -> tuple:
+    """This task's leftover supervisor on this profile, or empty.
+
+    ``SUPERVISOR_REGISTRY`` is one map for the process. A sibling leftover
+    stored as ``default`` is a different bot's jar — adopting it would admit
+    that screen (and its lease) on this turn.
+    """
+    try:
+        from hermes_constants import hermes_home_key
+        from tools.browser_supervisor import SUPERVISOR_REGISTRY
+    except Exception:
+        return "", None, False
+    candidates: List[str] = []
+    for name in (task_id, session_key):
+        if isinstance(name, str) and name and name not in candidates:
+            candidates.append(name)
+    if (not task_id or task_id == "default") and "default" not in candidates:
+        candidates.append("default")
+    here = hermes_home_key()
+    for candidate in candidates:
+        sup = SUPERVISOR_REGISTRY.get(candidate)
+        if sup is None:
+            continue
+        home = getattr(sup, "hermes_home", None)
+        owner = home if isinstance(home, str) and home else None
+        if owner and hermes_home_key(owner) != here:
+            continue
+        url = str(getattr(sup, "cdp_url", "") or "")
+        dock = getattr(sup, "targets_bot_desktop", None) is True
+        if url or dock:
+            return url, owner, dock
+    return "", None, False
+
+
+def _lease_moved_result(admitted) -> Optional[Dict[str, Any]]:
+    """Refuse payload when the lease epoch moved after ``admitted``, else ``None``."""
+    if admitted is None:
+        return None
+    from tools.bot_desktop import lease as _bd_lease
+    home = getattr(admitted, "_hermes_home", None)
+    current = _bd_lease.get(home if isinstance(home, str) and home else None)
+    if current.epoch != admitted.epoch:
+        return {"success": False, "code": "human_has_control", "error": _LEASE_MOVED_ERROR}
+    return None
+
+
+def _is_shared_bot_desktop_session(session_info: Dict[str, Any]) -> bool:
+    """Same Chromium as the Bot Desktop dock / agent-browser profile, any transport."""
+    if (session_info.get("features") or {}).get("local"):
+        return True
+    return _cdp_url_is_bot_desktop_browser(str(session_info.get("cdp_url") or ""))
 
 
 def _shares_bot_desktop_browser(session_info: Dict[str, Any]) -> bool:
     """Decided by provenance, not transport: every LOCAL session (plain ``--session``, real-profile CDP
     attach, Lightpanda) is a browser Hermes launched with this profile's Bot Desktop DISPLAY, so it is the
-    screen a human who took over is typing into. Cloud / user-supplied CDP sessions are another browser.
+    screen a human who took over is typing into. A CDP override that resolves to the same live
+    dock/agent Chromium is that browser too. Cloud / unrelated user-CDP sessions are another browser.
     A human lease with the screen already gone (dead Xvnc) still fences — computer_use does the same."""
-    if not (session_info.get("features") or {}).get("local"):
+    if not _is_shared_bot_desktop_session(session_info):
         return False
     from tools.bot_desktop import lease as _bd_lease, runtime as _bd_runtime
     return bool(_bd_runtime.published_env().get("DISPLAY")) or _bd_lease.human_holds()
+
+
+def _local_browser_reserved_by_human(session_info: Dict[str, Any]) -> bool:
+    """Teardown of this session would kill the Chromium a human is typing into.
+
+    The command fence refuses ``close`` while the human holds, but the inactivity
+    janitor and suspect/expiry recycle still ran ``_release_session_resources``
+    afterwards and tree-killed the agent-browser daemon — and the Chromium it
+    spawned, which is the same jar the dock Browser uses. Cloud / unrelated
+    user-CDP sessions are another browser and are not reserved.
+    """
+    if not _is_shared_bot_desktop_session(session_info):
+        return False
+    from tools.bot_desktop import lease as _bd_lease
+    return _bd_lease.human_holds()
+
+
+def _daemon_owns_shared_chromium(session_info: Dict[str, Any]) -> bool:
+    """True when tree-killing this session's daemon would kill the dock Chromium."""
+    name = str(session_info.get("session_name") or "")
+    if not name:
+        return False
+    from tools.bot_desktop import browser as _bd_browser
+    return _bd_browser.shared_chromium_owner_session() == name
+
+
+def _remembered_dock_attach_port(*, exclude_session: Optional[str] = None) -> Optional[int]:
+    """Remembered dock port for agent attach after a live TCP miss, or ``None``.
+
+    Leftover identity already trusts persist / last-known when
+    ``running_instance_cdp_port`` misses (leftover holds the CDP socket —
+    finding 166). Agent attach did not: it launched ``--session`` and
+    Chromium singleton-forwarded into the jar a human holds (finding 168).
+    Use persist only when this jar still inode-listens so
+    ``dock_cdp_attach_target`` is family-correct. Empty hosts stay a
+    launch — a bare persist port races to the other loopback squat
+    (finding 167). Persist file beats stale ``_last_dock_cdp_port``
+    (finding 169): ``remember_dock_cdp_port`` writes the file only, so
+    an earlier identity cache hid the live stamp. Memory-only (persist
+    unlinked) still attaches. File-named ``DevToolsActivePort`` with
+    inode hosts still attaches when persist was never stamped
+    (finding 170) — that is not a guess among ports. Empty-hosts
+    persist must not hide that file. Persist-with-hosts on an older
+    stamp must not hide a different file-named live listen
+    (finding 172): unique-listen recover is unknown when Chromium
+    has several specific loopbacks (finding 85), leftover holding
+    the file port is the TCP miss that skips finding 164
+    (finding 165), and persist stays the previous stamp.
+    ``DevToolsActivePort`` is Chromium's current advertisement —
+    prefer it when it differs, unless the lock pid still lists
+    persist and not the file (file is then the inherited leftover
+    listen; persist is current chrome). Finding 183: lock inherited
+    leftover DevTools fd so it lists persist chrome and the leftover
+    file. Persist unique + named several is leftover hiding chrome
+    — keep persist. Unique+unique and persist several stay 172.
+    Finding 178: a poisoned
+    persist *file* (leftover helpers, not on the lock) must not
+    hide lock-listed memory. ``remember_dock_cdp_port`` writes the
+    file only, so pre-177 persist_live left ``dock-cdp-port`` on
+    the leftover while ``_last_dock_cdp_port`` still named chrome.
+    Put lock-listed persist first; finding 172's file-named
+    tie-break still runs. Finding 179: Take over can unlink
+    ``SingletonLock`` while memory still names chrome. Lock-listed
+    persist then comes from this-jar inode hosts, not lock ports;
+    do not let 172 prefer leftover file-named helpers over that
+    memory. Finding 194: leftover identity can stamp a different
+    unique leftover listen into the persist file (finding 193).
+    Lock-listed is then sibling chrome while the persist file is
+    leftover CRI and ``DevToolsActivePort`` is leftover helpers.
+    Finding 172 preferred leftover DevTools because persist file
+    matched neither named nor listed. Hidden chrome that equals
+    lock-listed is chrome — keep it, including when leftover
+    already holds chrome's CDP socket (166) and live recover
+    misses. Candidate order for leftover identity stays
+    file-then-memory (finding 169). ``exclude_session`` stays
+    None when that session owns the lock pid (``--cdp`` would close
+    its own browser). A holder of one candidate does not hide the
+    other. Do not stamp persist. 9222 stays unknown unless this
+    jar inode-listens there.
+    """
+    from tools.bot_desktop import browser as _bd_browser
+
+    candidates = _remembered_dock_port_candidates()
+    try:
+        listed = _bd_browser.lock_listed_persist_port()
+    except Exception:
+        listed = None
+    if isinstance(listed, int) and 1 <= listed <= 65535:
+        candidates = [listed] + [c for c in candidates if c != listed]
+    try:
+        named = _bd_browser.file_named_dock_listen_port()
+    except Exception:
+        named = None
+    user_data_dir = str(_bd_browser.profile_dir())
+    if isinstance(named, int) and 1 <= named <= 65535:
+        persist_first = candidates[0] if candidates else None
+        prefer_named = persist_first != named
+        if prefer_named and persist_first is not None:
+            try:
+                pid = _bd_browser._lock_pid(user_data_dir)
+                if (
+                    pid is not None
+                    and _bd_browser._pid_names_this_jar(pid, user_data_dir)
+                ):
+                    lock_ports = _bd_browser._loopback_listen_ports_for_pid(pid)
+                    if persist_first in lock_ports and named not in lock_ports:
+                        prefer_named = False
+                    elif (
+                        persist_first in lock_ports
+                        and named in lock_ports
+                        and (
+                            _bd_browser.leftover_helpers_hide_persist_chrome(
+                                persist_first, named, user_data_dir,
+                            )
+                            or _bd_browser.unique_lock_chrome_hidden_by_leftover_file(
+                                named, user_data_dir,
+                            ) == persist_first
+                        )
+                    ):
+                        # Finding 183: lock inherited leftover
+                        # DevTools fd, so it lists persist chrome
+                        # and the leftover file. Finding 172 would
+                        # prefer the file (chrome-switch). Persist
+                        # unique + named several is leftover hiding
+                        # chrome — keep persist. Unique+unique and
+                        # persist several stay finding 172.
+                        # Finding 188: leftover inherited chrome's
+                        # unique listen, so persist has several
+                        # holders and 183's unique-persist check
+                        # misses. Leftover-shared chrome is still
+                        # persist — keep it.
+                        prefer_named = False
+                elif listed == persist_first and listed != named:
+                    # Finding 179: no this-jar lock pid. Finding 172
+                    # would prefer leftover file-named helpers over
+                    # lock-listed memory. Prefer memory when named
+                    # is the persist file (or persist was never
+                    # stamped). Finding 180: persist_live synced
+                    # chrome into the file and memory; named is
+                    # then leftover DevTools. Prefer that persist.
+                    # Finding 182: running_instance is the other
+                    # live-stamp door and syncs the same way.
+                    # Finding 183: lock inherited leftover
+                    # DevTools fd is handled above. A different
+                    # file-named live listen with empty / leftover
+                    # memory is still finding 172.
+                    try:
+                        persist_file = _bd_browser.last_known_dock_cdp_port()
+                    except Exception:
+                        persist_file = None
+                    hidden = None
+                    try:
+                        hidden = _bd_browser.unique_lock_chrome_hidden_by_leftover_file(
+                            named, user_data_dir,
+                        )
+                    except Exception:
+                        hidden = None
+                    if (
+                        persist_file == named
+                        or persist_file is None
+                        or persist_file == listed
+                        or hidden == listed
+                    ):
+                        # Finding 194: leftover persist unique
+                        # (193) is neither named leftover
+                        # DevTools nor lock-listed chrome.
+                        # Finding 172 then preferred leftover
+                        # helpers. Hidden chrome that equals
+                        # lock-listed is chrome.
+                        prefer_named = False
+            except Exception:
+                pass
+        if prefer_named:
+            candidates = [named] + [c for c in candidates if c != named]
+        elif named not in candidates:
+            candidates.append(named)
+    if not candidates:
+        return None
+    if exclude_session:
+        pid = _bd_browser._this_jar_chromium_pid(user_data_dir)
+        if pid is not None and _bd_browser._launched_by_session(pid) == exclude_session:
+            return None
+    for remembered in candidates:
+        if exclude_session:
+            holders = _bd_browser._this_jar_listen_holders(remembered, user_data_dir)
+            if any(
+                _bd_browser._launched_by_session(holder_pid) == exclude_session
+                for holder_pid, _ in holders
+            ):
+                continue
+        try:
+            hosts = _bd_browser._this_jar_listen_connect_hosts(remembered)
+        except Exception:
+            hosts = ()
+        if hosts:
+            return remembered
+    return None
 
 
 def _bot_desktop_attach_port(session_info: Dict[str, Any]) -> Optional[int]:
@@ -609,8 +5465,13 @@ def _bot_desktop_attach_port(session_info: Dict[str, Any]) -> Optional[int]:
     if not _shares_bot_desktop_browser(session_info):
         return None
     from tools.bot_desktop import browser as _bd_browser
-    return _bd_browser.running_instance_cdp_port(str(_bd_browser.profile_dir()),
-                                                 exclude_session=session_info["session_name"])
+    exclude = session_info["session_name"]
+    live = _bd_browser.running_instance_cdp_port(
+        str(_bd_browser.profile_dir()), exclude_session=exclude,
+    )
+    if live is not None:
+        return live
+    return _remembered_dock_attach_port(exclude_session=exclude)
 
 
 def _run_browser_command_unfenced(task_id: str, command: str, args: List[str], timeout: int,
@@ -633,7 +5494,12 @@ def _run_browser_command_unfenced(task_id: str, command: str, args: List[str], t
             # Browser first): a launch would be forwarded into it by Chromium's singleton and die without
             # a DevTools endpoint, so the session's daemon attaches to the port it advertises instead.
             # Same daemon (keyed by --session) either way, so snapshot refs stay valid across commands.
-            backend_args += ["--cdp", str(bd_port)]
+            # Persist is a port. ``--cdp <port>`` is unknown-family and races
+            # to a sibling squat on the other loopback (finding 167).
+            # Live TCP miss still attaches via remembered persist when this
+            # jar inode-listens (finding 168).
+            from tools.bot_desktop import browser as _bd_browser
+            backend_args += ["--cdp", _bd_browser.dock_cdp_attach_target(bd_port)]
         if _cloud._is_headed_mode():
             backend_args.append("--headed")
         if engine != "auto" and not _bt._is_camofox_mode():
@@ -651,6 +5517,12 @@ def _run_browser_command_unfenced(task_id: str, command: str, args: List[str], t
     # empty, non-JSON, nonzero rc, parsed).
     fallback_reason = _lp._lightpanda_fallback_reason(engine, command, result)
     if fallback_reason:
+        from tools.bot_desktop.lease import HumanHasControl
+
+        try:
+            _refuse_shared_session_while_human_holds()
+        except HumanHasControl as e:
+            return {"success": False, "error": str(e), "code": "human_has_control"}
         _bt.logger.info("Lightpanda fallback: retrying '%s' with Chrome (task=%s): %s", command, task_id, fallback_reason)
         if command == "screenshot":  # separate Chrome session to the same URL
             fallback_result = _lp._chrome_fallback_screenshot(task_id, args or [], timeout)

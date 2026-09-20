@@ -169,7 +169,7 @@ class DialogSupervisionMixin:
         for method, params, timeout, what in steps:
             await self._cdp_quiet(method, params, session_id=session_id, timeout=timeout, what=what)
 
-    # ── Capture ──────────────────────────────────────────────────────────────
+    # ── Capture ──────────────────────────────────────────────────────
 
     async def _on_dialog_opening(self, params: Dict[str, Any], session_id: Optional[str]) -> None:
         self._admit_dialog(
@@ -186,6 +186,15 @@ class DialogSupervisionMixin:
         if not request_id:
             return
         if DIALOG_BRIDGE_HOST not in url:
+            try:
+                from tools.browser_tool_supervisor_lease import request_leftover_stop
+                if request_leftover_stop(self):
+                    closer = getattr(self, "_close_ws", None)
+                    if closer is not None:
+                        await closer()
+                    return
+            except Exception:
+                pass
             await self._cdp_quiet("Fetch.continueRequest", {"requestId": request_id},
                                   session_id=session_id, timeout=3.0, what="passthrough")
             return
@@ -221,12 +230,28 @@ class DialogSupervisionMixin:
             lambda: asyncio.create_task(self._dialog_timeout_expired(dialog.id)),
         )
 
-    # ── Responding ───────────────────────────────────────────────────────────
+    # ── Responding ───────────────────────────────────────────────────
 
     async def _respond(self, dialog: PendingDialog, *, accept: bool, prompt_text: Optional[str]) -> None:
         """Bridge-fulfill for XHR-captured dialogs (swallows failures so the page
         unblocks), else native CDP — ``promptText`` only for prompt dialogs when
         given; raises on CDP failure."""
+        try:
+            from tools.browser_tool_supervisor_lease import request_leftover_stop
+            if request_leftover_stop(self):
+                # A leftover watchdog / auto-policy must not accept or dismiss on the
+                # page a human is typing into. Close the WS so a bridge XHR fails
+                # closed; do not mutate the page, and do not join this thread.
+                logger.info(
+                    "CDP supervisor %s: skipping dialog response; a human holds the Bot Desktop lease",
+                    getattr(self, "task_id", "?"),
+                )
+                closer = getattr(self, "_close_ws", None)
+                if closer is not None:
+                    await closer()
+                return
+        except Exception:
+            pass
         session_id = dialog.cdp_session_id or None
         if dialog.bridge_request_id:
             body = json.dumps({"accept": bool(accept), "dialog_id": dialog.id,
@@ -271,7 +296,7 @@ class DialogSupervisionMixin:
         self._retire_dialog(dialog_id, "watchdog")
         await self._respond_quiet(dialog, accept=False, prompt_text=None)
 
-    # ── Bookkeeping ──────────────────────────────────────────────────────────
+    # ── Bookkeeping ──────────────────────────────────────────────────
 
     def _retire_dialog(self, dialog_id: str, closed_by: str) -> None:
         """Remove a pending dialog (archiving it with ``closed_by``) and cancel its watchdog."""

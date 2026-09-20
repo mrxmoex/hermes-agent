@@ -88,13 +88,17 @@ class WSTransport:
     deadlock, so it detects that and fires-and-forgets. Loop-thread callers needing completion use ``write_async``."""
 
     def __init__(self, ws: Any, loop: asyncio.AbstractEventLoop, *, peer: str = "unknown",
-                 auth_identity: dict | None = None) -> None:
+                 auth_identity: dict | None = None, mint_identity: dict | None = None) -> None:
         self._ws = ws
         self._loop = loop
         self._peer = peer
         #: Server-verified identity from the WS-upgrade credential, stamped by ``web_server._ws_auth_reason``; None
         #: for legacy-token/stdio. RPC params can never populate it: sole identity authority for browser controllers.
         self.auth_identity = auth_identity
+        #: Stable mint bucket for Bot Screen viewer ids. Distinct from ``auth_identity`` so the
+        #: loopback ``?token=`` path can survive an ``/api/ws`` replace without becoming a
+        #: dashboard controller identity (anything except ``server-internal`` would).
+        self.mint_identity = mint_identity
         self._closed = False
         # Token-coalescing buffer. The lock guards the buffer + "armed" flag against worker threads
         # calling write(); the timer handle is only ever touched on the loop thread.
@@ -261,10 +265,13 @@ class _SendFailed(Exception):
     """Raised by handle_ws._reply when a reply could not be written: ends the read loop."""
 
 
-async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: str | None = None) -> None:
+async def handle_ws(ws: Any, *, auth_identity: dict | None = None,
+                    mint_identity: dict | None = None, subprotocol: str | None = None) -> None:
     """Run one WebSocket session. Wire-compatible with ``tui_gateway.entry``. *auth_identity* is the server-minted
     ``{user_id, provider}`` recorded at WS-upgrade auth, stored as ``WSTransport.auth_identity`` (the only identity
-    authority for browser-controller registration); callers that omit it (harnesses, embedded TUI child) get None."""
+    authority for browser-controller registration); callers that omit it (harnesses, embedded TUI child) get None.
+    *mint_identity* is an optional second stamp used only to key Bot Screen viewer-id mints across reconnects
+    (loopback token path) and must never be treated as a controller identity."""
     peer, transport = _ws_peer_label(ws), None
     messages = parse_errors = dispatch_crashes = send_failures = 0
     disconnect_reason = "not_connected"
@@ -288,7 +295,8 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
         _note_dashboard_client_activity(force=True)
         _disable_nagle(ws)
         _log.info("ws accepted peer=%s", peer)
-        transport = WSTransport(ws, asyncio.get_running_loop(), peer=peer, auth_identity=auth_identity)
+        transport = WSTransport(ws, asyncio.get_running_loop(), peer=peer,
+                                auth_identity=auth_identity, mint_identity=mint_identity)
         # resolve_skin() is sync I/O + CPU; pooled so the read loop can drain the frontend's initial RPC burst.
         skin_payload = await asyncio.to_thread(server.resolve_skin)
         # change_events: this backend broadcasts pet/cron/sessions.changed, so clients can demote legacy

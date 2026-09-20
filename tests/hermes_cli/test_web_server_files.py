@@ -379,11 +379,12 @@ def test_other_credential_store_basenames_blocked(forced_files_client):
 
 
 def test_credential_dir_trees_blocked_on_subdir_descent(forced_files_client):
-    """Regression: mcp-tokens/ (live MCP OAuth tokens) and pairing/ are denied
+    """Regression: mcp-tokens/, pairing/, and bot-desktop/ are denied
     as whole directory trees by both canonical guards
-    (gateway.platforms.base._ROOT_CREDENTIAL_DIRS and
+    (gateway.platforms.base._ROOT_CREDENTIAL_PATHS and
     agent.file_safety). A basename-only check would still expose their
-    per-server files (e.g. ``mcp-tokens/github.json``) once the browser
+    per-server files (e.g. ``mcp-tokens/github.json``,
+    ``bot-desktop/browser-profile/Default/Cookies``) once the browser
     descends into the subdir. The managed-files guard must block any path with
     a credential-directory component, not just leaf basenames."""
     client, root = forced_files_client
@@ -401,15 +402,25 @@ def test_credential_dir_trees_blocked_on_subdir_descent(forced_files_client):
     pairing_file = pairing_dir / "device-abc"
     pairing_file.write_text("PAIRING-SECRET\n")
 
+    # Bot Desktop cookie jar / lease: same tree-deny as mcp-tokens. The
+    # basename denylist does not name Cookies or lease.json.
+    desktop_dir = root / "bot-desktop"
+    cookies = desktop_dir / "browser-profile" / "Default" / "Cookies"
+    cookies.parent.mkdir(parents=True, exist_ok=True)
+    cookies.write_bytes(b"stolen-cookies")
+    lease = desktop_dir / "lease.json"
+    lease.write_text('{"holder":"human"}\n')
+
     # The token dirs themselves must not appear in the root listing.
     root_names = [e["name"] for e in client.get(
         "/api/files", params={"path": str(root)}).json()["entries"]]
     assert "mcp-tokens" not in root_names
     assert "pairing" not in root_names
+    assert "bot-desktop" not in root_names
 
     # Read/download of the per-server files must be denied even though their
     # basenames aren't in _SENSITIVE_MANAGED_FILE_BASENAMES.
-    for p in (mcp_file, pairing_file):
+    for p in (mcp_file, pairing_file, cookies, lease):
         assert client.get("/api/files/read", params={"path": str(p)}).status_code == 403, str(p)
         assert client.get("/api/files/download", params={"path": str(p)}).status_code == 403, str(p)
         assert client.get("/api/files/stream", params={"path": str(p)}).status_code == 403, str(p)
@@ -418,5 +429,42 @@ def test_credential_dir_trees_blocked_on_subdir_descent(forced_files_client):
     # is filtered because the parent component is a credential dir.
     mcp_listing = client.get("/api/files", params={"path": str(mcp_dir)})
     assert [e["name"] for e in mcp_listing.json()["entries"]] == []
+
+
+def test_credential_trees_blocked_on_write(forced_files_client):
+    """Upload / mkdir / delete of bot-desktop/ is the dashboard sibling of
+    write_file lease forge: writing ``{"holder":"agent"}`` into lease.json
+    returns control without acquire/release.
+    """
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+    lease = root / "bot-desktop" / "lease.json"
+    lease.parent.mkdir(parents=True)
+    lease.write_text('{"holder":"human"}\n')
+    notes = root / "notes.md"
+    notes.write_text("ok\n")
+
+    forged = "data:application/json;base64,eyJob2xkZXIiOiJhZ2VudCJ9"
+    upload = client.post(
+        "/api/files/upload",
+        json={"path": str(lease), "data_url": forged, "overwrite": True},
+    )
+    assert upload.status_code == 403, upload.text
+    assert lease.read_text() == '{"holder":"human"}\n'
+
+    mkdir = client.post("/api/files/mkdir", json={"path": str(root / "bot-desktop" / "extra")})
+    assert mkdir.status_code == 403, mkdir.text
+    assert not (root / "bot-desktop" / "extra").exists()
+
+    delete = client.request("DELETE", "/api/files", json={"path": str(lease)})
+    assert delete.status_code == 403, delete.text
+    assert lease.exists()
+
+    ordinary = client.post(
+        "/api/files/upload",
+        json={"path": str(notes), "data_url": "data:text/plain;base64,dXBkYXRlZA==", "overwrite": True},
+    )
+    assert ordinary.status_code == 200, ordinary.text
+    assert notes.read_text() == "updated"
 
 

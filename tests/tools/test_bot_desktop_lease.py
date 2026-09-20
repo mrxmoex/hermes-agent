@@ -4,6 +4,7 @@ every action (capture included) while a human holds the screen."""
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
@@ -60,6 +61,8 @@ def test_computer_use_refuses_every_action_while_a_human_holds_the_screen(monkey
     # Handoff round trip: the agent asks, the human takes over and hands back, the agent is unblocked.
     asked = json.loads(tool.handle_computer_use({"action": "request_handoff", "reason": "log in"}))
     assert asked["ok"] and asked["state"]["pending_handoff"] == "log in"
+    assert asked["state"]["viewer_id"] is None
+    assert "viewer_hash" in asked["state"]
     lease.acquire("human", reason="log in")
     assert lease.get().pending_handoff is None
     lease.release("human")
@@ -131,6 +134,35 @@ def test_takeover_handback_during_approval_does_not_start_the_device_op(monkeypa
     assert res.get("code") == "human_has_control"
 
 
+def test_lease_file_is_owner_only_on_posix():
+    """The on-disk id is a capability (release still accepts it in-process). The RFB
+    socket is 0600; the lease file must not be the looser 0644 umask default."""
+    import os
+    import stat
+
+    from hermes_constants import get_hermes_home
+
+    lease.acquire("secret-viewer")
+    path = get_hermes_home() / "bot-desktop" / "lease.json"
+    assert path.is_file()
+    if os.name != "posix":
+        return
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
+
+
+def test_public_view_replaces_the_raw_viewer_id_with_a_hash():
+    """RPC, tool results and CLI JSON must share one redaction: the raw id is a capability."""
+    import hashlib
+    held = lease.Lease(holder=lease.HUMAN, viewer_id="secret-viewer")
+    view = held.public_view()
+    assert view["viewer_id"] is None
+    assert view["holder"] == lease.HUMAN
+    assert view["viewer_hash"] == hashlib.sha256(b"secret-viewer").hexdigest()[:12]
+    assert held.as_dict()["viewer_id"] == "secret-viewer"
+    assert lease.Lease().public_view()["viewer_hash"] is None
+
+
 def test_unreadable_lease_file_fails_closed_and_takeover_keeps_the_agents_reason(tmp_path):
     """Missing file = fresh profile (agent). A file that exists but cannot be parsed must not read as
     "agent holds": a torn write must never let the agent act on a human's screen. Taking over after a
@@ -153,10 +185,157 @@ def test_unreadable_lease_file_fails_closed_and_takeover_keeps_the_agents_reason
     lease.release(profile_key=home)
     assert lease.get(profile_key=home).holder == lease.AGENT
 
+    # Unlinking a live human lease is the same fail-open as a missing file:
+    # holder=agent without release(). Terminal auto-approve and Electron
+    # rename/trash must not be able to do this silently.
+    held = lease.acquire("desk-unlink", profile_key=home)
+    assert held.holder == lease.HUMAN
+    path.unlink()
+    assert lease.get(profile_key=home).holder == lease.AGENT
+
+    # ``ln -sf`` is the forge, not the drop: the path still exists, but
+    # ``read_text`` follows a symlink to an agent-shaped lease. Approval
+    # must pair ``ln``/``rsync`` the way it already pairs ``cp``.
+    held = lease.acquire("desk-ln", profile_key=home)
+    assert held.holder == lease.HUMAN
+    forged = tmp_path / "forged-lease.json"
+    forged.write_text(
+        json.dumps({
+            "holder": lease.AGENT,
+            "viewer_id": None,
+            "since": 0.0,
+            "reason": "",
+            "pending_handoff": None,
+            "epoch": 99,
+        }),
+        encoding="utf-8",
+    )
+    staged = path.with_name("lease.link-tmp")
+    staged.symlink_to(forged)
+    os.replace(staged, path)
+    assert path.is_symlink() and path.exists()
+    assert lease.get(profile_key=home).holder == lease.AGENT
+
     lease.request_handoff("log in to the bank, 2FA on your phone", profile_key=home)
     held = lease.acquire("desk-1", profile_key=home)
     assert held.pending_handoff is None and held.reason == "log in to the bank, 2FA on your phone"
     assert hermes_home_key(home)  # sanity: the key derivation used by the bridge is available
+
+
+def test_acquire_persists_dock_port_under_the_profile_key(monkeypatch, tmp_path):
+    """Finding 65 stamped ``dock-cdp-port`` on acquire, but used the ambient
+    home. A caller that writes another bot's ``lease.json`` via
+    ``profile_key`` (Desktop / serve while this process is still the
+    launch profile) then left the owner's file empty. After a DevTools
+    miss leftover attach treated that jar as another Chrome.
+    """
+    from pathlib import Path
+
+    from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
+    import tools.bot_desktop.browser as bdb
+    from tools.bot_desktop.lease import HumanHasControl, _path
+    from tools.browser_tool_session import (
+        _admit_resolved_cdp_for_attach,
+        _admit_shared_browser,
+        _cdp_url_is_bot_desktop_browser,
+        _last_dock_cdp_port,
+        _reset_dock_port_memory_for_tests,
+    )
+
+    launch = tmp_path / "launch"
+    bot = tmp_path / "bot"
+    launch.mkdir()
+    bot.mkdir()
+    dock = "ws://127.0.0.1:9333/devtools/browser/x"
+    other = "ws://127.0.0.1:9222/devtools/browser/x"
+
+    def live_port(*_a, **_k):
+        return 9333 if Path(get_hermes_home()).resolve() == bot.resolve() else None
+
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", live_port)
+    token = set_hermes_home_override(str(launch))
+    try:
+        _reset_dock_port_memory_for_tests()
+        assert bdb.last_known_dock_cdp_port() is None
+        held = lease.acquire("human-viewer", profile_key=str(bot))
+        assert held.holder == lease.HUMAN
+        asked = lease.request_handoff("Finish 2FA", profile_key=str(bot))
+        assert asked.pending_handoff == "Finish 2FA"
+        assert bdb.last_known_dock_cdp_port() is None
+        assert not (launch / "bot-desktop" / "dock-cdp-port").exists()
+    finally:
+        reset_hermes_home_override(token)
+
+    token = set_hermes_home_override(str(bot))
+    try:
+        _last_dock_cdp_port.clear()
+        monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *_a, **_k: None)
+        assert bdb.last_known_dock_cdp_port() == 9333
+        assert _cdp_url_is_bot_desktop_browser(dock) is True
+        assert _cdp_url_is_bot_desktop_browser(other) is False
+        with pytest.raises(HumanHasControl):
+            _admit_shared_browser(cdp_url=dock)
+        assert _admit_resolved_cdp_for_attach(dock) is False
+        assert _admit_shared_browser(cdp_url=other) is None
+        assert _admit_resolved_cdp_for_attach(other) is True
+    finally:
+        reset_hermes_home_override(token)
+        _reset_dock_port_memory_for_tests()
+        for home in (launch, bot):
+            for f in (_path(str(home)), _path(str(home)).with_suffix(".lock")):
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+
+
+def test_request_handoff_persists_dock_port_before_devtools_miss(monkeypatch):
+    """lease.request_handoff is the ask — stamp while DevTools is still
+    readable. computer_use used to return from the action before persist,
+    so a later miss leftover-attached as another Chrome."""
+    import tools.bot_desktop.browser as bdb
+    from tools.bot_desktop.lease import HumanHasControl
+    from tools.browser_tool_session import (
+        _admit_resolved_cdp_for_attach,
+        _admit_shared_browser,
+        _cdp_url_is_bot_desktop_browser,
+        _last_dock_cdp_port,
+        _reset_dock_port_memory_for_tests,
+    )
+
+    _reset_dock_port_memory_for_tests()
+    dock = "ws://127.0.0.1:9333/devtools/browser/x"
+    other = "ws://127.0.0.1:9222/devtools/browser/x"
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: 9333)
+    assert bdb.last_known_dock_cdp_port() is None
+    asked = lease.request_handoff("Finish 2FA")
+    assert asked.pending_handoff == "Finish 2FA"
+    assert asked.holder == lease.AGENT
+    assert bdb.last_known_dock_cdp_port() == 9333
+
+    _last_dock_cdp_port.clear()
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", lambda *a, **k: None)
+    lease.acquire("human-viewer")
+    assert bdb.last_known_dock_cdp_port() == 9333
+    assert _cdp_url_is_bot_desktop_browser(dock) is True
+    assert _cdp_url_is_bot_desktop_browser(other) is False
+    with pytest.raises(HumanHasControl):
+        _admit_shared_browser(cdp_url=dock)
+    assert _admit_resolved_cdp_for_attach(dock) is False
+    assert _admit_shared_browser(cdp_url=other) is None
+    assert _admit_resolved_cdp_for_attach(other) is True
+    _reset_dock_port_memory_for_tests()
+
+
+def test_request_handoff_survives_persist_failure(monkeypatch):
+    """A disk error stamping dock-cdp-port must not drop the handoff ask."""
+    monkeypatch.setattr(
+        "tools.bot_desktop.browser.persist_live_dock_cdp_port",
+        lambda: (_ for _ in ()).throw(RuntimeError("disk full")),
+    )
+    asked = lease.request_handoff("Finish 2FA")
+    assert asked.pending_handoff == "Finish 2FA"
+    assert asked.holder == lease.AGENT
 
 
 def test_lease_works_without_fcntl(tmp_path):

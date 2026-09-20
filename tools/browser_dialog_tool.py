@@ -74,6 +74,14 @@ def browser_dialog(
     task_id: Optional[str] = None,
 ) -> str:
     """Respond to a pending dialog on the active task's CDP supervisor."""
+    from tools.bot_desktop.lease import HumanHasControl
+    from tools.browser_tool_session import _admit_leftover_io, _admit_task_shared_browser, _lease_moved_result
+
+    try:
+        admitted = _admit_task_shared_browser(task_id)
+    except HumanHasControl as exc:
+        return json.dumps({"success": False, "error": str(exc), "code": "human_has_control"})
+
     supervisor = SUPERVISOR_REGISTRY.get(task_id or "default")
     if supervisor is None:
         return json.dumps({
@@ -85,7 +93,16 @@ def browser_dialog(
                 "Call browser_navigate or /browser connect first."
             ),
         })
+    try:
+        leftover_lease = _admit_leftover_io(supervisor, task_id)
+    except HumanHasControl as exc:
+        return json.dumps({"success": False, "error": str(exc), "code": "human_has_control"})
+    if leftover_lease is not None:
+        admitted = leftover_lease
     result = supervisor.respond_to_dialog(action=action, prompt_text=prompt_text, dialog_id=dialog_id)
+    moved = _lease_moved_result(admitted)
+    if moved:
+        return json.dumps(moved)
     if result.get("ok"):
         return json.dumps({"success": True, "action": action, "dialog": result.get("dialog", {})})
     return json.dumps({"success": False, "error": result.get("error", "unknown error")})

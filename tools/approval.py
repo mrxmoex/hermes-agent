@@ -531,7 +531,7 @@ def _unattended_contexts() -> list[_Unattended]:
     return contexts
 
 
-def _unattended_deny(command: str, ctx: _Unattended) -> dict | None:
+def _unattended_deny(command: str, ctx: _Unattended, *, cwd: Optional[str] = None) -> dict | None:
     """Deny-mode handling for one unattended context (cron / -q / webhook); None = allow.
 
     Pattern detection first, then tirith so content-level threats (homograph URLs,
@@ -547,7 +547,7 @@ def _unattended_deny(command: str, ctx: _Unattended) -> dict | None:
             subject, noun="dangerous commands",
             advice="Find an alternative approach that avoids this command.")}
 
-    is_dangerous, _pk, description = detect_dangerous_command(command)
+    is_dangerous, _pk, description = detect_dangerous_command(command, cwd=cwd)
     if is_dangerous:
         result = block(f"Command flagged as dangerous ({description})")
         if ctx.name == "single_query":
@@ -934,7 +934,8 @@ def _floor_block(command: str, *, sudo_guard: bool = False) -> dict | None:
 
 def check_dangerous_command(command: str, env_type: str,
                             approval_callback=None,
-                            has_host_access: bool = False) -> dict:
+                            has_host_access: bool = False,
+                            cwd: Optional[str] = None) -> dict:
     """Detect a dangerous command and handle approval (pattern layer only). ``has_host_access``:
     a Docker sandbox that bind-mounts host paths must not skip approval.
     Returns ``{"approved": True/False, "message": str or None, ...}``."""
@@ -947,7 +948,7 @@ def check_dangerous_command(command: str, env_type: str,
         return _approved()
     if _command_matches_permanent_allowlist(command):
         return _approved()
-    is_dangerous, pattern_key, description = detect_dangerous_command(command)
+    is_dangerous, pattern_key, description = detect_dangerous_command(command, cwd=cwd)
     if not is_dangerous:
         return _approved()
     return _run_approval_gate(
@@ -1024,7 +1025,8 @@ def _tirith_scan(command: str) -> dict:
 
 def check_all_command_guards(command: str, env_type: str,
                              approval_callback=None,
-                             has_host_access: bool = False) -> dict:
+                             has_host_access: bool = False,
+                             cwd: Optional[str] = None) -> dict:
     """Run all pre-exec security checks and return a single approval decision. Tirith and
     dangerous-command findings are presented as ONE combined approval request, so a gateway
     force=True replay cannot bypass one check when only the other was shown to the user.
@@ -1047,7 +1049,7 @@ def check_all_command_guards(command: str, env_type: str,
     # unattended context applies its configured deny/approve mode, else allow.
     if not is_cli and not is_gateway and not is_ask:
         for ctx in _unattended_contexts():
-            result = _unattended_deny(command, ctx)
+            result = _unattended_deny(command, ctx, cwd=cwd)
             if result is not None:
                 return result
         return _approved()
@@ -1055,7 +1057,7 @@ def check_all_command_guards(command: str, env_type: str,
     # Gather findings: warnings = [(pattern_key, description, is_tirith)]. Tirith block AND warn both go through the
     # approval flow (block used to be a hard stop) so users can inspect the findings and approve.
     tirith_result = _tirith_scan(command)
-    is_dangerous, pattern_key, description = detect_dangerous_command(command)
+    is_dangerous, pattern_key, description = detect_dangerous_command(command, cwd=cwd)
     warnings = []
     session_key = get_current_session_key()
     if tirith_result["action"] in {"block", "warn"}:

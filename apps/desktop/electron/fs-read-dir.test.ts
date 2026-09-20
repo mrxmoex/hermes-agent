@@ -21,6 +21,29 @@ function fakeDirent(name, flags: any = {}) {
   }
 }
 
+test('readDirForIpc hides the Bot Screen cookie-jar tree', async () => {
+  const root = mkTmpDir()
+
+  try {
+    fs.mkdirSync(path.join(root, 'bot-desktop'))
+    fs.writeFileSync(path.join(root, 'bot-desktop', 'lease.json'), '{"holder":"human"}\n')
+    fs.writeFileSync(path.join(root, 'notes.md'), 'ok\n')
+
+    const listing = await readDirForIpc(root)
+    assert.equal(listing.error, undefined)
+    assert.deepEqual(
+      listing.entries.map(entry => entry.name),
+      ['notes.md']
+    )
+
+    const denied = await readDirForIpc(path.join(root, 'bot-desktop'))
+    assert.equal(denied.error, 'EACCES')
+    assert.deepEqual(denied.entries, [])
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('readDirForIpc hides noisy directories and files from the project tree', async () => {
   const root = mkTmpDir()
 

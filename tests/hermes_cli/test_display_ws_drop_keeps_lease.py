@@ -19,6 +19,8 @@ class _Ws:
     def __init__(self, close_code: int):
         self._code = close_code
         self.closed = False
+        self.close_code = None
+        self.close_reason = ""
 
     async def accept(self):
         pass
@@ -31,7 +33,24 @@ class _Ws:
         pass
 
     async def close(self, code=1000, reason=""):
+        if not self.closed:
+            self.close_code = code
+            self.close_reason = reason
         self.closed = True
+
+
+def test_bridge_refuses_a_ticket_that_does_not_name_a_viewer():
+    """A home-only ticket used to fall through to user_id or the literal
+    ``viewer``, so every such stream shared one input-gate identity."""
+
+    async def _run():
+        ws = _Ws(1000)
+        await display._bridge(ws, {"hermes_home": "/tmp/unused-bot-desktop"})
+        return ws.close_code, ws.close_reason
+
+    close_code, close_reason = asyncio.run(_run())
+    assert close_code == display._CLOSE_BAD_TICKET
+    assert "viewer" in close_reason
 
 
 async def _bridge_once(close_code: int, home: str) -> lease.Lease:
@@ -52,9 +71,13 @@ async def _bridge_once(close_code: int, home: str) -> lease.Lease:
     return lease.get(profile_key=home)
 
 
-# 1005 (no status code) is what noVNC's code-less socket.close() AND some proxies produce on a drop, so
-# the server keeps the lease; the Desktop sends an explicit 1000 when the pane is closed on purpose.
-@pytest.mark.parametrize(("close_code", "human_keeps_control"), [(1006, True), (1005, True), (1000, False)])
+# 1005 (no status code) is what noVNC's code-less socket.close() AND some proxies produce on a drop;
+# 4002 is this window replacing its own stream (Reconnect). Neither hands the screen back.
+# The Desktop sends an explicit 1000 when the pane is closed on purpose.
+@pytest.mark.parametrize(
+    ("close_code", "human_keeps_control"),
+    [(1006, True), (1005, True), (display._CLOSE_STREAM_REPLACE, True), (1000, False)],
+)
 def test_only_a_clean_viewer_close_hands_the_screen_back(monkeypatch, close_code, human_keeps_control):
     lease._reset_for_tests()
     with tempfile.TemporaryDirectory() as home:
@@ -91,7 +114,9 @@ class _OpenWs(_Ws):
 
 def test_a_takeover_made_by_another_process_stops_input_within_the_refresh_interval(monkeypatch):
     """The bridge caches the input decision instead of reading lease.json per message; a takeover
-    written by ANOTHER process (no in-process listener fires) must still be seen quickly."""
+    written by ANOTHER process (no in-process listener fires) must still drop input AND close
+    the evicted stream (4000 control-taken). Input-only was not enough: the old viewer kept
+    watching whatever the new holder typed."""
     from tools.bot_desktop import rfb_filter
     captured = {}
 
@@ -112,11 +137,13 @@ def test_a_takeover_made_by_another_process_stops_input_within_the_refresh_inter
                 await asyncio.sleep(0.01)
             assert captured["allow"]() is True
             # Another process takes over: the file changes, no listener in this process is told.
+            # Do not poll allow() after this — that is the input-gated path. An idle /
+            # viewOnly holder never sends KeyEvent, so eviction must come from the timer.
             lease._write(lease._path(home), lease.Lease(holder=lease.HUMAN, viewer_id="desk-2", epoch=2))
             t0 = asyncio.get_running_loop().time()
-            while captured["allow"]() and asyncio.get_running_loop().time() - t0 < 2.0:
+            while ws.close_code is None and asyncio.get_running_loop().time() - t0 < 2.0:
                 await asyncio.sleep(0.02)
-            return asyncio.get_running_loop().time() - t0
+            return asyncio.get_running_loop().time() - t0, ws.close_code, ws.close_reason
         finally:
             ws.finish.set()
             await task
@@ -125,6 +152,51 @@ def test_a_takeover_made_by_another_process_stops_input_within_the_refresh_inter
     lease._reset_for_tests()
     with tempfile.TemporaryDirectory() as home:
         lease.acquire("desk-1", profile_key=home)
-        elapsed = asyncio.run(_run(home))
+        elapsed, close_code, close_reason = asyncio.run(_run(home))
     lease._reset_for_tests()
     assert elapsed < 0.5, elapsed
+    assert close_code == display._CLOSE_CONTROL_TAKEN, (close_code, close_reason)
+    assert "control-taken" in close_reason
+
+
+def test_a_second_stream_for_the_same_viewer_evicts_the_first_without_releasing(monkeypatch):
+    """Two /api/display/ws accepts for one viewer_id shared the lease input gate.
+    The new accept replaces the old socket with 4002 (keep the lease — this is
+    the same viewer reconnecting, not another human taking control)."""
+
+    async def _run(home: str):
+        display._reset_live_streams_for_tests()
+        sock_dir = os.path.join(home, "bot-desktop")
+        os.makedirs(sock_dir, exist_ok=True)
+        server = await asyncio.start_unix_server(lambda r, w: None, path=os.path.join(sock_dir, "rfb.sock"))
+        info = {"hermes_home": home, "viewer_id": "desk-1"}
+        first, second = _OpenWs(), _OpenWs()
+        t1 = asyncio.create_task(display._bridge(first, info))
+        try:
+            t0 = asyncio.get_running_loop().time()
+            while display._live_stream_key(home, "desk-1") not in display._live_streams:
+                if asyncio.get_running_loop().time() - t0 > 2.0:
+                    raise AssertionError("first stream never registered")
+                await asyncio.sleep(0.01)
+            t2 = asyncio.create_task(display._bridge(second, info))
+            t0 = asyncio.get_running_loop().time()
+            while first.close_code is None and asyncio.get_running_loop().time() - t0 < 2.0:
+                await asyncio.sleep(0.02)
+            try:
+                return first.close_code, first.close_reason, lease.get(profile_key=home).holder
+            finally:
+                second.finish.set()
+                first.finish.set()
+                await asyncio.gather(t1, t2, return_exceptions=True)
+        finally:
+            server.close()
+            display._reset_live_streams_for_tests()
+
+    lease._reset_for_tests()
+    with tempfile.TemporaryDirectory() as home:
+        lease.acquire("desk-1", profile_key=home)
+        close_code, close_reason, holder = asyncio.run(_run(home))
+    lease._reset_for_tests()
+    assert close_code == display._CLOSE_STREAM_REPLACE, (close_code, close_reason)
+    assert "stream-replaced" in close_reason
+    assert holder == lease.HUMAN

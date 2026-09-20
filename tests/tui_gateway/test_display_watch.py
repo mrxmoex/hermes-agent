@@ -46,6 +46,19 @@ def _lease_events(events, **want):
     return [p for ev, p in events if ev == "display.lease" and all(p["lease"].get(k) == v for k, v in want.items())]
 
 
+def _status_for(events, home: Path):
+    """``display.status`` payloads for *home* only.
+
+    The watcher now seeds every local profile home, and a process-wide
+    ``runtime.status`` mock flips the running bit on all of them. Counting
+    every broadcast would be a change-detector for how many profiles the
+    host has.
+    """
+    from hermes_constants import hermes_home_key
+    key = hermes_home_key(home)
+    return [p for ev, p in events if ev == "display.status" and p.get("profile_key") in (key, str(home))]
+
+
 def test_handoff_requested_in_another_process_is_broadcast(tmp_path, monkeypatch):
     import tui_gateway.server as server
     from hermes_constants import hermes_home_key
@@ -58,6 +71,7 @@ def test_handoff_requested_in_another_process_is_broadcast(tmp_path, monkeypatch
     assert _wait_for(lambda: _lease_events(events, pending_handoff="probe")), events
     (payload,) = _lease_events(events, pending_handoff="probe")
     assert payload["profile_key"] == hermes_home_key(home)
+    assert isinstance(payload.get("profile"), str) and payload["profile"]
 
 
 def test_release_in_another_process_is_broadcast_and_local_transition_not_duplicated(tmp_path, monkeypatch):
@@ -87,18 +101,169 @@ def test_screen_started_or_stopped_by_another_process_is_broadcast_as_status(tmp
 
     home = tmp_path / "home"
     (home / "bot-desktop").mkdir(parents=True)
+    from hermes_cli import profiles as profiles_mod
+    monkeypatch.setattr(profiles_mod, "profiles_to_serve", lambda multiplex=True: [("default", home)])
     events = _watching(server, home, monkeypatch)
     server._poll_runtime_files()  # seed
-    assert not [e for e in events if e[0] == "display.status"]
+    assert not _status_for(events, home)
 
     # what runtime.start() publishes from another process: launcher.pid then env
     (home / "bot-desktop" / "launcher.pid").write_text("424242 1.5")
     (home / "bot-desktop" / "env").write_text("DISPLAY=:77\n")
     server._poll_runtime_files()
-    statuses = [p for e, p in events if e == "display.status"]
+    statuses = _status_for(events, home)
     assert statuses and statuses[-1]["profile_key"] == str(home)
 
     (home / "bot-desktop" / "env").unlink()  # stop() from the other process
     server._poll_runtime_files()
-    assert len([e for e in events if e[0] == "display.status"]) == 2
-    assert [p for e, p in events if e == "display.status"][-1]["running"] is False
+    statuses = _status_for(events, home)
+    assert len(statuses) == 2
+    assert statuses[-1]["running"] is False
+
+
+def test_sibling_profile_handoff_is_watched_before_any_display_rpc(tmp_path, monkeypatch):
+    """A bot the Desktop has never called display.* for still gets display.lease
+    when another process writes its lease.json (gateway request_handoff)."""
+    import tui_gateway.server as server
+    from hermes_cli import profiles as profiles_mod
+    from hermes_constants import hermes_home_key
+
+    launch = tmp_path / "launch"
+    sibling = tmp_path / "bot-b"
+    launch.mkdir()
+    sibling.mkdir()
+    monkeypatch.setattr(
+        profiles_mod,
+        "profiles_to_serve",
+        lambda multiplex=True: [("default", launch), ("bot-b", sibling)],
+    )
+    events = _watching(server, launch, monkeypatch)
+    server._seed_watched_profile_homes()
+    server._poll_lease_files()
+
+    _other_process(sibling, 'lease.request_handoff("sibling-ask")')
+    server._poll_lease_files()
+
+    found = _lease_events(events, pending_handoff="sibling-ask")
+    assert found, events
+    assert found[0]["profile_key"] == hermes_home_key(sibling)
+    assert found[0]["profile"] == "bot-b"
+
+
+def test_lease_event_payload_names_the_profile_from_its_home(tmp_path, monkeypatch):
+    """The Desktop matches a lease event on payload.profile before display.status
+    has returned that home's path. The name must come from the home, not the
+    serve process's launch profile."""
+    from hermes_cli import profiles as profiles_mod
+    from hermes_constants import hermes_home_key
+    from tools.bot_desktop import lease
+    from tui_gateway.methods_display import _lease_event_payload
+
+    launch = tmp_path / "launch"
+    sibling = tmp_path / "coder"
+    launch.mkdir()
+    sibling.mkdir()
+    monkeypatch.setattr(
+        profiles_mod,
+        "profiles_to_serve",
+        lambda multiplex=True: [("default", launch), ("coder", sibling)],
+    )
+    payload = _lease_event_payload(hermes_home_key(sibling), lease.get(str(sibling)))
+    assert payload["profile"] == "coder"
+    assert payload["profile_key"] == hermes_home_key(sibling)
+    assert payload["lease"]["viewer_id"] is None
+
+
+def test_launcher_crash_without_unlinking_files_is_broadcast_as_stopped(tmp_path, monkeypatch):
+    """runtime.stop() unlinks env/pid; a crash leaves both. The portal only listens
+    after the first status, so a dead launcher must still move the runtime mark."""
+    import tui_gateway.server as server
+    from hermes_cli import profiles as profiles_mod
+    from tools.bot_desktop import runtime
+
+    home = tmp_path / "home"
+    (home / "bot-desktop").mkdir(parents=True)
+    monkeypatch.setattr(profiles_mod, "profiles_to_serve", lambda multiplex=True: [("default", home)])
+    events = _watching(server, home, monkeypatch)
+    server._poll_runtime_files()
+
+    (home / "bot-desktop" / "launcher.pid").write_text("424242 1.5")
+    (home / "bot-desktop" / "env").write_text("DISPLAY=:77\n")
+    monkeypatch.setattr(runtime, "status", lambda: runtime.DesktopStatus(
+        profile="default", supported=True, installed=True, missing=[],
+        running=True, pid=424242, display=":77", socket=None, geometry="1440x900",
+        install_command=None,
+    ))
+    server._poll_runtime_files()
+    assert _status_for(events, home)[-1]["running"] is True
+
+    before = len(_status_for(events, home))
+    server._poll_runtime_files()  # files unchanged, still alive: no re-broadcast
+    assert len(_status_for(events, home)) == before
+
+    monkeypatch.setattr(runtime, "status", lambda: runtime.DesktopStatus(
+        profile="default", supported=True, installed=True, missing=[],
+        running=False, pid=None, display=None, socket=None, geometry="1440x900",
+        install_command=None,
+    ))
+    server._poll_runtime_files()
+    statuses = _status_for(events, home)
+    assert len(statuses) == before + 1
+    assert statuses[-1]["running"] is False
+
+
+def test_watch_persists_sibling_dock_under_watched_home(tmp_path, monkeypatch):
+    """The serve 0.5s poll walks every served home. A leftover / status
+    stamp on the launch profile must not invent a port there; the bot
+    home's live DevTools is the one that gets ``dock-cdp-port``."""
+    import tools.bot_desktop.browser as bdb
+    import tui_gateway.server as server
+    from hermes_cli import profiles as profiles_mod
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from pathlib import Path
+    from tools.browser_tool_session import _reset_dock_port_memory_for_tests
+
+    launch = tmp_path / "launch"
+    bot = tmp_path / "bot-b"
+    launch.mkdir()
+    bot.mkdir()
+    monkeypatch.setattr(
+        profiles_mod,
+        "profiles_to_serve",
+        lambda multiplex=True: [("default", launch), ("bot-b", bot)],
+    )
+    monkeypatch.setattr(server, "_hermes_home", str(launch))
+    server._served_profile_homes.clear()
+    server._seed_watched_profile_homes()
+
+    bot_profile = (bot / "bot-desktop" / "browser-profile").resolve()
+
+    def live_port(user_data_dir, **_k):
+        try:
+            return 9333 if Path(user_data_dir).resolve() == bot_profile else None
+        except OSError:
+            return None
+
+    monkeypatch.setattr(bdb, "running_instance_cdp_port", live_port)
+    _reset_dock_port_memory_for_tests()
+
+    token_launch = set_hermes_home_override(str(launch))
+    try:
+        assert bdb.last_known_dock_cdp_port() is None
+    finally:
+        reset_hermes_home_override(token_launch)
+
+    server._persist_watched_dock_ports()
+
+    token_launch = set_hermes_home_override(str(launch))
+    try:
+        assert bdb.last_known_dock_cdp_port() is None
+    finally:
+        reset_hermes_home_override(token_launch)
+
+    token_bot = set_hermes_home_override(str(bot))
+    try:
+        assert bdb.last_known_dock_cdp_port() == 9333
+    finally:
+        reset_hermes_home_override(token_bot)
+        _reset_dock_port_memory_for_tests()

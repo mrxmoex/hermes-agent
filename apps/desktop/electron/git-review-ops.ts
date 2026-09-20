@@ -5,12 +5,13 @@
 // non-repo / remote backend; mutations reject so the renderer can toast.
 
 import { execFile } from 'node:child_process'
+import { realpathSync } from 'node:fs'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 
 import simpleGit from 'simple-git'
 
-import { resolveRequestedPathForIpc } from './hardening'
+import { resolveRequestedPathForIpc, sensitiveFileBlockReason } from './hardening'
 
 const COMMIT_CONTEXT_DIFF_MAX_CHARS = 120_000
 const COMMIT_CONTEXT_UNTRACKED_MAX = 80
@@ -99,7 +100,65 @@ function countsByPath(summary) {
 // the review tree can show +N for new files (matches an all-add diff view).
 // Insertions = line count: newline bytes, plus one for a final unterminated
 // line. Binary (NUL byte) → 0, mirroring git numstat's "-".
+function isSensitiveGitTarget(cwd, filePath) {
+  // Same always-on denylist as dashboard web_git / Electron spot-editor.
+  // `git diff --no-index` dumps the whole file; untrackedInsertions readFile's
+  // it for a line count. Relative `bot-desktop/lease.json` has no leading
+  // slash, so resolve before checking.
+  if (!filePath) {
+    return false
+  }
+
+  const rel = String(filePath)
+  const slashRel = rel.replace(/\\/g, '/')
+
+  if (sensitiveFileBlockReason(rel) || sensitiveFileBlockReason(`/${slashRel}`)) {
+    return true
+  }
+
+  try {
+    const resolved = path.resolve(cwd, rel)
+
+    if (sensitiveFileBlockReason(resolved)) {
+      return true
+    }
+
+    try {
+      return Boolean(sensitiveFileBlockReason(realpathSync(resolved)))
+    } catch {
+      return false
+    }
+  } catch {
+    return true
+  }
+}
+
+function dropSensitiveGitFiles(cwd, files) {
+  return files.filter(file => !isSensitiveGitTarget(cwd, file.path))
+}
+
+function rejectSensitiveGitTarget(cwd, filePath) {
+  if (isSensitiveGitTarget(cwd, filePath)) {
+    throw new Error('Access to sensitive files is not allowed')
+  }
+}
+
+async function unstageSensitiveGitPaths(cwd, git) {
+  const status = await git.status(['--untracked-files=all'])
+  const stagedSensitive = status.files
+    .filter(file => isStaged(file) && isSensitiveGitTarget(cwd, file.path))
+    .map(file => file.path)
+
+  if (stagedSensitive.length) {
+    await git.raw(['reset', '-q', 'HEAD', '--', ...stagedSensitive])
+  }
+}
+
 async function untrackedInsertions(cwd, relPath) {
+  if (isSensitiveGitTarget(cwd, relPath)) {
+    return 0
+  }
+
   try {
     const fullPath = path.join(cwd, relPath)
     const stat = await fs.stat(fullPath)
@@ -284,9 +343,10 @@ async function reviewList(repoPath, scope, baseRef, gitBin) {
       }
 
       files.sort((a, b) => a.path.localeCompare(b.path))
-      await fillUntrackedCounts(cwd, files)
+      const visible = dropSensitiveGitFiles(cwd, files)
+      await fillUntrackedCounts(cwd, visible)
 
-      return { files, base }
+      return { files: visible, base }
     }
 
     // Default: uncommitted (staged + unstaged + untracked), one row per path.
@@ -317,9 +377,10 @@ async function reviewList(repoPath, scope, baseRef, gitBin) {
     })
 
     files.sort((a, b) => a.path.localeCompare(b.path))
-    await fillUntrackedCounts(cwd, files)
+    const visible = dropSensitiveGitFiles(cwd, files)
+    await fillUntrackedCounts(cwd, visible)
 
-    return { files, base: null }
+    return { files: visible, base: null }
   } catch {
     return { files: [], base: null }
   }
@@ -331,6 +392,10 @@ async function reviewDiff(repoPath, filePath, scope, baseRef, staged, gitBin) {
   try {
     cwd = resolveRequestedPathForIpc(repoPath, { purpose: 'Review diff' })
   } catch {
+    return ''
+  }
+
+  if (isSensitiveGitTarget(cwd, filePath)) {
     return ''
   }
 
@@ -383,6 +448,10 @@ async function fileDiffVsHead(repoPath, filePath, gitBin) {
     return ''
   }
 
+  if (isSensitiveGitTarget(cwd, filePath)) {
+    return ''
+  }
+
   const git = gitFor(cwd, gitBin)
   const head = await git.diff(['HEAD', '--', filePath]).catch(() => '')
 
@@ -410,14 +479,26 @@ async function fileDiffVsHead(repoPath, filePath, gitBin) {
 
 async function reviewStage(repoPath, filePath, gitBin) {
   const cwd = resolveRequestedPathForIpc(repoPath, { purpose: 'Review stage' })
+  const git = gitFor(cwd, gitBin)
 
-  await gitFor(cwd, gitBin).raw(filePath ? ['add', '--', filePath] : ['add', '-A'])
+  if (filePath) {
+    rejectSensitiveGitTarget(cwd, filePath)
+    await git.raw(['add', '--', filePath])
+    return { ok: true }
+  }
+
+  await git.raw(['add', '-A'])
+  await unstageSensitiveGitPaths(cwd, git)
 
   return { ok: true }
 }
 
 async function reviewUnstage(repoPath, filePath, gitBin) {
   const cwd = resolveRequestedPathForIpc(repoPath, { purpose: 'Review unstage' })
+
+  if (filePath) {
+    rejectSensitiveGitTarget(cwd, filePath)
+  }
 
   await gitFor(cwd, gitBin).raw(filePath ? ['reset', '-q', 'HEAD', '--', filePath] : ['reset', '-q', 'HEAD'])
 
@@ -431,11 +512,18 @@ async function reviewRevert(repoPath, filePath, gitBin) {
   const git = gitFor(cwd, gitBin)
 
   if (filePath) {
+    rejectSensitiveGitTarget(cwd, filePath)
     await git.raw(['checkout', 'HEAD', '--', filePath]).catch(() => undefined)
     await git.raw(['clean', '-fd', '--', filePath]).catch(() => undefined)
-  } else {
-    await git.raw(['checkout', 'HEAD', '--', '.']).catch(() => undefined)
-    await git.raw(['clean', '-fd']).catch(() => undefined)
+    return { ok: true }
+  }
+
+  const status = await git.status(['--untracked-files=all'])
+  const targets = status.files.map(file => file.path).filter(target => !isSensitiveGitTarget(cwd, target))
+
+  for (const target of targets) {
+    await git.raw(['checkout', 'HEAD', '--', target]).catch(() => undefined)
+    await git.raw(['clean', '-fd', '--', target]).catch(() => undefined)
   }
 
   return { ok: true }
@@ -464,10 +552,12 @@ async function reviewRevParse(repoPath, ref, gitBin) {
 async function reviewCommit(repoPath, message, push, gitBin) {
   const cwd = resolveRequestedPathForIpc(repoPath, { purpose: 'Review commit' })
   const git = gitFor(cwd, gitBin)
+  await unstageSensitiveGitPaths(cwd, git)
   const status = await git.status()
 
   if (status.staged.length === 0) {
     await git.raw(['add', '-A'])
+    await unstageSensitiveGitPaths(cwd, git)
   }
 
   await git.commit(message)
@@ -510,15 +600,22 @@ async function reviewCommitContext(repoPath, gitBin) {
     return { diff: '', recent: '' }
   }
 
+  const safeStaged = (status.staged || []).filter(path => !isSensitiveGitTarget(cwd, path))
+  const safeUntracked = (status.not_added || []).filter(path => !isSensitiveGitTarget(cwd, path))
+  const safeTracked = status.files.map(file => file.path).filter(path => !isSensitiveGitTarget(cwd, path))
+
   // What will land: staged changes if any, otherwise all tracked changes vs HEAD.
-  let diff = capText(
-    status.staged.length > 0 ? await safe(['--cached']) : await safe(['HEAD']),
-    COMMIT_CONTEXT_DIFF_MAX_CHARS,
-    'diff truncated for commit-message generation'
-  )
+  // Never `git diff HEAD --` with no paths — that dumps the whole tree.
+  const rawDiff =
+    safeStaged.length > 0
+      ? await safe(['--cached', '--', ...safeStaged])
+      : safeTracked.length > 0
+        ? await safe(['HEAD', '--', ...safeTracked])
+        : ''
+  let diff = capText(rawDiff, COMMIT_CONTEXT_DIFF_MAX_CHARS, 'diff truncated for commit-message generation')
 
   // Untracked files have no diff — list them so new files aren't invisible.
-  const untracked = status.not_added || []
+  const untracked = safeUntracked
 
   if (untracked.length > 0) {
     const visible = untracked.slice(0, COMMIT_CONTEXT_UNTRACKED_MAX)
@@ -825,13 +922,16 @@ async function repoStatus(repoPath, gitBin) {
 
   const detached = typeof status.detached === 'boolean' ? status.detached : !status.current
 
-  const files = status.files.map(file => ({
-    path: file.path,
-    staged: isStaged(file),
-    unstaged: Boolean(file.working_dir && file.working_dir !== ' ' && file.working_dir !== '?'),
-    untracked: file.index === '?' || file.working_dir === '?',
-    conflicted: file.index === 'U' || file.working_dir === 'U'
-  }))
+  const files = dropSensitiveGitFiles(
+    cwd,
+    status.files.map(file => ({
+      path: file.path,
+      staged: isStaged(file),
+      unstaged: Boolean(file.working_dir && file.working_dir !== ' ' && file.working_dir !== '?'),
+      untracked: file.index === '?' || file.working_dir === '?',
+      conflicted: file.index === 'U' || file.working_dir === 'U'
+    }))
+  )
 
   const result = {
     branch: detached ? null : status.current || null,
@@ -841,7 +941,7 @@ async function repoStatus(repoPath, gitBin) {
     behind: status.behind || 0,
     staged: files.filter(f => f.staged).length,
     unstaged: files.filter(f => f.unstaged).length,
-    untracked: status.not_added.length,
+    untracked: files.filter(f => f.untracked).length,
     conflicted: status.conflicted.length,
     changed: files.length,
     added: 0,
@@ -864,7 +964,9 @@ async function repoStatus(repoPath, gitBin) {
   // `added`; directories reported by the compact `normal` scan intentionally
   // remain at zero rather than recursively walking their contents.
   try {
-    const untracked = status.not_added.slice(0, 500)
+    const untracked = status.not_added
+      .filter(path => !isSensitiveGitTarget(cwd, path))
+      .slice(0, 500)
 
     for (let i = 0; i < untracked.length; i += UNTRACKED_LINE_COUNT_CONCURRENCY) {
       const batch = await Promise.all(
@@ -884,6 +986,7 @@ export {
   branchBase,
   fileDiffVsHead,
   gitFor,
+  isSensitiveGitTarget,
   repoStatus,
   resolveRenamePath,
   REVIEW_FILE_CAP,

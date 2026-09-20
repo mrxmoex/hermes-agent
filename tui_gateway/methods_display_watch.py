@@ -23,18 +23,39 @@ _lease_watcher_started = threading.Event()
 # made by THIS process is not re-broadcast when its file write is noticed a tick later).
 _lease_epochs: dict[str, int] = {}
 _lease_mtimes: dict[str, int | None] = {}
-# profile key → (env mtime, launcher.pid mtime): the screen's running/display identity. A start,
-# stop or crash made by another process (CLI, gateway auto-start) moves one of these.
+# profile key → (env mtime, launcher.pid mtime, running): start/stop rewrite the
+# files; a crash leaves them in place and only the live-pid bit flips.
 _runtime_marks: dict[str, tuple] = {}
 
 
 def _lease_event_payload(profile_key: str, lease) -> dict:
-    # Same shape and the same redaction (viewer_hash, never the raw id) as the in-process broadcast.
-    from tui_gateway.methods_display import _lease_view
-    return {"profile_key": profile_key, "lease": _lease_view(lease)}
+    # Same shape (profile name + redacted lease) as the in-process broadcast so a
+    # Desktop portal that has not yet received display.status can still match.
+    from tui_gateway.methods_display import _lease_event_payload as _named
+    return _named(profile_key, lease)
+
+
+def _seed_watched_profile_homes() -> None:
+    """Register every local profile home, not only ones a ``display.*`` RPC already hit.
+
+    A secondary bot's ``lease.json`` is otherwise invisible until the first
+    ``_profile_scoped`` call. After a serve restart the Desktop cache can skip
+    ``display.status``, so a gateway ``request_handoff`` on that bot never
+    became ``display.lease``. ``profiles_to_serve(True)`` is the same
+    directory set the multiplex gateway already watches.
+    """
+    try:
+        from hermes_cli.profiles import profiles_to_serve
+        for _name, home in profiles_to_serve(True):
+            path = Path(home)
+            if path.is_dir():
+                _served_profile_homes.add(path)
+    except Exception:  # noqa: BLE001 — a broken profiles root must not kill the poll
+        logger.debug("lease watcher could not enumerate profile homes", exc_info=True)
 
 
 def _watched_lease_homes() -> list[Path]:
+    _seed_watched_profile_homes()
     return [Path(_hermes_home), *_served_profile_homes]
 
 
@@ -45,13 +66,29 @@ def _mtime(path: Path):
         return None
 
 
+def _runtime_mark(home: Path) -> tuple:
+    """File mtimes plus whether the launcher is actually alive.
+
+    ``runtime.stop()`` unlinks ``env`` / ``launcher.pid``; a crash leaves both,
+    so an mtime-only mark stays put and the Desktop portal keeps saying Live.
+    """
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.bot_desktop import runtime as _bd_runtime
+    sd = home / "bot-desktop"
+    token = set_hermes_home_override(home)
+    try:
+        running = bool(_bd_runtime.status().running)
+    finally:
+        reset_hermes_home_override(token)
+    return (_mtime(sd / "env"), _mtime(sd / "launcher.pid"), running)
+
+
 def _poll_runtime_files() -> None:
     """Broadcast ``display.status`` when a home's screen started/stopped outside this process."""
     from hermes_constants import hermes_home_key, reset_hermes_home_override, set_hermes_home_override
     for home in _watched_lease_homes():
         key = hermes_home_key(home)
-        sd = home / "bot-desktop"
-        mark = (_mtime(sd / "env"), _mtime(sd / "launcher.pid"))
+        mark = _runtime_mark(home)
         first = key not in _runtime_marks
         if _runtime_marks.get(key) == mark:
             continue
@@ -64,6 +101,29 @@ def _poll_runtime_files() -> None:
         finally:
             reset_hermes_home_override(token)
         _broadcast_global_event("display.status", payload)
+
+
+def _persist_watched_dock_ports() -> None:
+    """Stamp each served home's live dock port while DevTools is still readable.
+
+    Finding 65 persists on ``lease.acquire``. Finding 66 persists on the
+    agent leftover watch, which only starts after leftover / browser /
+    computer_use hooks. A human-first dock whose DevTools dies before
+    Take over still left ``dock-cdp-port`` empty when neither hook had
+    run. This serve poll already walks every served home every 0.5s;
+    persist here so a later miss still fences that port. Unrelated
+    Chromes stay unstamped.
+    """
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.bot_desktop.browser import persist_live_dock_cdp_port
+    for home in _watched_lease_homes():
+        token = set_hermes_home_override(home)
+        try:
+            persist_live_dock_cdp_port()
+        except Exception:
+            pass
+        finally:
+            reset_hermes_home_override(token)
 
 
 def _poll_lease_files() -> None:
@@ -107,6 +167,7 @@ def _ensure_lease_watcher() -> None:
     def _loop() -> None:
         while True:
             try:
+                _persist_watched_dock_ports()
                 _poll_lease_files()
                 _poll_runtime_files()
             except Exception:  # noqa: BLE001 - a torn read must not kill the watcher

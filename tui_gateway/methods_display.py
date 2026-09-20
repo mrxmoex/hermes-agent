@@ -29,20 +29,63 @@ _lease_listener_installed = threading.Event()
 
 
 def _lease_view(lease) -> dict:
-    """The lease as clients may see it: the holder's viewer id is a capability (whoever presents it
-    co-drives or releases the lease), so it is replaced by a short hash the holder can match against
-    its own id to know it is the one in control."""
-    import hashlib
-    d = lease.as_dict()
-    vid = d.pop("viewer_id")
-    d["viewer_id"] = None
-    d["viewer_hash"] = hashlib.sha256(vid.encode()).hexdigest()[:12] if vid else None
-    return d
+    """The lease as clients may see it. Redaction lives on ``Lease.public_view`` so RPC,
+    tool results and CLI JSON cannot drift back to leaking the raw viewer id."""
+    return lease.public_view()
+
+
+def _profile_name_for_key(profile_key: str) -> str:
+    """Name the bot whose home is *profile_key*.
+
+    ``display.lease`` used to carry only the home path. The Desktop portal
+    cannot apply that event until ``display.status`` returns the same path, so a
+    gateway ``request_handoff`` that raced the one-shot status RPC was dropped
+    and "Bot needs you" stayed stale. The roster identity is the profile name;
+    put it on the event so the client can match before status lands. Never
+    infer the name from the serve process's launch home: one socket multiplexes
+    many profiles.
+    """
+    from pathlib import Path
+
+    from hermes_constants import hermes_home_key, reset_hermes_home_override, set_hermes_home_override
+
+    want = str(profile_key)
+    try:
+        from hermes_cli.profiles import profiles_to_serve
+        for name, home in profiles_to_serve(True):
+            if hermes_home_key(home) == want or str(Path(home)) == want:
+                return name
+    except Exception:
+        pass
+
+    token = set_hermes_home_override(profile_key)
+    try:
+        from tools.bot_desktop.runtime import _profile_name
+        return _profile_name()
+    finally:
+        reset_hermes_home_override(token)
+
+
+def _lease_event_payload(profile_key: str, lease) -> dict:
+    """Same redacted lease the in-process and file-watcher broadcasts must share."""
+    return {
+        "profile_key": profile_key,
+        "profile": _profile_name_for_key(profile_key),
+        "lease": _lease_view(lease),
+    }
 
 
 def _display_snapshot() -> dict:
     from hermes_constants import hermes_home_key
     from tools.bot_desktop import lease as _bd_lease, runtime as _bd_runtime
+    # Desktop polls status while the pane is open — stamp the live dock
+    # port before Take over so a later DevTools miss still fences it.
+    # Persist failure must not fail status.
+    try:
+        from tools.bot_desktop.browser import persist_live_dock_cdp_port
+        persist_live_dock_cdp_port()
+    except Exception:
+        pass
     st = _bd_runtime.status()
     return {**st.as_dict(), "lease": _lease_view(_bd_lease.get()), "profile_key": hermes_home_key()}
 
@@ -54,7 +97,7 @@ def _install_lease_listener() -> None:
     from tools.bot_desktop import lease as _bd_lease
 
     def _on_change(profile_key: str, lease) -> None:
-        _broadcast_global_event("display.lease", {"profile_key": profile_key, "lease": _lease_view(lease)})
+        _broadcast_global_event("display.lease", _lease_event_payload(profile_key, lease))
     _bd_lease.on_change(_on_change)
     _lease_listener_installed.set()  # only once the subscription exists, or a failed import would silence every client
 
@@ -76,10 +119,16 @@ def _(rid, params: dict) -> dict:
     Suppressed while a human holds the lease — the frame may show what they are typing."""
     try:
         from tools.bot_desktop import lease as _bd_lease
-        if _bd_lease.human_holds():
+        admitted = _bd_lease.get()
+        if admitted.holder == _bd_lease.HUMAN:
             return _ok(rid, {"data_url": None, "suppressed": "human_has_control"})
         from tools.bot_desktop.thumbnail import thumbnail_data_url
-        return _ok(rid, {"data_url": thumbnail_data_url()})
+        data_url = thumbnail_data_url()
+        # Same epoch fence as computer_use capture: a takeover (or a full take-over /
+        # hand-back cycle) during ImageGrab must not ship the frame the human typed on.
+        if _bd_lease.get().epoch != admitted.epoch:
+            return _ok(rid, {"data_url": None, "suppressed": "human_has_control"})
+        return _ok(rid, {"data_url": data_url})
     except Exception as e:
         return _err(rid, _DISPLAY_ERR, str(e))
 
@@ -99,7 +148,12 @@ def _(rid, params: dict) -> dict:
 @method("display.stop")
 @_profile_scoped
 def _(rid, params: dict) -> dict:
+    """Stopping kills the screen under whoever is on it, so it obeys the same rule as a bare
+    display.lease.release: refused while a human holds unless the caller says ``force``."""
     from tools.bot_desktop import lease as _bd_lease, runtime as _bd_runtime
+    if not params.get("force") and _bd_lease.human_holds():
+        return _err(rid, _DISPLAY_ERR, "a human holds this screen; pass force: true to stop it anyway",
+                    data={"code": "viewer_mismatch"})
     try:
         _bd_lease.release()
         stopped = _bd_runtime.stop()
@@ -108,21 +162,82 @@ def _(rid, params: dict) -> dict:
         return _err(rid, _DISPLAY_ERR, str(e))
 
 
-# viewer ids minted per connection (keyed by the transport that asked), so a reconnecting pane can
-# keep its identity — and its lease — while nobody can claim an id minted for another connection.
-_minted_viewer_ids: "weakref.WeakKeyDictionary[object, set[str]]" = weakref.WeakKeyDictionary()
+# viewer ids minted per (caller, profile). A multiplexed client must not take over
+# bot B with an id observe minted for bot A on the same socket. The caller's
+# identity is mint_identity (loopback token) or WS-upgrade auth when present
+# (survives /api/ws reconnect — a new WSTransport object is not a new person)
+# and the transport object otherwise.
+_minted_viewer_ids: "weakref.WeakKeyDictionary[object, dict[str, set[str]]]" = weakref.WeakKeyDictionary()
+# Transports that cannot be weak-referenced (stdio / slotted / handle_request with no
+# transport) still need a durable bucket: otherwise observe returns an id that acquire
+# cannot recognise, and Take over from those callers would always fail closed.
+_minted_fallback: dict[int, dict[str, set[str]]] = {}
+# (provider, user_id) → profile → ids. Same authenticated Desktop after a
+# socket replace must still be able to release the lease it holds.
+_minted_by_auth: dict[tuple[str, str], dict[str, set[str]]] = {}
+
+
+def _caller_mint_key(identity) -> tuple[str, str] | None:
+    """Stable mint bucket from a server-stamped identity. ``server-internal`` is a
+    process credential shared by every spawned child — keying on it would merge
+    every unauthed caller into one set. Leave those on the per-transport bucket."""
+    if not isinstance(identity, dict):
+        return None
+    user_id = str(identity.get("user_id") or "").strip()
+    provider = str(identity.get("provider") or "").strip()
+    if not user_id or not provider or user_id == "server-internal" or provider == "server-internal":
+        return None
+    return (provider, user_id)
+
+
+def _caller_minted_ids() -> set[str]:
+    # get_hermes_home is on server.py; _profile_scoped has already bound the requested profile.
+    profile = str(get_hermes_home())
+    transport = current_transport()
+    mint = getattr(transport, "mint_identity", None) if transport is not None else None
+    key = _caller_mint_key(mint)
+    if key is None:
+        identity = getattr(transport, "auth_identity", None) if transport is not None else None
+        key = _caller_mint_key(identity)
+    if key is not None:
+        return _minted_by_auth.setdefault(key, {}).setdefault(profile, set())
+    try:
+        by_profile = _minted_viewer_ids.setdefault(transport, {})
+    except TypeError:
+        by_profile = _minted_fallback.setdefault(id(transport) if transport is not None else 0, {})
+    return by_profile.setdefault(profile, set())
+
+
+def _viewer_id_is_minted(viewer_id: str) -> bool:
+    return bool(viewer_id) and viewer_id in _caller_minted_ids()
+
+
+def _reset_minted_for_tests() -> None:
+    _minted_viewer_ids.clear()
+    _minted_fallback.clear()
+    _minted_by_auth.clear()
 
 
 def _mint_viewer_id(requested: str) -> str:
-    """Server-minted viewer identity. ``requested`` is honoured only when THIS connection minted it
-    earlier; anything else (including a holder id read off display.status) gets a fresh id."""
-    import secrets
-    try:
-        mine = _minted_viewer_ids.setdefault(current_transport(), set())
-    except TypeError:  # stdio / slotted transports cannot be weakly referenced: always mint
-        mine = set()
-    if requested in mine:
+    """Server-minted viewer identity. At most one id per (caller, profile).
+
+    ``requested`` is honoured only when THIS caller already minted it. A missing
+    or foreign id used to mint another string on every ``display.observe``, so
+    one connection could grow the set without bound and open one RFB stream per
+    id (the live-stream registry is keyed by viewer_id, not by socket).
+    """
+    mine = _caller_minted_ids()
+    if requested and requested in mine:
         return requested
+    if mine:
+        # Collapse a pre-fix set that already has extras; pick a stable keep.
+        keep = next(iter(mine))
+        if len(mine) > 1:
+            mine.clear()
+            mine.add(keep)
+        return keep
+    # Inline: bind_module rebinds this body onto server.py's globals, which do not import secrets.
+    import secrets
     viewer_id = secrets.token_urlsafe(16)
     mine.add(viewer_id)
     return viewer_id
@@ -135,14 +250,19 @@ def _(rid, params: dict) -> dict:
     the bridge dials THIS profile's RFB socket, and a server-minted viewer id (returned to the caller,
     who passes it to ``display.lease.acquire`` / ``release``) so the lease can name the holder."""
     from hermes_constants import get_hermes_home
-    from hermes_cli.dashboard_auth.ws_tickets import mint_ticket
+    from hermes_cli.dashboard_auth.ws_tickets import mint_ticket, revoke_unused_tickets
     from tools.bot_desktop import runtime as _bd_runtime
     try:
         if _bd_runtime.rfb_socket_path() is None:
             return _err(rid, _DISPLAY_ERR, "this profile's Bot Desktop is not running; call display.start first")
         viewer_id = _mint_viewer_id(str(params.get("viewer_id") or "").strip())
+        hermes_home = str(get_hermes_home())
+        # A remint for the same viewer must kill unused tickets. Two live
+        # tickets for one viewer_id meant two RFB sockets sharing the lease
+        # input gate (the bridge keys input by viewer_id, not by socket).
+        revoke_unused_tickets(viewer_id=viewer_id, hermes_home=hermes_home)
         ticket = mint_ticket(user_id=f"display:{viewer_id}", provider="bot-desktop",
-                             extra={"hermes_home": str(get_hermes_home()), "viewer_id": viewer_id})
+                             extra={"hermes_home": hermes_home, "viewer_id": viewer_id})
         return _ok(rid, {"ticket": ticket, "path": "/api/display/ws", "viewer_id": viewer_id,
                          **_display_snapshot()})
     except Exception as e:
@@ -161,10 +281,13 @@ def _(rid, params: dict) -> dict:
     if _bd_runtime.install_command() is None:
         return _err(rid, _DISPLAY_ERR, "no supported package manager (apt-get, dnf, pacman) on this host")
     profile_key = hermes_home_key()
-    sid = str(params.get("session_id") or "")
 
     def _ask_password() -> str:
-        return _block("display.install.sudo.request", sid, {"profile_key": profile_key}, timeout=300)
+        # App-level card, no session: it reaches the connection that clicked
+        # Install through the transport copy_context() carries below. A
+        # client-supplied session_id could route the masked password card
+        # into another window's chat, so none is accepted.
+        return _block("display.install.sudo.request", "", {"profile_key": profile_key}, timeout=300)
 
     def _line(text: str) -> None:
         _broadcast_global_event("display.install.log", {"profile_key": profile_key, "line": text})
@@ -199,6 +322,12 @@ def _(rid, params: dict) -> dict:
     viewer_id = str(params.get("viewer_id") or "").strip()
     if not viewer_id:
         return _err(rid, _DISPLAY_ERR, "viewer_id required")
+    # observe mints the id; acquire must not accept a client-invented string. A forged
+    # id evicts the real holder and freezes the agent while nobody can type (the
+    # forger's later observe mints a different id than the one now on the lease).
+    if not _viewer_id_is_minted(viewer_id):
+        return _err(rid, _DISPLAY_ERR, "viewer_id is not valid for this connection",
+                    data={"code": "viewer_unminted"})
     lease = _bd_lease.acquire(viewer_id, reason=str(params.get("reason") or ""))
     return _ok(rid, {"lease": _lease_view(lease)})
 
@@ -213,6 +342,11 @@ def _(rid, params: dict) -> dict:
     if viewer_id is None and not params.get("force") and _bd_lease.human_holds():
         return _err(rid, _DISPLAY_ERR, "viewer_id required to release another viewer's lease (or pass force: true)",
                     data={"code": "viewer_mismatch"})
+    # Same mint gate as acquire: a stolen or cross-profile id must not yank the holder.
+    # force remains the documented recovery when this window no longer has a minted id.
+    if viewer_id is not None and not params.get("force") and not _viewer_id_is_minted(viewer_id):
+        return _err(rid, _DISPLAY_ERR, "viewer_id is not valid for this connection",
+                    data={"code": "viewer_unminted"})
     lease = _bd_lease.release(viewer_id)
     return _ok(rid, {"lease": _lease_view(lease)})
 

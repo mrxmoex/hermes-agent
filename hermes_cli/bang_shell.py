@@ -83,7 +83,9 @@ def check_bang_approval(command: str) -> dict:
         return {"approved": True, "message": None}
 
     # Bang commands always run locally in the CLI process, never inside a remote/sandbox backend.
-    return _check_all_guards(command, "local", has_host_access=False)
+    # Pass the composer cwd so a relative write after ``cd ~/.hermes/bot-desktop``
+    # is gated the same way the agent terminal is.
+    return _check_all_guards(command, "local", has_host_access=False, cwd=os.getcwd())
 
 
 def _bang_env() -> dict:

@@ -8,6 +8,7 @@ import path from 'node:path'
 import { ipcMain, shell } from 'electron'
 
 import { installDesktopPluginFromGit, probePluginRepo } from './desktop-plugin-install'
+import { sensitiveFileBlockReason, sensitiveFsMutationReason } from './hardening'
 import {
   DESKTOP_PLUGINS_DIR,
   ensureDir,
@@ -166,6 +167,12 @@ export function registerFsIpc({
       return { path: dst }
     }
 
+    const sensitiveReason = sensitiveFsMutationReason(src, dst)
+
+    if (sensitiveReason) {
+      throw new Error(`Rename blocked for sensitive file: ${sensitiveReason}`)
+    }
+
     if (fs.existsSync(dst)) {
       throw new Error(`"${name}" already exists`)
     }
@@ -193,6 +200,11 @@ export function registerFsIpc({
     }
 
     const resolved = resolveRequestedPathForIpc(expandUserPath(raw), { purpose: 'Write text file' })
+    const sensitiveReason = sensitiveFileBlockReason(resolved)
+
+    if (sensitiveReason) {
+      throw new Error(`Write blocked for sensitive file: ${sensitiveReason}`)
+    }
 
     if (!directoryExists(path.dirname(resolved))) {
       throw new Error('Parent directory does not exist')
@@ -210,6 +222,12 @@ export function registerFsIpc({
 
     if (!target) {
       throw new Error('Invalid delete')
+    }
+
+    const sensitiveReason = sensitiveFsMutationReason(target)
+
+    if (sensitiveReason) {
+      throw new Error(`Delete blocked for sensitive file: ${sensitiveReason}`)
     }
 
     await shell.trashItem(target)

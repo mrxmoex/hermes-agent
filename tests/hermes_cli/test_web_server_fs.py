@@ -77,6 +77,63 @@ def test_fs_download_rejects_sensitive_files(client, tmp_path):
     assert response.status_code == 403
 
 
+def test_fs_download_rejects_bot_desktop_cookie_jar(client, tmp_path):
+    """Workspace FS accepts absolute paths. bot-desktop/ is the screen's
+    cookie jar + X cookie + lease — same class as .env, not a lease-gated
+    terminal fence."""
+    cookies = tmp_path / "bot-desktop" / "browser-profile" / "Default" / "Cookies"
+    cookies.parent.mkdir(parents=True)
+    cookies.write_bytes(b"stolen-cookies")
+    lease = tmp_path / "bot-desktop" / "lease.json"
+    lease.write_text('{"holder":"human"}\n')
+
+    for target in (cookies, lease):
+        download = client.get("/api/fs/download", params={"path": str(target)})
+        assert download.status_code == 403, target
+        preview = client.get("/api/fs/read-data-url", params={"path": str(target)})
+        assert preview.status_code == 403, target
+        read_text = client.get("/api/fs/read-text", params={"path": str(target)})
+        assert read_text.status_code == 403, target
+
+
+def test_fs_write_text_rejects_bot_desktop_lease(client, tmp_path):
+    """Spot-editor save is the write door download already closed on read.
+
+    Forging holder=agent here returns control without acquire/release.
+    """
+    desktop = tmp_path / "bot-desktop"
+    desktop.mkdir()
+    lease = desktop / "lease.json"
+    lease.write_text('{"holder":"human"}\n')
+    notes = tmp_path / "notes.md"
+    notes.write_text("ok\n")
+
+    forged = client.post(
+        "/api/fs/write-text",
+        json={"path": str(lease), "content": '{"holder":"agent"}\n'},
+    )
+    assert forged.status_code == 403, forged.text
+    assert lease.read_text() == '{"holder":"human"}\n'
+
+    listing = client.get("/api/fs/list", params={"path": str(tmp_path)})
+    assert listing.status_code == 200
+    names = [entry["name"] for entry in listing.json()["entries"]]
+    assert "notes.md" in names
+    assert "bot-desktop" not in names
+
+    denied_list = client.get("/api/fs/list", params={"path": str(desktop)})
+    assert denied_list.status_code == 200
+    assert denied_list.json()["entries"] == []
+    assert denied_list.json().get("error") == "EACCES"
+
+    ordinary = client.post(
+        "/api/fs/write-text",
+        json={"path": str(notes), "content": "updated\n"},
+    )
+    assert ordinary.status_code == 200, ordinary.text
+    assert notes.read_text() == "updated\n"
+
+
 def test_fs_endpoints_require_auth(tmp_path):
     client = TestClient(web_server.app)
     target = tmp_path / "secret.txt"

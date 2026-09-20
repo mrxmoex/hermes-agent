@@ -207,6 +207,13 @@ class TestWsAuthOkLoopback:
     def test_correct_token_accepted(self, loopback_app):
         ws = _fake_ws(query={"token": web_server._SESSION_TOKEN})
         assert _web_server_chat._ws_auth_ok(ws) is True
+        # Mint bucket for Bot Screen reconnects; not auth_identity (that would
+        # make the loopback token a dashboard controller identity).
+        assert ws._hermes_mint_identity == {
+            "user_id": "loopback-session",
+            "provider": "token",
+        }
+        assert not hasattr(ws, "_hermes_auth_identity")
 
 
 class TestWsAuthOkGated:

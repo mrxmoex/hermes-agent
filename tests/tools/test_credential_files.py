@@ -370,6 +370,35 @@ class TestConfigPathTraversal:
         assert len(mounts) == 1
         assert "oauth.json" in mounts[0]["container_path"]
 
+    @pytest.mark.parametrize(
+        "rel_path",
+        [
+            ".env",
+            "auth.json",
+            "bot-desktop/lease.json",
+            "bot-desktop/browser-profile/Default/Cookies",
+            "bot-desktop/Xauthority",
+            "bot-desktop/dock-cdp-port",
+        ],
+    )
+    def test_config_master_store_is_refused(self, tmp_path, monkeypatch, rel_path):
+        """``terminal.credential_files`` used to skip the read deny-list. A
+        listed ``bot-desktop/`` path would file-sync the live cookie jar /
+        lease to Modal/SSH remotes — the same store ``register_credential_file``
+        already refuses."""
+        hermes_home = tmp_path / ".hermes"
+        target = hermes_home / rel_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("stolen")
+        (hermes_home / "oauth.json").write_text("{}")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        self._write_config(hermes_home, [rel_path, "oauth.json"])
+
+        mounts = get_credential_file_mounts()
+        host_paths = [Path(m["host_path"]).resolve() for m in mounts]
+        assert target.resolve() not in host_paths
+        assert any(p.name == "oauth.json" for p in host_paths)
+
 
 # ---------------------------------------------------------------------------
 # Cache directory mounts
@@ -612,6 +641,12 @@ class TestMasterCredentialStoresAreNeverMountable:
         (home / "mcp-tokens").mkdir()
         (home / "mcp-tokens" / "srv.json").write_text('{"access_token":"t"}')
         (home / "google_token.json").write_text("{}")
+        desktop = home / "bot-desktop" / "browser-profile" / "Default"
+        desktop.mkdir(parents=True)
+        (home / "bot-desktop" / "lease.json").write_text('{"holder":"human"}')
+        (desktop / "Cookies").write_bytes(b"jar")
+        (home / "bot-desktop" / "Xauthority").write_bytes(b"cookie")
+        (home / "bot-desktop" / "dock-cdp-port").write_text("9333")
         return home
 
     @pytest.mark.parametrize(
@@ -623,6 +658,10 @@ class TestMasterCredentialStoresAreNeverMountable:
             "webhook_subscriptions.json",
             "cache/bws_cache.json",
             "mcp-tokens/srv.json",
+            "bot-desktop/lease.json",
+            "bot-desktop/browser-profile/Default/Cookies",
+            "bot-desktop/Xauthority",
+            "bot-desktop/dock-cdp-port",
         ],
     )
     def test_master_credential_store_is_refused(self, tmp_path, rel_path):
